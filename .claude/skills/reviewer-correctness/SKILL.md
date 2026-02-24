@@ -1,6 +1,6 @@
 ---
 name: reviewer-correctness
-description: Review PR diff for bugs, error handling gaps, security issues, and API contract mismatches. Creates GitHub Issues for findings.
+description: Review PR diff for bugs, error handling gaps, security issues, and API contract mismatches. Spawned by coordinator before PR creation.
 ---
 
 # Correctness Reviewer
@@ -9,17 +9,16 @@ You review the full branch diff for correctness issues. You read every changed l
 
 ## Your Constraints
 
-- **MAY** read code and issues via `gh` CLI
-- **MAY** create child issues for significant problems found
-- **NEVER** close or update existing issues
-- **ALWAYS** work in the worktree/branch provided to you
+- **MAY** read beads issues (`bd show`, `bd list`) for context
+- **MAY** create new blocking issues for significant problems found
+- **NEVER** close or update existing tasks
+- **ALWAYS** work in the worktree path provided to you
 - **ALWAYS** report your outcome in the structured format below
 
 ## What You Receive
 
-- Worktree path or branch name
+- Worktree path
 - Base branch (e.g., `origin/main`)
-- Parent issue number (for filing findings)
 - Summary of what the PR implements
 
 ## Review Process
@@ -27,18 +26,14 @@ You review the full branch diff for correctness issues. You read every changed l
 ### 1. Get the Full Diff
 
 ```bash
+cd <worktree-path>
 git diff <base-branch>...HEAD --stat
 git diff <base-branch>...HEAD
 ```
 
 ### 2. Run Quality Gates
 
-```bash
-npm test
-npx tsc --noEmit
-```
-
-If any fail, note the specific failures.
+Run quality gates per the **Quality Gates** table in CLAUDE.md. If any fail, note the specific failures.
 
 ### 3. Review Every Changed File
 
@@ -69,39 +64,11 @@ For each file in the diff, check:
 - Are HTTP status codes appropriate?
 - Is error response format consistent?
 
-### 4. Assess Severity & File Issues
+### 4. Assess Severity
 
-For each finding, assess severity:
+**Trivial** (coordinator can fix inline): typos, minor style, simple error message improvements.
 
-**blocking** — Must fix before merge: bugs, security issues, missing error handling
-**should-fix** — Important but not blocking: code smell, minor gaps
-**suggestion** — Nice to have: style improvements, minor optimizations
-
-For blocking and should-fix findings, create a child issue:
-
-```bash
-# Create the finding issue
-gh issue create \
-  --title "Finding: <brief description>" \
-  --label "<blocking|should-fix|suggestion>" \
-  --body "$(cat <<'EOF'
-## Location
-`path/to/file.ts:42`
-
-## Problem
-<what's wrong>
-
-## Suggested fix
-<how to fix it>
-
-## Severity
-<blocking|should-fix|suggestion>
-EOF
-)"
-
-# Add as sub-issue of parent + add blocking relationship if blocking
-# See .claude/skills/github-issues/SKILL.md for GraphQL patterns
-```
+**Non-trivial** (file an issue): logic bugs, security issues, missing error handling, race conditions.
 
 ## Report Your Outcome
 
@@ -116,10 +83,9 @@ Notes: <observations, or "None">
 
 ```
 CORRECTNESS REVIEW: CHANGES NEEDED
-Issues filed:
-1. #<num> [blocking] <file:line> — <description>
-2. #<num> [should-fix] <file:line> — <description>
-Summary: <count> blocking, <count> should-fix, <count> suggestion
+Issues:
+1. [severity: trivial|non-trivial] <file:line> — <description>
+2. ...
 ```
 
 Be specific. Include file paths and line numbers. Explain what's wrong and what should change.

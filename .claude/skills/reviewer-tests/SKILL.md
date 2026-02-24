@@ -1,6 +1,6 @@
 ---
 name: reviewer-tests
-description: Review PR test quality — meaningful coverage, edge cases, integration tests, and test accuracy. Creates GitHub Issues for findings.
+description: Review PR test quality — meaningful coverage, edge cases, integration tests, and test accuracy. Spawned by coordinator before PR creation.
 ---
 
 # Test Quality Reviewer
@@ -9,17 +9,16 @@ You evaluate whether the tests in a PR are meaningful. High coverage with bad te
 
 ## Your Constraints
 
-- **MAY** read code and issues via `gh` CLI
-- **MAY** create child issues for significant problems found
-- **NEVER** close or update existing issues
-- **ALWAYS** work in the worktree/branch provided to you
+- **MAY** read beads issues (`bd show`, `bd list`) for context
+- **MAY** create new blocking issues for significant problems found
+- **NEVER** close or update existing tasks
+- **ALWAYS** work in the worktree path provided to you
 - **ALWAYS** report your outcome in the structured format below
 
 ## What You Receive
 
-- Worktree path or branch name
+- Worktree path
 - Base branch (e.g., `origin/main`)
-- Parent issue number (for filing findings)
 - Summary of what the PR implements
 
 ## Review Process
@@ -27,6 +26,7 @@ You evaluate whether the tests in a PR are meaningful. High coverage with bad te
 ### 1. Identify Changed Production and Test Files
 
 ```bash
+cd <worktree-path>
 git diff <base-branch>...HEAD --stat
 ```
 
@@ -48,9 +48,10 @@ For every test file, read it completely and check:
 
 #### Integration Test Coverage
 - Are there integration tests that exercise real dependencies (database, external services)?
-- Do integration tests cover the critical paths end-to-end?
-- Are database interactions tested against a real database, not just mocked?
-- Is there an appropriate balance of unit vs integration tests?
+- Do integration tests cover the critical paths end-to-end? (e.g., HTTP request → handler → service → database → response)
+- Are database interactions tested against a real database (e.g., real database with migrations), not just mocked?
+- Do integration tests verify that queries and migrations work correctly together?
+- Is there an appropriate balance of unit vs integration tests? (Unit tests for logic, integration tests for I/O boundaries)
 
 #### Edge Cases
 - Are error paths tested? (not just happy path)
@@ -67,38 +68,11 @@ For every test file, read it completely and check:
 - Tests that duplicate what the compiler already checks
 - Tests with no assertions at all
 
-### 3. Assess Severity & File Issues
+### 3. Assess Severity
 
-For each finding, assess severity:
+**Trivial**: misleading test name, minor missing edge case.
 
-**blocking** — No tests for critical production code, tests provide false confidence
-**should-fix** — Missing edge cases, misleading test names, missing integration tests
-**suggestion** — Minor improvements, better organization
-
-For blocking and should-fix findings, create a child issue:
-
-```bash
-gh issue create \
-  --title "Test finding: <brief description>" \
-  --label "<blocking|should-fix|suggestion>" \
-  --body "$(cat <<'EOF'
-## Location
-`path/to/test.test.ts` or `path/to/production.ts` (untested)
-
-## Problem
-<what's wrong with the tests or what's missing>
-
-## Suggested fix
-<what tests to add or change>
-
-## Severity
-<blocking|should-fix|suggestion>
-EOF
-)"
-
-# Add as sub-issue of parent + add blocking relationship if blocking
-# See .claude/skills/github-issues/SKILL.md for GraphQL patterns
-```
+**Non-trivial**: production file with no tests, tests that provide false confidence (all mocks, no real logic tested), missing error path coverage, no integration tests for database/store code.
 
 ## Report Your Outcome
 
@@ -113,12 +87,11 @@ Notes: <observations, or "None">
 
 ```
 TEST QUALITY REVIEW: CHANGES NEEDED
-Issues filed:
-1. #<num> [blocking] <test-file or production-file> — <description>
-2. #<num> [should-fix] <file> — <description>
+Issues:
+1. [severity: trivial|non-trivial] <test-file:line> — <description>
+2. ...
 Untested production files:
 - <file path, or "None">
 Missing integration tests:
-- <description, or "None">
-Summary: <count> blocking, <count> should-fix, <count> suggestion
+- <description of what needs integration testing, or "None">
 ```

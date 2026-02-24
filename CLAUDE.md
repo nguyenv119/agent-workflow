@@ -1,44 +1,43 @@
 # CLAUDE.md
 
-## Project Overview
+This is a reference implementation of an agent-friendly development workflow for Claude Code. Copy the `.claude/` directory and `AGENTS.md` into your project, then customize this file for your project.
 
-Agent-workflow: a reusable framework that gives any GitHub project a production-grade, agent-friendly development workflow. Two commands (`/plan`, `/work`), automated review via GitHub Actions, guardrail checks, and auto-merge.
+## Customizing for Your Project
 
-## Repository Structure
+Replace this file with your project's CLAUDE.md. It should include:
 
-```
-agent-workflow/
-├── .claude/
-│   ├── skills/                   # Agent skill prompts (8 skills)
-│   │   ├── coordinator/          # /work entry point
-│   │   ├── planner/              # /plan entry point
-│   │   ├── implementer/          # Test-first development (subagent)
-│   │   ├── github-issues/        # GitHub API reference for sub-issues/deps
-│   │   ├── reviewer-correctness/ # Bugs, security, error handling
-│   │   ├── reviewer-tests/       # Test quality and coverage
-│   │   ├── reviewer-architecture/# Duplication, patterns
-│   │   └── reviewer-plan/        # Plan validation
-│   └── commands/                 # Slash commands (/plan, /work, /configure)
-├── .github/
-│   ├── workflows/                # GitHub Actions (review, orchestrator, guardrails)
-│   ├── agent-workflow/           # Workflow configuration
-│   └── ISSUE_TEMPLATE/           # Issue templates for tasks and review findings
-├── templates/
-│   └── CLAUDE.md                 # Starter CLAUDE.md for target projects
-├── install.sh                    # curl-able installer (copies files only)
-├── docs/
-│   └── design.md                 # Full design document
-└── README.md
+### Project Overview
+
+Describe your project in 2-3 sentences. What does it do? What's the tech stack?
+
+### Commands
+
+Document your build, test, and lint commands:
+
+```bash
+# Examples — replace with your actual commands
+make build           # Build the project
+make test            # Run all tests
+make lint            # Lint all code
 ```
 
-## Key Design Decisions
+### Quality Gates
 
-- **GitHub Issues with sub-issues** for task hierarchy and dependency tracking
-- **Hierarchical branching** — branch structure mirrors issue structure
-- **Leaf tasks commit to parent branch** (no sub-branch per leaf)
-- **PR approval as universal override** for guardrail checks
-- **Three commands:** `/plan`, `/work`, and `/configure`
+The skills reference a **Quality Gates** table in CLAUDE.md. Define what commands to run for each area of your codebase:
 
-## Design Reference
+| Area | Tests | Lint | Typecheck |
+|------|-------|------|-----------|
+| Backend | `make test-api` | `make lint-api` | — |
+| Frontend | `npm test` | `npm run lint` | `npx tsc --noEmit` |
+| Integration | `make test-integration` | — | — |
 
-See [docs/design.md](docs/design.md) for the full architecture and rationale.
+### Development Guidelines
+
+Document your project's conventions:
+- Testing requirements
+- Code style preferences
+- Architecture patterns
+
+## Workflow
+
+This project uses an agent-friendly development workflow. Use `/plan` to decompose features into issues and `/work` to implement them. See `AGENTS.md` for full documentation and `.claude/skills/` for agent instructions.

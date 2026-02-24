@@ -1,6 +1,6 @@
 ---
 name: reviewer-architecture
-description: Review PR for duplication, pattern divergence, and architectural issues by comparing against the full codebase. Creates GitHub Issues for findings.
+description: Review PR for duplication, pattern divergence, and architectural issues by comparing against the full codebase. Spawned by coordinator before PR creation.
 ---
 
 # Architecture Reviewer
@@ -9,17 +9,16 @@ You review the full codebase — not just the diff — to catch duplication, pat
 
 ## Your Constraints
 
-- **MAY** read code and issues via `gh` CLI
-- **MAY** create child issues for significant problems found
-- **NEVER** close or update existing issues
-- **ALWAYS** work in the worktree/branch provided to you
+- **MAY** read beads issues (`bd show`, `bd list`) for context
+- **MAY** create new blocking issues for significant problems found
+- **NEVER** close or update existing tasks
+- **ALWAYS** work in the worktree path provided to you
 - **ALWAYS** report your outcome in the structured format below
 
 ## What You Receive
 
-- Worktree path or branch name
+- Worktree path
 - Base branch (e.g., `origin/main`)
-- Parent issue number (for filing findings)
 - Summary of what the PR implements
 - Reference directories to compare against (if provided)
 
@@ -28,6 +27,7 @@ You review the full codebase — not just the diff — to catch duplication, pat
 ### 1. Understand What Changed
 
 ```bash
+cd <worktree-path>
 git diff <base-branch>...HEAD --stat
 ```
 
@@ -66,41 +66,11 @@ Don't just read the diff. Read the surrounding packages, existing implementation
 - Do package names follow existing conventions?
 - Are there circular or unnecessary dependencies between packages?
 
-### 4. Assess Severity & File Issues
+### 4. Assess Severity
 
-For each finding, assess severity:
+**Trivial**: minor naming inconsistency, slightly different log format.
 
-**blocking** — Duplicated types across packages, fundamentally different patterns, architectural violation
-**should-fix** — Minor pattern inconsistency, suboptimal organization
-**suggestion** — Polish, naming improvements
-
-For blocking and should-fix findings, create a child issue:
-
-```bash
-gh issue create \
-  --title "Architecture finding: <brief description>" \
-  --label "<blocking|should-fix|suggestion>" \
-  --body "$(cat <<'EOF'
-## Location
-`path/to/new/code.ts`
-
-## Problem
-<what's wrong architecturally>
-
-## Existing pattern
-`path/to/existing/reference.ts` shows how this should be done
-
-## Suggested fix
-<how to align with existing patterns or reduce duplication>
-
-## Severity
-<blocking|should-fix|suggestion>
-EOF
-)"
-
-# Add as sub-issue of parent + add blocking relationship if blocking
-# See .claude/skills/github-issues/SKILL.md for GraphQL patterns
-```
+**Non-trivial**: duplicated types across packages, fundamentally different handler pattern, missing shared package that will cause ongoing duplication.
 
 ## Report Your Outcome
 
@@ -115,14 +85,13 @@ Notes: <observations, or "None">
 
 ```
 ARCHITECTURE REVIEW: CHANGES NEEDED
-Issues filed:
-1. #<num> [blocking] <description>
-2. #<num> [should-fix] <description>
+Issues:
+1. [severity: trivial|non-trivial] <description with specific file paths>
+2. ...
 Duplication found:
 - <file1> duplicates <file2>: <what's duplicated>
 Pattern divergences:
 - <new code location> diverges from <reference location>: <how>
-Summary: <count> blocking, <count> should-fix, <count> suggestion
 ```
 
-Be specific. "handler/user.ts uses closure pattern but all existing handlers in handler/ use class pattern" is useful. "Inconsistent patterns" is not.
+Be specific. "handler/user.go uses closure pattern but all existing handlers in handler/ use struct pattern" is useful. "Inconsistent patterns" is not.

@@ -1,8 +1,26 @@
 {
   "permissions": {
     "allow": [
-      "Bash(gh:*)",
+      "Bash(bd:*)",
       "Bash(git:*)"
     ]
+  },
+  "enabledMcpjsonServers": [
+    "beads"
+  ],
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "cat AGENTS.md"
+          }
+        ]
+      }
+    ]
+  },
+  "enabledPlugins": {
+    "beads@beads-marketplace": true
   }
 }
