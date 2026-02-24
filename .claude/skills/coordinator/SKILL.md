@@ -101,9 +101,7 @@ SKILL: Read and follow .claude/skills/implementer/SKILL.md
 
 WORKTREE: ../<project>-<work-name>
 TASK: <task-id>
-
-Task description:
-<paste full task description from bd show>
+Read the task description: bd show <task-id> --json
 
 CONSTRAINTS:
 - Work ONLY in the worktree path above
