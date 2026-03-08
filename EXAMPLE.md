@@ -202,23 +202,6 @@ After all three tasks are complete, the coordinator runs quality gates one final
 
 ---
 
-### Step 4 — `/merge`
-
-Separate command, separate agent. `merge-queue/SKILL.md` loads. Eight steps:
-
-1. **Scan** — check CI status on `main` (failing main blocks everything), list all open PRs
-2. **Categorize** — each PR is: ready to merge, awaiting review, CI pending, CI failing, or needs rebase
-3. **Decide merge order** — when multiple PRs are ready, prioritize by impact and conflict risk
-4. **Choose strategy per PR** — inspect commit quality: squash (messy/WIP commits), merge commit (clean distinct commits worth preserving), or rebase cleanup (mixed quality)
-5. **Merge** — execute the chosen strategy, close beads issues referenced in the PR body, remove worktree, delete feature branch, pull main
-6. **Rebase** — PRs behind main get rebased; trivial conflicts resolved inline, non-trivial filed as issues
-7. **Handle CI failures** — fetch failure logs, file a beads issue with details, never rerun (test failures are real)
-8. **Report** — summary of all PR states with beads issue IDs for any work that needs `/work`
-
-The coordinator does not own CI or merging. The merge agent does. This is an explicit boundary.
-
----
-
 ## Path 2: Lightweight (small, well-understood tasks)
 
 Use this when you already know exactly what needs to be built and don't need the planning ceremony.
@@ -272,10 +255,6 @@ Lightweight (small/clear):
         Task → reviewer-architecture/SKILL.md ─┘
         fix trivial findings, file issues for non-trivial
       after all tasks: push branch, open ONE PR
-
-/merge
-  → merge-queue/SKILL.md
-      scan PRs → categorize → choose strategy → merge/rebase → report
 ```
 
 Every box is either a file loaded into a context window, or a fresh subagent spawned via the Task tool. Nothing is implicit. Every agent's behavior is determined entirely by which SKILL.md it was told to read at the moment it was spawned.

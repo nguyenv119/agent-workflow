@@ -169,50 +169,43 @@ REFERENCE DIRS: <key directories in the existing codebase to compare against>
 
 After all issues resolved, re-run quality gates per the **Quality Gates** table in CLAUDE.md.
 
-### 5. Create PR and Hand Off
+### 5. Push Branch and Hand Off
 
-Run quality gates per the **Quality Gates** table in CLAUDE.md in the worktree before creating the PR.
+Run quality gates per the **Quality Gates** table in CLAUDE.md in the worktree before pushing.
 
-**Do NOT create PR if any checks fail.** Fix locally first.
+**Do NOT push if any checks fail.** Fix locally first.
 
 ```bash
 cd ../<project>-<work-name>
 git push -u origin feature/<work-name>
+```
 
-gh pr create --title "<type>: <title>" --body "$(cat <<'EOF'
-## Summary
-<1-3 bullet points>
+**After pushing, output a handoff summary for the human to review:**
 
-## Changes
-<list of significant changes>
+```
+## Ready for Review
 
-## Test plan
+**Branch:** feature/<work-name>
+**Beads issues:** <comma-separated list of beads IDs>
+
+### Summary
+<1-3 bullet points of what was implemented>
+
+### Changes
+<list of significant files changed>
+
+### Test plan
 - [ ] Tests pass
 - [ ] <manual verification steps if any>
 
-Beads: <comma-separated list of all beads issue IDs included in this PR>
+### Review the diff
+On the IDE or with git diff
 
-Generated with Claude Code
-EOF
-)"
+### When satisfied, open the PR
+/pr feature/<work-name>
 ```
 
-**After creating the PR:**
-
-1. If user indicated review needed: request review
-   ```bash
-   gh pr edit <number> --add-reviewer <username>
-   ```
-2. Label beads issues as `in-pr`:
-   ```bash
-   bd update <id> --set-labels in-pr --json
-   ```
-3. Report: "PR #X opened. `/merge` will handle CI and merging."
-
-**Do NOT** watch CI, merge, or wait for approval. The `/merge` agent handles all of that.
-
-**Do NOT** clean up worktrees or branches. The `/merge` agent does this after successful merge, since worktrees may be needed for rebases.
-
+**Do NOT run `gh pr create`.** The human will open the PR after reviewing.
 ---
 
 ## Anti-Patterns
@@ -220,10 +213,10 @@ EOF
 - Committing directly to main (branch is protected — all changes require a PR)
 - Starting dependent task before blocker is closed
 - Parallelizing tasks that touch same files
-- Creating PR before running specialized reviews
-- Creating PR with failing tests
-- Merging PRs (that's `/merge`'s job)
-- Watching CI (that's `/merge`'s job)
-- Cleaning up worktrees before merge (that's `/merge`'s job)
+- Running `gh pr create` — PR creation is the human's job after review
+- Pushing with failing tests or quality gate failures
+- Merging PRs (that's our manual job)
+- Watching CI (that's our manual job)
+- Cleaning up worktrees before merge (that's our manual job)
 - Running dependency install concurrently in multiple worktrees
 - Fixing non-trivial review issues inline — file issues and spawn implementers instead

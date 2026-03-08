@@ -11,13 +11,13 @@ for resolving larger issues in follow-on work.
 |----------|---------|
 | New epic or feature design | `/plan <description-or-epic-id>` |
 | All implementation work | `/work <id-or-description>` |
-| Process merge queue | `/merge` |
+| Open PR after reviewing branch | `/pr [branch-name]` |
 
 `/plan` explores the codebase, discusses tradeoffs with you, files beads issues, and runs an architectural plan review. Use it before `/work` for new epics.
 
-`/work` is the single entry point for all implementation. It triages the work, creates a branch/PR, manages beads issues, and runs specialized reviews.
+`/work` triages the work, creates a branch, manages beads issues, runs specialized reviews, and pushes — then hands off to you for review.
 
-`/merge` processes open PRs: merges when CI passes, handles rebases, files issues for failures. Run in a dedicated window while other windows do `/work`.
+`/pr` opens the PR once you've reviewed the branch. Run it after `/work` completes and you're satisfied with the diff.
 
 ## Issue Tracking with bd (beads)
 

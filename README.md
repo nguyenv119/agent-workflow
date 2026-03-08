@@ -7,7 +7,6 @@ An agent-friendly development workflow for [Claude Code](https://claude.ai/code)
 **Three commands:**
 - `/plan <description>` — Collaboratively design, review, and refine an approach, then decompose it into issues with dependencies
 - `/work <id>` — Implement, review, and open a PR — all from one command
-- `/merge` — Process open PRs: merge when CI passes, rebase when behind, file issues for failures
 
 **Automated pre-PR review:** Three specialized reviewers (correctness, tests, architecture) run in parallel before every PR is created.
 
@@ -36,15 +35,7 @@ The planner explores your codebase, discusses tradeoffs with you, then creates a
 you> /work bd-42
 ```
 
-The coordinator creates a feature branch and worktree, implements tasks via test-first development (spawning implementer subagents), runs three parallel code reviews, then opens a PR.
-
-### Merge Queue (`/merge`)
-
-```
-you> /merge
-```
-
-Run in a dedicated window. Scans open PRs, merges what's ready (choosing squash vs merge based on commit quality), rebases what's behind, and files issues for CI failures.
+The coordinator creates a feature branch and worktree, implements tasks via test-first development (spawning implementer subagents), runs three parallel code reviews
 
 ## Architecture
 
@@ -55,7 +46,6 @@ Run in a dedicated window. Scans open PRs, merges what's ready (choosing squash 
 | **coordinator** | Entry point for `/work`. Triages, sets up worktrees, delegates to implementers, runs reviews, creates PRs. |
 | **implementer** | Test-first development. Writes failing tests, implements, verifies, audits coverage. Never manages issues. |
 | **planner** | Entry point for `/plan`. Explores codebase, discusses with user, files structured issues. |
-| **merge-queue** | Entry point for `/merge`. Merges, rebases, handles CI failures. |
 | **reviewer-correctness** | Reviews for bugs, security issues, error handling gaps. |
 | **reviewer-tests** | Reviews test quality — meaningful coverage, not just line count. |
 | **reviewer-architecture** | Reviews for duplication, pattern divergence, structural issues. |
@@ -68,7 +58,6 @@ Run in a dedicated window. Scans open PRs, merges what's ready (choosing squash 
 |---------|--------|
 | `/work <id>` | Invoke coordinator |
 | `/plan <desc>` | Invoke planner |
-| `/merge` | Invoke merge queue |
 | `/epic <id>` | Redirects to `/work` |
 | `/gh-issue <num>` | Work on a GitHub issue end-to-end |
 
