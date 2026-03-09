@@ -11,13 +11,10 @@ for resolving larger issues in follow-on work.
 |----------|---------|
 | New epic or feature design | `/plan <description-or-epic-id>` |
 | All implementation work | `/work <id-or-description>` |
-| Open PR after reviewing branch | `/pr [branch-name]` |
 
 `/plan` explores the codebase, discusses tradeoffs with you, files beads issues, and runs an architectural plan review. Use it before `/work` for new epics.
 
-`/work` triages the work, creates a branch, manages beads issues, runs specialized reviews, and pushes — then hands off to you for review.
-
-`/pr` opens the PR once you've reviewed the branch. Run it after `/work` completes and you're satisfied with the diff.
+`/work` triages the work, creates a branch, manages beads issues, runs specialized reviews, creates a PR, and hands off to you for merge.
 
 ## Issue Tracking with bd (beads)
 

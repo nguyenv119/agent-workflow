@@ -6,7 +6,7 @@ An agent-friendly development workflow for [Claude Code](https://claude.ai/code)
 
 **Three commands:**
 - `/plan <description>` — Collaboratively design, review, and refine an approach, then decompose it into issues with dependencies
-- `/work <id>` — Implement, review, and open a PR — all from one command
+- `/work <id>` — Implement, review, and open a PR — all from one command. Human merges.
 
 **Automated pre-PR review:** Three specialized reviewers (correctness, tests, architecture) run in parallel before every PR is created.
 
@@ -35,7 +35,7 @@ The planner explores your codebase, discusses tradeoffs with you, then creates a
 you> /work bd-42
 ```
 
-The coordinator creates a feature branch and worktree, implements tasks via test-first development (spawning implementer subagents), runs three parallel code reviews
+The coordinator creates a feature branch and worktree, implements tasks via test-first development (spawning implementer subagents), runs three parallel code reviews, and opens a PR for human review and merge.
 
 ## Architecture
 

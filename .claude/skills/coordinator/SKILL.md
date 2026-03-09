@@ -169,7 +169,7 @@ REFERENCE DIRS: <key directories in the existing codebase to compare against>
 
 After all issues resolved, re-run quality gates per the **Quality Gates** table in CLAUDE.md.
 
-### 5. Push Branch and Hand Off
+### 5. Create PR and Hand Off
 
 Run quality gates per the **Quality Gates** table in CLAUDE.md in the worktree before pushing.
 
@@ -180,32 +180,38 @@ cd ../<project>-<work-name>
 git push -u origin feature/<work-name>
 ```
 
-**After pushing, output a handoff summary for the human to review:**
+**Create the PR:**
 
-```
-## Ready for Review
+```bash
+gh pr create --title "<type>: <title>" --body "$(cat <<'EOF'
+## Summary
+<1-3 bullet points>
 
-**Branch:** feature/<work-name>
-**Beads issues:** <comma-separated list of beads IDs>
+## Changes
+<list of significant changes>
 
-### Summary
-<1-3 bullet points of what was implemented>
-
-### Changes
-<list of significant files changed>
-
-### Test plan
+## Test plan
 - [ ] Tests pass
 - [ ] <manual verification steps if any>
 
-### Review the diff
-On the IDE or with git diff
+Beads: <comma-separated list of all beads issue IDs included in this PR>
 
-### When satisfied, open the PR
-/pr feature/<work-name>
+Generated with Claude Code
+EOF
+)"
 ```
 
-**Do NOT run `gh pr create`.** The human will open the PR after reviewing.
+**After PR creation, label beads issues:**
+```bash
+bd update <id> --set-labels in-pr --json
+```
+
+**Report to the human:**
+```
+PR #X opened for feature/<work-name>.
+Beads issues: <list>
+```
+
 ---
 
 ## Anti-Patterns
@@ -213,9 +219,8 @@ On the IDE or with git diff
 - Committing directly to main (branch is protected — all changes require a PR)
 - Starting dependent task before blocker is closed
 - Parallelizing tasks that touch same files
-- Running `gh pr create` — PR creation is the human's job after review
 - Pushing with failing tests or quality gate failures
-- Merging PRs (that's our manual job)
+- Merging PRs — merging is the human's job
 - Watching CI (that's our manual job)
 - Cleaning up worktrees before merge (that's our manual job)
 - Running dependency install concurrently in multiple worktrees
