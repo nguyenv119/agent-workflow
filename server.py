@@ -4,10 +4,23 @@ Asyncio bank server using aiohttp.
 In-memory balance starts at 0.0. Supports deposit, withdraw, and balance
 query over HTTP/JSON.
 """
+import json
+
+import aiohttp
 from aiohttp import web
+import asyncio
 
 # In-memory balance state.  Reset by tests between runs.
 balance: float = 0.0
+
+# Lock protecting the read-modify-write on balance.
+_balance_lock = asyncio.Lock()
+
+
+def reset() -> None:
+    """Reset the in-memory balance to 0.0."""
+    global balance
+    balance = 0.0
 
 
 def _parse_amount(body: dict) -> float:
@@ -43,6 +56,19 @@ def _json_error(message: str) -> web.Response:
     return web.json_response({"error": message}, status=400)
 
 
+async def _read_amount(request: web.Request) -> float:
+    """
+    Parse and validate the 'amount' field from the request JSON body.
+
+    Raises _BadRequest if the body is not valid JSON or the amount is invalid.
+    """
+    try:
+        body = await request.json()
+    except (json.JSONDecodeError, ValueError, aiohttp.ContentTypeError):
+        raise _BadRequest("invalid request body")
+    return _parse_amount(body)
+
+
 async def handle_balance(request: web.Request) -> web.Response:
     """Return the current balance."""
     return web.json_response({"balance": balance})
@@ -51,28 +77,27 @@ async def handle_balance(request: web.Request) -> web.Response:
 async def handle_deposit(request: web.Request) -> web.Response:
     """Add the requested amount to the balance."""
     global balance
-    body = await request.json()
     try:
-        amount = _parse_amount(body)
+        amount = await _read_amount(request)
     except _BadRequest as exc:
         return _json_error(exc.message)
-    balance += amount
+    async with _balance_lock:
+        balance += amount
     return web.json_response({"balance": balance})
 
 
 async def handle_withdraw(request: web.Request) -> web.Response:
     """Subtract the requested amount from the balance."""
     global balance
-    body = await request.json()
     try:
-        amount = _parse_amount(body)
+        amount = await _read_amount(request)
     except _BadRequest as exc:
         return _json_error(exc.message)
 
-    if amount > balance:
-        return _json_error("insufficient funds")
-
-    balance -= amount
+    async with _balance_lock:
+        if amount > balance:
+            return _json_error("insufficient funds")
+        balance -= amount
     return web.json_response({"balance": balance})
 
 

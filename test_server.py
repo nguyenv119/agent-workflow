@@ -5,8 +5,6 @@ All tests use aiohttp's TestClient via pytest-aiohttp fixtures so they run
 against a real in-process HTTP server without network overhead.
 """
 import pytest
-from aiohttp import web
-from aiohttp.test_utils import TestClient, TestServer
 
 
 # ---------------------------------------------------------------------------
@@ -17,12 +15,11 @@ from aiohttp.test_utils import TestClient, TestServer
 async def client(aiohttp_client):
     """
     Provides a fresh TestClient for each test, importing the app factory from
-    server.py.  A fresh import resets the in-memory balance to 0.0 so tests
-    are fully isolated.
+    server.py.  Resets in-memory balance to 0.0 via server.reset() before each
+    test, ensuring test isolation.
     """
-    # Re-import and reset balance for each test
     import server
-    server.balance = 0.0
+    server.reset()
     app = server.create_app()
     return await aiohttp_client(app)
 
@@ -178,6 +175,26 @@ async def test_deposit_with_non_numeric_amount_returns_400_with_error(client):
     assert resp.status == 400
     data = await resp.json()
     assert data == {"error": "invalid amount"}
+
+
+async def test_deposit_with_malformed_json_body_returns_400(client):
+    """
+    Verifies that a deposit request with a malformed (non-JSON) body is
+    rejected with HTTP 400 and an 'invalid request body' error.
+
+    This matters because a malformed body previously caused an unhandled
+    exception and a 500 response, leaking implementation details to callers.
+    The server must parse the body defensively and return a clear client error.
+
+    If this contract breaks, a caller sending raw text or a truncated JSON
+    payload to /deposit receives a 500 Internal Server Error instead of a
+    400 validation error, making it impossible to distinguish server bugs from
+    caller bugs.
+    """
+    resp = await client.post("/deposit", data="not-json", headers={"Content-Type": "application/json"})
+    assert resp.status == 400
+    data = await resp.json()
+    assert data == {"error": "invalid request body"}
 
 
 # ---------------------------------------------------------------------------
@@ -336,3 +353,23 @@ async def test_withdraw_with_non_numeric_amount_returns_400_with_error(client):
     assert resp.status == 400
     data = await resp.json()
     assert data == {"error": "invalid amount"}
+
+
+async def test_withdraw_with_malformed_json_body_returns_400(client):
+    """
+    Verifies that a withdrawal request with a malformed (non-JSON) body is
+    rejected with HTTP 400 and an 'invalid request body' error.
+
+    This matters because a malformed body previously caused an unhandled
+    exception and a 500 response, leaking implementation details to callers.
+    The server must parse the body defensively and return a clear client error.
+
+    If this contract breaks, a caller sending raw text or a truncated JSON
+    payload to /withdraw receives a 500 Internal Server Error instead of a
+    400 validation error, making it impossible to distinguish server bugs from
+    caller bugs.
+    """
+    resp = await client.post("/withdraw", data="not-json", headers={"Content-Type": "application/json"})
+    assert resp.status == 400
+    data = await resp.json()
+    assert data == {"error": "invalid request body"}
