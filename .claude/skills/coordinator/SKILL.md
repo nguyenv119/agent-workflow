@@ -229,6 +229,7 @@ to wait for explicit approval before proceeding to the next bead:
 BEAD [n] COMPLETE
 Tasks completed: <bead-id>: <bead-title>
 Tests passing: <quality gate commands that passed>
+Branch: <branch-name>
 PR: <url>
 Waiting for approval to proceed to bead [n+1].
 ```
