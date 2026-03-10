@@ -28,10 +28,38 @@ bd list --parent <id> --json
 ```
 
 **If ad-hoc description (no beads ID):**
-Create a beads issue first:
+
+Create a beads issue, then flesh it out so the implementer gets the same quality context as a planned bead:
+
 ```bash
 bd create "<description>" -t <task|bug|feature> -p 2 --json
 ```
+
+Before proceeding to Phase 2, explore the codebase to understand the change:
+1. Identify the files that need modification and read them
+2. Understand existing patterns and conventions in those areas
+3. Determine implementation steps
+
+Then update the bead with a full body:
+```bash
+cat <<'EOF' | bd update <id> --body-file - --json
+## Summary
+<what and why in 1-2 sentences>
+
+## Files to modify
+- <path> — <what changes>
+
+## Implementation steps
+1. <specific action>
+2. <specific action>
+...
+
+## Acceptance criteria
+- <observable outcome>
+EOF
+```
+
+This ensures the implementer spawns with rich context regardless of whether work came from `/plan` or ad-hoc.
 
 ---
 
