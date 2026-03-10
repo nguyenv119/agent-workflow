@@ -9,6 +9,8 @@ Follow these phases **in strict order**. Do not skip phases. Do not proceed unti
 
 This skill covers development only — no issue tracking, no pushes. The coordinator handles push and beads lifecycle. The implementer commits its own work.
 
+**When invoked with a `WORKTREE` path:** All commands run in that directory. The branch is already checked out — do not create a new one. Verify with `git -C <WORKTREE> branch --show-current` before starting.
+
 ## Principles
 
 - Never silently work around problems. Throw errors for missing env vars, invalid state, missing dependencies.
