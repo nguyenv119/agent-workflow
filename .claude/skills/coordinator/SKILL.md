@@ -83,6 +83,12 @@ bd dep add <later-bead-id> <earlier-bead-id> --json
 **Independent beads** (no file overlap, no beads deps) → spawn in parallel using the Agent tool.
 **Dependent beads** → process sequentially after their blockers complete.
 
+Before spawning any implementer, resolve the main repo root:
+```bash
+git worktree list --porcelain | grep '^worktree' | head -1 | awk '{print $2}'
+```
+All subsequent `isolation: "worktree"` Agent calls must originate from this path, not from inside a nested worktree.
+
 For each bead, spawn an implementer subagent using the Agent tool with `isolation: "worktree"`. Each implementer gets its own isolated copy of the repo branched from `origin/main`:
 
 ```
@@ -276,3 +282,4 @@ information. Phase 3 is a short wrap-up only.
 - Sharing a worktree across multiple beads — each bead gets its own isolated worktree
 - Running dependency installs concurrently across multiple worktrees
 - Fixing non-trivial review issues inline — file issues and spawn implementers instead
+- Creating worktrees while CWD is inside another worktree — always resolve and use the main repo root first
