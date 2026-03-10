@@ -38,26 +38,32 @@ bd show <bead-id> --json
 
 If any commit message contains `gh-issue:` or `Closes #N`, note the issue number — include `Closes #<N>` in the PR body.
 
-## 5. Check if a PR already exists
+## 5. Derive the repo slug
 
 ```bash
-gh pr list --head $BRANCH --json number,url --jq '.[0]'
+REPO=$(git remote get-url origin | sed 's|.*github\.com[:/]||' | sed 's|\.git$||')
+```
+
+## 6. Check if a PR already exists
+
+```bash
+gh pr list --repo $REPO --head $BRANCH --json number,url --jq '.[0]'
 ```
 
 If a PR already exists, note its number — you will **update** it instead of creating a new one.
 
-## 6. Generate the PR body and create or update
+## 7. Generate the PR body and create or update
 
 Read the diff and beads context, then generate a rich, accurate PR body.
 
 **If no PR exists — create:**
 ```bash
-gh pr create --title "<type>: <concise title>" --body "<generated body>"
+gh pr create --repo $REPO --title "<type>: <concise title>" --body "<generated body>"
 ```
 
 **If PR already exists — update:**
 ```bash
-gh pr edit <number> --title "<type>: <concise title>" --body "<generated body>"
+gh pr edit <number> --repo $REPO --title "<type>: <concise title>" --body "<generated body>"
 ```
 
 **PR body template:**

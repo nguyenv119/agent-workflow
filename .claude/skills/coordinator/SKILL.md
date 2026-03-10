@@ -83,7 +83,26 @@ bd dep add <later-bead-id> <earlier-bead-id> --json
 **Independent beads** (no file overlap, no beads deps) → spawn in parallel using the Agent tool.
 **Dependent beads** → process sequentially after their blockers complete.
 
-For each bead, spawn an implementer subagent using the Agent tool with `isolation: "worktree"`. Each implementer gets its own isolated copy of the repo branched from `origin/main`:
+#### Create persistent worktrees
+
+For each bead, create a named worktree **before** spawning its implementer. Run from the main repo root:
+
+```bash
+MAIN_ROOT=$(git worktree list --porcelain | grep '^worktree' | head -1 | awk '{print $2}')
+BRANCH="feature/bd-<id>-<slug>"
+# slug = first 4 words of title, kebab-cased, e.g. bd-42-add-user-login
+WORKTREE_PATH="${MAIN_ROOT}/../$(basename $MAIN_ROOT)-bd-<id>-<slug>"
+
+git -C "$MAIN_ROOT" worktree add "$WORKTREE_PATH" -b "$BRANCH" origin/main
+```
+
+The worktree persists until `/merged` cleans it up. Reviewers, fixes, and quality gates all run in the same worktree path.
+
+**CRITICAL:** Install dependencies in each worktree BEFORE spawning parallel implementers. If multiple worktrees share a package manager cache (e.g. `node_modules`), run installs sequentially, not concurrently.
+
+#### Spawn implementers
+
+For each bead, spawn an implementer subagent using the Agent tool (no `isolation` parameter — the worktree already exists):
 
 ```
 ROLE: Implementer
@@ -92,18 +111,17 @@ SKILL: Read and follow .claude/skills/implementer/SKILL.md
 TASK: <task-id>
 Read the task description: bd show <task-id> --json
 
+WORKTREE: <worktree_path>
+BRANCH: <branch>
+
 CONSTRAINTS:
 - Do NOT modify beads issues
-- As your FIRST act:
-  1. git fetch origin main
-  2. git checkout -b feature/bd-<id>-<slug> origin/main
-     (slug = first 4 words of title, kebab-cased, e.g. feature/bd-42-add-user-login)
-  3. Install project dependencies (see CLAUDE.md for the install command)
+- Your working directory is <worktree_path> — run all commands there
+- The branch <branch> is already checked out; do NOT create a new branch
+- Install project dependencies if needed (see CLAUDE.md for the install command)
 - Commit your work when implementer phases are complete (do NOT push)
 - Phase 5 of the implementer skill produces a structured summary — that is your final output
 ```
-
-**CRITICAL:** Install dependencies in each worktree BEFORE spawning parallel implementers. If multiple worktrees share a package manager cache (e.g. `node_modules`), run installs sequentially, not concurrently.
 
 Mark each bead as claimed before spawning its implementer:
 ```bash
@@ -174,12 +192,16 @@ git -C <worktree_path> push -u origin <branch>
 
 Then create or update the PR using the same logic as `/pr`:
 
-1. Read the diff: `git -C <worktree_path> log origin/main..<branch> --oneline` and `git -C <worktree_path> diff origin/main...<branch>`
-2. Pull bead context: `bd show <bead-id> --json`
-3. Check if a PR already exists: `gh pr list --head <branch> --json number,url --jq '.[0]'`
-4. Create or update:
-   - No PR: `gh pr create --title "<type>: <concise title>" --body "<generated body>"`
-   - Existing PR: `gh pr edit <number> --title "<type>: <concise title>" --body "<generated body>"`
+1. Derive the repo slug from origin:
+   ```bash
+   REPO=$(git -C <worktree_path> remote get-url origin | sed 's|.*github\.com[:/]||' | sed 's|\.git$||')
+   ```
+2. Read the diff: `git -C <worktree_path> log origin/main..<branch> --oneline` and `git -C <worktree_path> diff origin/main...<branch>`
+3. Pull bead context: `bd show <bead-id> --json`
+4. Check if a PR already exists: `gh pr list --repo $REPO --head <branch> --json number,url --jq '.[0]'`
+5. Create or update:
+   - No PR: `gh pr create --repo $REPO --title "<type>: <concise title>" --body "<generated body>"`
+   - Existing PR: `gh pr edit <number> --repo $REPO --title "<type>: <concise title>" --body "<generated body>"`
 
 **PR body template:**
 ```
@@ -272,7 +294,9 @@ information. Phase 3 is a short wrap-up only.
 - Pushing with failing tests or quality gate failures
 - Merging PRs (that's the human's job)
 - Watching CI (that's the human's job)
-- Cleaning up worktrees before merge (that's the human's job)
-- Sharing a worktree across multiple beads — each bead gets its own isolated worktree
+- Cleaning up worktrees before merge (that's the human's job — `/merged` handles it)
+- Sharing a worktree across multiple beads — each bead gets its own named worktree
 - Running dependency installs concurrently across multiple worktrees
 - Fixing non-trivial review issues inline — file issues and spawn implementers instead
+- Using `isolation: "worktree"` for implementers — worktrees are ephemeral and disappear before reviews run; always create worktrees manually with `git worktree add`
+- Omitting `--repo` from `gh` commands — always derive it from `git remote get-url origin`
