@@ -1,2 +1,5 @@
 node_modules/
 .beads/
+__pycache__/
+.venv/
+.env
