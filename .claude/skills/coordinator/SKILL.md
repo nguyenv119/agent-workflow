@@ -199,8 +199,8 @@ Then create or update the PR using the same logic as `/pr`:
 2. Read the diff: `git -C <worktree_path> log origin/main..<branch> --oneline` and `git -C <worktree_path> diff origin/main...<branch>`
 3. Pull bead context: `bd show <bead-id> --json`
 4. Check if a PR already exists: `gh pr list --repo $REPO --head <branch> --json number,url --jq '.[0]'`
-5. Create or update:
-   - No PR: `gh pr create --repo $REPO --title "<type>: <concise title>" --body "<generated body>"`
+5. Create or update (always pass `--head` and `--base` since the coordinator runs from the main repo, not the worktree):
+   - No PR: `gh pr create --repo $REPO --head <branch> --base main --title "<type>: <concise title>" --body "<generated body>"`
    - Existing PR: `gh pr edit <number> --repo $REPO --title "<type>: <concise title>" --body "<generated body>"`
 
 **PR body template:**
