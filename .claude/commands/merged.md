@@ -11,7 +11,8 @@ BRANCH="${ARGUMENTS:-$(git branch --show-current)}"
 ## 2. Verify the PR is merged
 
 ```bash
-gh pr view --head $BRANCH --json state,number,url --jq '{state: .state, number: .number, url: .url}'
+REPO=$(git remote get-url origin | sed 's|.*github\.com[:/]||' | sed 's|\.git$||')
+PR=$(gh pr list --repo $REPO --head $BRANCH --state all --json number,url,state --jq '.[0]')
 ```
 
 If `state` is not `"MERGED"`, stop and tell the user the PR has not been merged yet.
@@ -22,13 +23,13 @@ Extract bead IDs from commit messages on the branch:
 
 ```bash
 git fetch origin main
-git log origin/main..$BRANCH --format="%B" | grep "^Bead:" | sort -u
+git log origin/main..$BRANCH --format="%B" 2>/dev/null | grep "^Bead:" | sort -u
 ```
 
-Also check the PR body for `Bead:` lines:
+Also check the PR body for `Bead:` lines (use the PR number from step 2):
 
 ```bash
-gh pr view --head $BRANCH --json body --jq '.body' | grep "^Bead:"
+gh pr view --repo $REPO <pr-number> --json body --jq '.body' | grep "^Bead:"
 ```
 
 Collect the unique set of bead IDs from both sources.
