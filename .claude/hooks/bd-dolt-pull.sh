@@ -23,7 +23,7 @@ if ! printf '%s' "$COMMAND" | grep -qE '^bd( |$)'; then
 fi
 
 # Locate the Dolt directory. bd where returns the .beads directory.
-DOLT_DIR="$(bd where 2>/dev/null)/dolt"
+DOLT_DIR="$(bd where 2>/dev/null || true)/dolt"
 
 if [[ ! -d "$DOLT_DIR" ]]; then
   exit 0

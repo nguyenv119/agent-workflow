@@ -65,6 +65,7 @@ BDEOF
   local dirty_flag="$dirty"
   local net_fail="$network_fail"
 
+  # REVIEW: mocking core dependency — test may not reflect real dolt behavior
   # Fake `dolt` — records all invocations; simulates configurable behavior
   cat > "$_STUB_DIR/dolt" <<DOLTEOF
 #!/usr/bin/env bash
@@ -273,7 +274,7 @@ teardown_env
 #       push a stale commit over changes made by another machine.
 # What breaks: Every read triggers a push, causing unnecessary network traffic
 #              and potential race conditions in team settings.
-for readonly_cmd in show list search query count diff history status types blocked stale find-duplicates lint where version help doctor prime recall preflight children orphans; do
+for readonly_cmd in show list ready search query count diff history status types blocked stale find-duplicates lint where version help doctor prime recall preflight children orphans; do
   setup_env yes yes 0
   run_hook "$PUSH_HOOK" "{\"tool_input\": {\"command\": \"bd $readonly_cmd foo\"}}" || true
   PUSH_CALLS=$(count_calls "dolt push")
@@ -417,6 +418,13 @@ else
   run_test "settings.json: PreToolUse matcher is 'Bash'" fail
 fi
 
+# Test: PostToolUse hook matcher is "Bash"
+#
+# What: The PostToolUse matcher must be "Bash" (the tool name), not a command
+#       string pattern.
+# Why:  Claude Code only supports matching on tool name, not command content.
+#       Using a wrong matcher silently skips the hook entirely.
+# What breaks: Hooks are never fired — the entire sync system is silently dead.
 if jq -e '.hooks.PostToolUse[]? | select(.hooks[]?.command | contains("bd-dolt-push.sh")) | .matcher' "$SETTINGS" 2>/dev/null | grep -q "Bash"; then
   run_test "settings.json: PostToolUse matcher is 'Bash'" pass
 else

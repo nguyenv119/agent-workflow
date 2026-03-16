@@ -56,7 +56,7 @@ if ! printf '%s' "$COMMAND" | grep -qE '^bd( |$)'; then
 fi
 
 # Extract the bd subcommand (the first token after "bd").
-SUBCOMMAND="$(printf '%s' "$COMMAND" | awk '{print $2}')"
+SUBCOMMAND="$(printf '%s' "$COMMAND" | awk 'NR==1{print $2}')"
 
 # If the subcommand is in the read-only allowlist, no push needed.
 for readonly_cmd in "${READONLY_COMMANDS[@]}"; do
@@ -66,7 +66,7 @@ for readonly_cmd in "${READONLY_COMMANDS[@]}"; do
 done
 
 # Locate the Dolt directory. bd where returns the .beads directory.
-DOLT_DIR="$(bd where 2>/dev/null)/dolt"
+DOLT_DIR="$(bd where 2>/dev/null || true)/dolt"
 
 if [[ ! -d "$DOLT_DIR" ]]; then
   exit 0
