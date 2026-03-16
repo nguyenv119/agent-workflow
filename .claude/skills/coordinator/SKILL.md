@@ -250,8 +250,25 @@ Generated with Claude Code
 
 #### e. Approval Gate
 
-After creating or updating the PR, output the following block and use AskUserQuestion
-to wait for explicit approval before proceeding to the next bead:
+After creating or updating the PR, build a **Review Guide** before outputting the
+completion block. The guide tells the human which tests to read first for maximum
+understanding.
+
+**Building the Review Guide:**
+
+1. Collect all test files from the implementer's "Test coverage" summary section.
+2. For each test file, briefly scan it to identify:
+   - What it tests (unit, model, helper, integration, API, UI, etc.)
+   - Whether it imports or depends on fixtures/helpers/factories created by other new test files.
+3. Sort tests into a recommended reading order using these rules:
+   - **Foundational tests first**: unit tests for models, helpers, utilities, and shared fixtures — these establish the vocabulary.
+   - **Then feature tests**: tests for services, controllers, or business logic that build on the foundational layer.
+   - **Then integration/E2E tests last**: tests that compose multiple layers — these make the most sense after you've seen the parts.
+   - Within the same tier, order by dependency: if test B imports a factory defined alongside test A, list A before B.
+4. For each test, write one line: the file path and a short phrase explaining what it validates and why it's at this position in the order.
+
+Output the following block and use AskUserQuestion to wait for explicit approval
+before proceeding to the next bead:
 
 ```
 BEAD [n] COMPLETE
@@ -259,6 +276,14 @@ Tasks completed: <bead-id>: <bead-title>
 Tests passing: <quality gate commands that passed>
 Branch: <branch-name>
 PR: <url>
+
+Review guide (read tests in this order):
+1. <test-file-path> — <what it tests>; foundational because <reason>
+2. <test-file-path> — <what it tests>; builds on #1 by <reason>
+3. <test-file-path> — <what it tests>; integration layer combining <what>
+...
+(Implementation files are backup reading if tests leave questions open.)
+
 Waiting for approval to proceed to bead [n+1].
 ```
 
