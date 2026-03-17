@@ -103,6 +103,8 @@ This comment must be visible without reading the implementation. It flags that t
 
 ## Phase 2: Implement
 
+**Frontend work:** If the task involves building or modifying frontend UI (components, pages, layouts, styles), invoke the `/frontend-design` skill. It produces distinctive, production-grade interfaces — use it instead of writing frontend UI code from scratch.
+
 Make the production code changes. Keep changes minimal and focused on the task.
 
 ## Phase 3: Verify

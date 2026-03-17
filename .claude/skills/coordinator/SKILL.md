@@ -149,6 +149,7 @@ CONSTRAINTS:
 - Install project dependencies if needed (see CLAUDE.md for the install command)
 - Commit your work when implementer phases are complete (do NOT push)
 - Phase 5 of the implementer skill produces a structured summary — that is your final output
+- If this task involves frontend UI work, use the /frontend-design skill during Phase 2
 ```
 
 Mark each bead as claimed before spawning its implementer:
