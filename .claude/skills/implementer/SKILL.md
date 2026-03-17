@@ -19,6 +19,21 @@ This skill covers development only — no issue tracking, no pushes. The coordin
 - No optional chaining on required properties.
 - **Every production code change requires tests.** No exceptions for migrations, refactors, copy-paste, or "just wiring things up." If you wrote or modified production code, you must write tests for it. Never defer tests to a follow-up issue.
 
+### Mock Discipline
+
+Prefer real over mock. Before writing any mock, work through this hierarchy:
+
+1. **Real** — can you use the real dependency? A real SQLite database, a real HTTP server on localhost, a real in-process instance? If yes, use it.
+2. **In-memory** — if the real thing is too slow or has external network requirements, use an in-memory alternative (e.g., an in-memory database, a fake SMTP server). Wire it through a factory or dependency-injection pattern so the same code path runs in tests and production.
+3. **Mock** — acceptable only when the real dependency is genuinely unavailable: Chrome-only browser APIs in a jsdom environment, third-party SaaS APIs with no test mode, hardware devices.
+
+Rules that follow from this hierarchy:
+
+- **Before writing any mock, ask: "Can I use the real thing?"** If you reach for `jest.mock` or `unittest.mock` before asking this question, stop.
+- **Don't unit-test trivial glue code.** A 5-line fetch wrapper that calls an external API is not worth unit-testing in isolation — test it at the integration layer where the real HTTP call (or a local test server) exercises the full path.
+- **Use the factory pattern for routers and services** so tests can inject in-memory databases or fakes. The production wiring passes the real DB; the test wiring passes the in-memory one. Same code path, different dependency.
+- **Mocks require justification.** Any mock of a dependency that has a real or in-memory alternative must include a comment explaining why the alternative wasn't used.
+
 ## Phase 0: Announce Approach
 
 Before writing any code or tests, output a brief statement of your plan. This is informational — do **not** wait for approval. Continue immediately to Phase 1.
