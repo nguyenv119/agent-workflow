@@ -119,6 +119,15 @@ Flag as non-trivial any test that lacks a docstring or whose docstring only desc
 - **Do tests dig into mock internals?** Flag any test that asserts on `.mock.calls`, `.calledWith`, `mock.calls[0][0]`, or similar patterns. If the test needs to verify what was sent to a dependency, the production code should return or expose that information — fix the code, not the test.
 - Could a completely wrong implementation still pass these tests?
 
+#### Mock Discipline Violations
+
+Apply the **real > in-memory > mock** hierarchy. Flag each of the following as **non-trivial**:
+
+- **Mock of a replaceable dependency** — a dependency (database, HTTP client, queue) is mocked when a real or in-memory alternative exists and would exercise the same code path. The fix is to inject a real or in-memory alternative via a factory or constructor parameter.
+- **Unit test of trivial glue code** — a test isolates and unit-tests a function that is purely a thin wrapper (≤ ~10 lines, no branching logic) over an external call. These tests survive any correct reimplementation but fail on rename, making them maintenance cost with no safety benefit. The fix is to delete the unit test and cover the behavior at the integration layer.
+- **Missing factory/injection pattern** — production code constructs its own dependencies (e.g., `new Database()` inside a service constructor) with no way to inject alternatives, making it impossible to use a real or in-memory dependency in tests. Flag the production code, not just the test.
+- **Mock without justification** — a mock is used for a dependency that has a known real or in-memory alternative, and no comment explains why the alternative was not used. Acceptable justifications: "requires Chrome browser API", "third-party SaaS with no test mode", "hardware device". "Easier to mock" is not a justification.
+
 #### Integration Test Coverage
 - Are there integration tests that exercise real dependencies (database, external services)?
 - Do integration tests cover the critical paths end-to-end? (e.g., HTTP request → handler → service → database → response)
@@ -145,7 +154,7 @@ Flag as non-trivial any test that lacks a docstring or whose docstring only desc
 
 **Trivial**: misleading test name, minor missing edge case, docstring that describes behavior but omits the "what breaks" clause.
 
-**Non-trivial**: production file with no tests, tests that provide false confidence (all mocks, no real logic tested), missing error path coverage, no integration tests for database/store code, missing docstrings on tests covering core behavior, mock of a core dependency without the `# REVIEW` flag, tests that violate GIVEN/WHEN/THEN structure (no clear separation of setup/action/assert), WHEN clause that calls a mock instead of real production code, tests that dig into mock internals (`.mock.calls`, `.calledWith`), tests that assert multiple unrelated behaviors.
+**Non-trivial**: production file with no tests, tests that provide false confidence (all mocks, no real logic tested), missing error path coverage, no integration tests for database/store code, missing docstrings on tests covering core behavior, mock of a core dependency without the `# REVIEW` flag, tests that violate GIVEN/WHEN/THEN structure (no clear separation of setup/action/assert), WHEN clause that calls a mock instead of real production code, tests that dig into mock internals (`.mock.calls`, `.calledWith`), tests that assert multiple unrelated behaviors, mock discipline violations (mocking a replaceable dependency, unit-testing trivial glue, missing factory pattern, mock without justification).
 
 ## Report Your Outcome
 
@@ -173,4 +182,6 @@ Unflagged core dependency mocks:
 - <test-file:line — which dependency is mocked without REVIEW comment, or "None">
 Structure violations:
 - <test-file:line — missing GIVEN/WHEN/THEN, WHEN calls mock, mock archaeology, multi-behavior test, or "None">
+Mock discipline violations:
+- <test-file:line — which violation: replaceable dependency mocked, trivial glue unit-tested, missing factory pattern, or mock without justification; or "None">
 ```
