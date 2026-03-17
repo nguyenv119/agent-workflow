@@ -46,9 +46,38 @@ Write tests for the behavior you are about to change or add. Do this **before** 
 2. Write new test cases that describe the desired behavior after your change
 3. Run the tests using the appropriate test command (see **Quality Gates** in CLAUDE.md)
 
-### Test Documentation Standards
+### Test Structure Requirements
 
-Every test **must** follow these standards — they are not optional:
+Every test **must** follow these requirements — they are not optional. The goal is to minimize review surface: a reviewer reads GIVEN/WHEN/THEN and the docstring, never the implementation.
+
+#### GIVEN / WHEN / THEN Structure
+
+Every test body must have three visually distinct sections:
+
+```python
+def test_expired_token_returns_401():
+    """..."""
+    # GIVEN — the world the test lives in
+    expired_token = create_token(expires_at=datetime(2020, 1, 1))
+
+    # WHEN — call the real production function
+    response = authenticate(expired_token)
+
+    # THEN — verify the outcome
+    assert response.status_code == 401
+    assert response.body["error"] == "token_expired"
+```
+
+Rules:
+- **GIVEN** sets up the world. Mocks, fixtures, and state live here. Keep it boring — if your GIVEN is longer than your THEN, you're testing the wrong layer.
+- **WHEN** calls the real, imported production function. Never call a mock here. If WHEN calls a mock, the test tests nothing.
+- **THEN** asserts on observable return values or state. Never dig into mock internals (`.mock.calls`, `.calledWith`, `mock.calls[0][0]`). If you need to verify what was sent to a dependency, the production code should return or expose that information.
+
+If you can't express the test as "GIVEN X, WHEN Y happens, THEN Z is true" in one sentence, you're testing the wrong thing or testing too many things.
+
+#### One Behavior Per Test
+
+Each test name should complete: "it ______." If you need "and" in that sentence, split it into two tests.
 
 #### Docstrings
 
@@ -61,7 +90,7 @@ Every test must have a docstring (or language-equivalent block comment) that ans
 Motivate the **why before the how**. Do not merely describe what the code does; explain why it matters.
 
 ```python
-# Good — answers all three questions
+# Good — answers all three questions, structure is GIVEN/WHEN/THEN
 def test_second_call_returns_cached_result_without_re_executing():
     """
     Verifies that repeated calls for the same key return the cached result
@@ -73,6 +102,16 @@ def test_second_call_returns_cached_result_without_re_executing():
     If this contract breaks, callers that rely on idempotency will observe
     duplicate side effects and unexpected latency spikes.
     """
+    # GIVEN
+    cache = Cache()
+    cache.set("key", "cached_value")
+
+    # WHEN
+    result = cache.get("key")
+
+    # THEN
+    assert result == "cached_value"
+    assert cache.execution_count == 0  # no re-execution
 ```
 
 #### Test Naming
