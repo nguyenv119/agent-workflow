@@ -151,6 +151,54 @@ For example: `bd create --help` shows `--parent`, `--deps`, `--assignee`, etc.
 - Do NOT duplicate tracking systems
 - Do NOT clutter repo root with planning documents
 
+## Multi-Machine Collaboration
+
+Beads issues can be shared across machines via DoltHub, the hosted Dolt database service. When configured, every `bd` command automatically syncs: hooks pull the latest data before each read and push changes after each write.
+
+### One-Time Setup (per project)
+
+Run `/setup-remote` once to connect the project's beads database to DoltHub:
+
+```
+/setup-remote
+```
+
+This command will ask for your DoltHub remote path (e.g., `owner/database-name`), configure `origin`, and push the current beads data. Prerequisites:
+
+1. **Install Dolt**: https://docs.dolthub.com/introduction/installation
+2. **Authenticate**: Run `dolt login` and follow the prompts
+
+### How Sync Works
+
+Two Claude Code hooks in `.claude/hooks/` handle sync automatically:
+
+- **`bd-dolt-pull.sh`** (PreToolUse): Runs `dolt pull origin main` before every `bd` command, so the agent always reads the latest issues.
+- **`bd-dolt-push.sh`** (PostToolUse): Runs `dolt push origin main` after any `bd` write command (`create`, `update`, `close`, etc.), so changes propagate immediately.
+
+Both hooks **no-op when no remote is configured** — local-only projects are unaffected. Network errors are non-fatal; the hooks always exit 0 so a connectivity issue never blocks agent work.
+
+### Adding a New Machine
+
+On each additional machine:
+
+1. `dolt login` — authenticate with DoltHub
+2. Clone the project repo — the `.beads/` directory and hooks are already checked in
+3. Run `/setup-remote` — configure the same DoltHub remote URL
+
+After that, `bd` commands on the new machine auto-pull and auto-push just like the original machine.
+
+### Merge Conflicts
+
+If two machines push simultaneously, you may encounter a Dolt merge conflict. Resolve it the same way as a git conflict:
+
+```bash
+cd .beads/dolt
+dolt pull origin main   # triggers the conflict
+dolt conflicts resolve --ours .   # or --theirs, or edit manually
+dolt commit -m "resolve merge conflict"
+dolt push origin main
+```
+
 ## Landing the Plane (Session Completion)
 
 **When ending a work session**, you MUST complete ALL steps below. Work is NOT complete until `git push` succeeds.
