@@ -66,6 +66,16 @@ Don't just read the diff. Read the surrounding packages, existing implementation
 - Do package names follow existing conventions?
 - Are there circular or unnecessary dependencies between packages?
 
+#### Comment & Documentation Drift
+When the diff modifies code, check ALL comments in the modified file — not just comments adjacent to changed lines:
+- Do all comments in the file still accurately describe the current code?
+- Are there comments referencing removed variables, deleted branches, or old approaches?
+- Do function/method docstrings still match the actual signature and behavior?
+- Are TODO/FIXME comments still relevant, or do they reference already-completed work?
+- Check file-level docstrings and module-level comments — these are the most commonly missed because they're far from the changed lines
+
+**Why this matters:** Stale comments are worse than no comments — they actively mislead future developers and AI agents. A comment saying "Textract + email" when the primary output is now Slack will cause the next person to assume email is still the main path. File-level docstrings are especially dangerous because they're the first thing someone reads when opening the file.
+
 ### 4. Assess Severity
 
 **Trivial**: minor naming inconsistency, slightly different log format.

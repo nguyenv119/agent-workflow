@@ -189,7 +189,17 @@ Separate the output into production files and test files.
   - Regression test if this is a bug fix (a test that would have caught the original bug)
   - Boundary conditions
 
-### Step 3: Evaluate integration test needs
+### Step 3: Refactor cleanup audit
+
+If this change modifies existing functions (not just adds new ones), do a targeted scan for orphaned artifacts:
+
+1. **Dead variables** — In every function you modified, check that every declared variable is still read. Pay special attention to variables from the previous approach that may have survived the refactor.
+2. **Stale comments** — In every block you touched, verify that inline comments describe the current code, not the code that was there before your change.
+3. **Unused imports** — Check the top of every file you modified for imports that are no longer referenced.
+
+This step exists because refactors that change approach (e.g., truncation → chunking, sync → async, single call → loop) reliably leave behind scaffolding from the old approach. The new logic is correct but the old declarations linger.
+
+### Step 4: Evaluate integration test needs
 
 Integration tests are needed when changes affect:
 - Repository/persistence layer (database queries, data mapping)
@@ -199,7 +209,7 @@ Integration tests are needed when changes affect:
 
 If integration tests are needed, write them.
 
-### Step 4: Fill gaps
+### Step 5: Fill gaps
 
 Write any missing tests identified above. Then re-run quality gates.
 

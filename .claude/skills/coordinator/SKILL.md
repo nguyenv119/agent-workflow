@@ -163,7 +163,7 @@ The implementer's final output is a structured summary (Phase 5) containing the 
 
 #### a. Run Reviews in Parallel
 
-Reviews are **optional** for small, isolated changes (single-file fixes, typo corrections, config tweaks). For anything of any complexity — multi-file changes, new features, behavioral changes, refactors — reviews are **required**.
+Reviews are **always required**. Even single-file fixes can introduce orphaned code, stale comments, or partial-failure gaps — especially when fixing reviewer feedback (fix-on-fix commits). The only exception is non-code changes (documentation, config-only tweaks with no logic).
 
 Run all 3 reviewers in parallel. Reviews operate on the **worktree** (the branch is not pushed yet at this point):
 

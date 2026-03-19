@@ -135,6 +135,12 @@ Apply the **real > in-memory > mock** hierarchy. Flag each of the following as *
 - Do integration tests verify that queries and migrations work correctly together?
 - Is there an appropriate balance of unit vs integration tests? (Unit tests for logic, integration tests for I/O boundaries)
 
+#### Test Helper Extraction
+- Is the same assertion pattern (3+ lines) repeated across 3 or more tests? If so, it should be extracted into a named helper at the top of the describe block. Repeated inline patterns create inconsistency (some uses get `as any`, others get typed casts) and bloat the test file.
+- Are there type casts or assertion helpers that differ between test cases but do the same thing? (e.g., `as any[]` in one test, `as { text?: string }[]` in another)
+
+**Why this matters:** Repeated assertion patterns are a maintenance burden and a readability trap. When the pattern needs to change (e.g., the Block Kit structure evolves), every copy must be updated in lockstep. A named helper makes the intent clear and the change atomic.
+
 #### Edge Cases
 - Are error paths tested? (not just happy path)
 - Are boundary conditions covered? (empty input, max values, nil/null)

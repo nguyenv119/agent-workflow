@@ -64,6 +64,26 @@ For each file in the diff, check:
 - Are HTTP status codes appropriate?
 - Is error response format consistent?
 
+#### Refactor Artifacts
+When the diff modifies an existing function (not just adds new code), check for orphaned intent — code that was written for a reason but the reason was removed:
+- Variables declared but never read after the change
+- Comments describing code patterns that no longer exist (e.g., "1 footer" when the footer block was removed)
+- Imports for removed functionality
+- Conditional branches that became unreachable after refactoring
+- Parameters accepted but never used
+
+**Why this matters:** Refactors that change approach (e.g., truncation → chunking) are the #1 source of dead code and misleading comments. The new logic is correct, but scaffolding from the old approach lingers.
+
+**Tip:** Check whether the project's language tooling has strict unused-variable detection enabled (e.g., `noUnusedLocals` in TypeScript, `-Wall -Werror=unused-variable` in C/C++, `# noqa: F841` linting in Python, `_` prefix conventions in Go/Rust). If the project does NOT have this enabled, flag it as a non-trivial issue — it's a one-line config change that catches an entire class of dead-code bugs at compile/lint time rather than in review.
+
+#### Multi-Step Orchestration
+When a function makes multiple sequential async calls where each can fail independently:
+- Check whether ALL step failures contribute to the return value, not just the last one
+- Look for the pattern: intermediate failure is logged as a warning, final step succeeds → function returns success. The caller thinks everything worked, but actionable data was lost.
+- Flag if the function can "succeed" while producing a partial or useless result
+
+**Why this matters:** A Slack thread with summary stats but no mismatch details is useless. An API response that returns 200 but silently dropped half the writes is dangerous. Any function that orchestrates N steps and only checks step N is a bug.
+
 ### 4. Assess Severity
 
 **Trivial** (coordinator can fix inline): typos, minor style, simple error message improvements.
