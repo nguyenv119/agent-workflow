@@ -73,11 +73,7 @@ For each actionable item:
 
 1. Read the relevant code
 2. Make the fix
-3. **Refactor cleanup audit** — after every fix, check the modified function for:
-   - Dead variables (declared but never read after the change)
-   - Stale comments (describing the old code, not the new code)
-   - Unused imports
-   This step is mandatory. It exists because fix-on-fix commits are the #1 source of orphaned artifacts.
+3. **Refactor cleanup audit** — see `.claude/skills/standards/quality.md` § F. This step is mandatory; fix-on-fix commits are the #1 source of orphaned artifacts.
 
 ## Phase 3: Verify
 

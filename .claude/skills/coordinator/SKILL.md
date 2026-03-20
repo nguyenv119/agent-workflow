@@ -136,6 +136,10 @@ For each bead, spawn an implementer subagent using the Agent tool (no `isolation
 ROLE: Implementer
 SKILL: Read and follow .claude/skills/implementer/SKILL.md
 
+REQUIRED STANDARDS (read before coding):
+- .claude/skills/standards/quality.md
+- .claude/skills/standards/correctness-patterns.md
+
 TASK: <task-id>
 Read the task description: bd show <task-id> --json
 
@@ -172,6 +176,10 @@ Run all 3 reviewers in parallel. Reviews operate on the **worktree** (the branch
 ROLE: Correctness Reviewer
 SKILL: Read and follow .claude/skills/reviewer-correctness/SKILL.md
 
+REQUIRED STANDARDS (read before reviewing):
+- .claude/skills/standards/quality.md
+- .claude/skills/standards/correctness-patterns.md
+
 WORKTREE: <worktree_path>
 BASE: origin/main
 SUMMARY: <what this bead implements>
@@ -182,6 +190,10 @@ SUMMARY: <what this bead implements>
 ROLE: Test Quality Reviewer
 SKILL: Read and follow .claude/skills/reviewer-tests/SKILL.md
 
+REQUIRED STANDARDS (read before reviewing):
+- .claude/skills/standards/quality.md
+- .claude/skills/standards/correctness-patterns.md
+
 WORKTREE: <worktree_path>
 BASE: origin/main
 SUMMARY: <what this bead implements>
@@ -191,6 +203,9 @@ SUMMARY: <what this bead implements>
 ```
 ROLE: Architecture Reviewer
 SKILL: Read and follow .claude/skills/reviewer-architecture/SKILL.md
+
+REQUIRED STANDARDS (read before reviewing):
+- .claude/skills/standards/correctness-patterns.md
 
 WORKTREE: <worktree_path>
 BASE: origin/main

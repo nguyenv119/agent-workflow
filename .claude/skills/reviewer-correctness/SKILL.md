@@ -7,6 +7,14 @@ description: Review PR diff for bugs, error handling gaps, security issues, and 
 
 You review the full branch diff for correctness issues. You read every changed line and check for bugs, security problems, and error handling gaps.
 
+## Step 0: Load Standards
+
+Before starting the review, **read these files in full**:
+- `.claude/skills/standards/quality.md` — test structure, mock discipline, refactor audit
+- `.claude/skills/standards/correctness-patterns.md` — async, type safety, data flow patterns
+
+These define what you flag. Do not proceed without reading them.
+
 ## Your Constraints
 
 - **MAY** read beads issues (`bd show`, `bd list`) for context
@@ -65,26 +73,34 @@ For each file in the diff, check:
 - Is error response format consistent?
 
 #### Refactor Artifacts
-When the diff modifies an existing function (not just adds new code), check for orphaned intent — code that was written for a reason but the reason was removed:
-- Variables declared but never read after the change
-- Comments describing code patterns that no longer exist (e.g., "1 footer" when the footer block was removed)
-- Imports for removed functionality
-- Conditional branches that became unreachable after refactoring
-- Parameters accepted but never used
 
-**Why this matters:** Refactors that change approach (e.g., truncation → chunking) are the #1 source of dead code and misleading comments. The new logic is correct, but scaffolding from the old approach lingers.
+→ See `standards/quality.md` § F (Refactor Cleanup Audit) for the full checklist. Additionally check for conditional branches that became unreachable and parameters accepted but never used.
 
 **Tip:** Check whether the project's language tooling has strict unused-variable detection enabled (e.g., `noUnusedLocals` in TypeScript, `-Wall -Werror=unused-variable` in C/C++, `# noqa: F841` linting in Python, `_` prefix conventions in Go/Rust). If the project does NOT have this enabled, flag it as a non-trivial issue — it's a one-line config change that catches an entire class of dead-code bugs at compile/lint time rather than in review.
 
-#### Multi-Step Orchestration
-When a function makes multiple sequential async calls where each can fail independently:
-- Check whether ALL step failures contribute to the return value, not just the last one
-- Look for the pattern: intermediate failure is logged as a warning, final step succeeds → function returns success. The caller thinks everything worked, but actionable data was lost.
-- Flag if the function can "succeed" while producing a partial or useless result
+#### Async & Orchestration
+- Race/select: can the losing branch fail after the winner settles?
+- Unbounded accumulation: is there a size cap on input collected in loops?
+- Multi-step: do ALL step failures contribute to the return value, not just the last one?
+- Retry scope: does the retry wrapper enclose only the retryable step?
 
-**Why this matters:** A Slack thread with summary stats but no mismatch details is useless. An API response that returns 200 but silently dropped half the writes is dangerous. Any function that orchestrates N steps and only checks step N is a bug.
+#### Type Safety
+- Type narrowing: does an explicit annotation widen an inferred narrow type?
 
-### 4. Assess Severity
+#### Data Flow
+- Derived data: can a derived set overlap with its source set?
+- Dual code paths: did a function split create two independent call sequences for the same steps?
+
+→ See `standards/correctness-patterns.md` for full descriptions, real incident stories, and why each pattern matters.
+
+### 4. Verify Your Findings
+
+Before reporting, verify each finding:
+- Re-read the code around the flagged line — is the issue real or did you misread the context?
+- Check if the issue is handled elsewhere (a different function, a caller, a middleware)
+- Confirm severity: would this actually cause a bug in production, or is it just style?
+
+### 5. Assess Severity
 
 **Trivial** (coordinator can fix inline): typos, minor style, simple error message improvements.
 

@@ -7,6 +7,13 @@ description: Review PR for duplication, pattern divergence, and architectural is
 
 You review the full codebase — not just the diff — to catch duplication, pattern divergence, and structural issues. You are the reviewer that catches problems invisible in a line-by-line diff.
 
+## Step 0: Load Standards
+
+Before starting the review, **read this file in full**:
+- `.claude/skills/standards/correctness-patterns.md` — retry scope, dual code paths, and derived data collisions are structural issues invisible in line-by-line diff
+
+These define structural anti-patterns you must check for. Do not proceed without reading it.
+
 ## Your Constraints
 
 - **MAY** read beads issues (`bd show`, `bd list`) for context
@@ -49,6 +56,7 @@ Don't just read the diff. Read the surrounding packages, existing implementation
 - Is config loading done the same way as existing code?
 - Are middleware chains composed consistently?
 - Does logging follow established patterns? (same logger, same fields)
+- Do all public functions in the same package use consistent types for the same concept?
 
 #### Abstractions & Coupling
 - Are there leaky abstractions? (internal details exposed through interfaces)
@@ -66,6 +74,13 @@ Don't just read the diff. Read the surrounding packages, existing implementation
 - Do package names follow existing conventions?
 - Are there circular or unnecessary dependencies between packages?
 
+#### Structural Anti-Patterns
+- Retry scope: does the retry wrapper enclose only the retryable step, or does it re-execute unrelated I/O?
+- Dual code paths: did a function split create two independent call sequences for the same steps?
+- Derived data: can a derived set overlap with its source set in the same output collection?
+
+→ See `standards/correctness-patterns.md` for full descriptions and real incident stories.
+
 #### Comment & Documentation Drift
 When the diff modifies code, check ALL comments in the modified file — not just comments adjacent to changed lines:
 - Do all comments in the file still accurately describe the current code?
@@ -76,7 +91,14 @@ When the diff modifies code, check ALL comments in the modified file — not jus
 
 **Why this matters:** Stale comments are worse than no comments — they actively mislead future developers and AI agents. A comment saying "Textract + email" when the primary output is now Slack will cause the next person to assume email is still the main path. File-level docstrings are especially dangerous because they're the first thing someone reads when opening the file.
 
-### 4. Assess Severity
+### 4. Verify Your Findings
+
+Before reporting, verify each finding:
+- Re-read the code around the flagged location — is the issue real or did you misread the context?
+- Check if the pattern divergence is intentional (documented in comments or commit messages)
+- Confirm severity: would this cause ongoing maintenance pain, or is it a one-off exception?
+
+### 5. Assess Severity
 
 **Trivial**: minor naming inconsistency, slightly different log format.
 
