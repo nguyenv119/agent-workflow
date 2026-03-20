@@ -46,8 +46,8 @@ The coordinator checks: which tasks are unblocked? Only `bd-a3f8.1` — the othe
 For `bd-a3f8.1`, the coordinator:
 
 1. Creates a worktree and branch: `feature/bd-a3f8.1-users-table`
-2. Spawns an **implementer** (Sonnet) in that worktree — writes failing tests first, implements, verifies, audits coverage, commits
-3. Spawns three **reviewers** in parallel — correctness, test quality, architecture
+2. Spawns an **implementer** (Sonnet) in that worktree — loads shared standards, writes failing tests first, implements, verifies, audits coverage, commits
+3. Spawns three **reviewers** in parallel — each loads the same shared standards, then checks correctness, test quality, and architecture
 4. Fixes trivial findings, files issues for non-trivial ones
 5. Pushes and opens a PR
 
@@ -104,8 +104,8 @@ The coordinator creates a bead inline and runs the full cycle — worktree, impl
 
 /work bd-a3f8  (run 1 — only .1 is ready)
   coordinator creates worktree from origin/main
-  implementer: failing tests → implement → verify → coverage review → commit
-  3 reviewers in parallel: correctness, tests, architecture
+  implementer: load standards → failing tests → implement → verify → coverage review → commit
+  3 reviewers in parallel (each loads standards): correctness, tests, architecture
   fix findings → push → PR created with review guide → STOP
 
   you review, merge on GitHub

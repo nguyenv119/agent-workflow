@@ -43,6 +43,7 @@ By default, tasks live in a local database. For teams, `/setup-remote` connects 
 .claude/
   commands/         Slash command routers (plan.md, work.md, merged.md, etc.)
   skills/           Agent behavior definitions (coordinator, implementer, reviewers, planner)
+    standards/      Shared quality and correctness rules loaded by implementer and reviewers
   hooks/            Dolt remote sync scripts (auto-pull before bd, auto-push after bd writes)
   settings.json     Permissions, plugins, hooks
 AGENTS.md           Loaded into every session — workflow rules and bd usage
