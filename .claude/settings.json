@@ -29,6 +29,16 @@
             "timeout": 30
           }
         ]
+      },
+      {
+        "matcher": "Agent",
+        "hooks": [
+          {
+            "type": "command",
+            "command": ".claude/hooks/enforce-reviewer-standards.sh",
+            "timeout": 10
+          }
+        ]
       }
     ],
     "PostToolUse": [
