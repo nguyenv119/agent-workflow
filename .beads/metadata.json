@@ -1,0 +1,7 @@
+{
+  "database": "dolt",
+  "backend": "dolt",
+  "dolt_mode": "server",
+  "dolt_database": "agent_workflow",
+  "project_id": "ebc2b253-b17c-4fa3-841d-5bf173e238b4"
+}
