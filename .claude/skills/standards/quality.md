@@ -113,3 +113,35 @@ If a change modifies existing functions (not just adds new ones), do a targeted 
 3. **Unused imports** — Check the top of every modified file for imports no longer referenced.
 
 Refactors that change approach (e.g., truncation to chunking, sync to async, single call to loop) reliably leave behind scaffolding from the old approach. The new logic is correct but the old declarations linger.
+
+## G. Review Discipline
+
+These rules apply to all reviewers. They prevent false positives and focus reviewer output on findings that actually matter.
+
+### G1. What NOT to Flag
+
+Do not flag:
+
+- **Style and preferences** — indentation, naming conventions, comment phrasing, or anything the project's linter already enforces. If the linter doesn't catch it, it's probably not worth catching.
+- **Hypothetical problems** — "this could be a problem if X" where X isn't present in the code or the stated requirements. Flag actual problems, not imagined ones.
+- **Uncertain findings** — if you're not confident the issue is real after re-reading the surrounding context, delete the finding. A false positive wastes more time than it saves.
+- **Already-handled issues** — check whether the concern is addressed in a caller, middleware, or separate validation layer before flagging it in the function you're reviewing.
+- **Out-of-scope observations** — if something looks off but is entirely outside the changed files and unrelated to the PR's purpose, note it at most as an aside, not as a blocking issue.
+
+### G2. False-Positive Discipline
+
+**Delete any finding you're not confident about. False positives waste everyone's time.**
+
+Before including a finding in your report, ask:
+
+1. Have I re-read the full function, not just the flagged line?
+2. Could this be intentional — is there a comment, a commit message, or a prior pattern that explains it?
+3. Would this actually cause a bug or maintenance problem in practice, or does it just look slightly off?
+
+If the answer to question 3 is "just looks slightly off," remove the finding.
+
+### G3. Output Prioritization
+
+- **Most important findings first.** A reviewer who buries the critical bug under five style nits gets ignored.
+- **Maximum 5 non-trivial findings per review.** If you have more, you've miscategorized — re-audit your list and promote only the real problems.
+- **Every finding must include a file path and line number.** "There's a potential issue with error handling" is not a finding. "`handler/user.go:47` — error from `db.Get` is discarded; if the DB is down, the handler returns 200 with an empty response" is a finding.

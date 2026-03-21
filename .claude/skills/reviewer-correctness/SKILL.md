@@ -39,6 +39,27 @@ git diff <base-branch>...HEAD --stat
 git diff <base-branch>...HEAD
 ```
 
+### 1.5. Investigate Context
+
+Before reading the diff line by line, build up context on what changed and why.
+
+```bash
+# Commit history for changed files — understand what sequence of changes led here
+git log --oneline -10 -- <changed-files>
+
+# Before-state of a file — what did it look like before this PR?
+git show <base-branch>:<filepath>
+
+# Who calls the changed function — is there a broader blast radius?
+grep -r "function_name" --include="*.go" .   # adjust extension for your project
+```
+
+Answer these three questions before proceeding to the line-by-line review:
+
+1. **Why was this written this way?** Does the commit history or surrounding code explain a non-obvious choice? What you think is a bug may be a deliberate workaround for a known constraint.
+2. **Who calls this?** A change to an internal helper is lower risk than a change to a function called from 10 places. Knowing the callers tells you where a bug would surface.
+3. **What assumptions are encoded here?** Look for invariants assumed by the code (e.g., "this list is never empty," "this field is always set before this function runs"). If those assumptions are wrong, that's the real bug — not just the line that will panic.
+
 ### 2. Run Quality Gates
 
 Run quality gates per the **Quality Gates** table in CLAUDE.md. If any fail, note the specific failures.
@@ -99,6 +120,8 @@ Before reporting, verify each finding:
 - Re-read the code around the flagged line — is the issue real or did you misread the context?
 - Check if the issue is handled elsewhere (a different function, a caller, a middleware)
 - Confirm severity: would this actually cause a bug in production, or is it just style?
+
+→ See `standards/quality.md` § G (Review Discipline) for what not to flag, false-positive discipline, and output prioritization rules.
 
 ### 5. Assess Severity
 

@@ -9,10 +9,11 @@ You review the full codebase — not just the diff — to catch duplication, pat
 
 ## Step 0: Load Standards
 
-Before starting the review, **read this file in full**:
+Before starting the review, **read these files in full**:
+- `.claude/skills/standards/quality.md` — review discipline, false-positive rules, output prioritization
 - `.claude/skills/standards/correctness-patterns.md` — retry scope, dual code paths, and derived data collisions are structural issues invisible in line-by-line diff
 
-These define structural anti-patterns you must check for. Do not proceed without reading it.
+These define structural anti-patterns you must check for. Do not proceed without reading them.
 
 ## Your Constraints
 
@@ -41,6 +42,16 @@ git diff <base-branch>...HEAD --stat
 ### 2. Read the Full Codebase Context
 
 Don't just read the diff. Read the surrounding packages, existing implementations, and shared code. You need the full picture.
+
+### 2.5. Evaluate the Approach
+
+Before checking line-by-line patterns, step back and evaluate the solution at the architectural level.
+
+- **Is this the right solution?** Does it address the root cause, or is it a symptom fix? A symptom fix may be correct to ship now, but should be flagged so the team understands the trade-off.
+- **Is there a simpler way?** If you can see an approach that would accomplish the same goal with fewer moving parts, name it. Don't block the PR — but giving the implementer a cleaner path is valuable signal.
+- **What could go wrong?** Think adversarially: under what conditions does this approach break? Concurrency, empty inputs, missing config, downstream service degradation, gradual data growth?
+
+If the approach itself is wrong — not just the implementation details — say so clearly in your report. A finding like "this caches the full result set in memory; for the expected data volume this will OOM within 24 hours" is more valuable than ten line-level nits.
 
 ### 3. Review Checklist
 
@@ -97,6 +108,8 @@ Before reporting, verify each finding:
 - Re-read the code around the flagged location — is the issue real or did you misread the context?
 - Check if the pattern divergence is intentional (documented in comments or commit messages)
 - Confirm severity: would this cause ongoing maintenance pain, or is it a one-off exception?
+
+> See `standards/quality.md` § G (Review Discipline) for what not to flag, false-positive discipline, and output prioritization rules.
 
 ### 5. Assess Severity
 
