@@ -10,7 +10,7 @@ You review the full branch diff for correctness issues. You read every changed l
 ## Step 0: Load Standards
 
 Before starting the review, **read these files in full**:
-- `.claude/skills/standards/quality.md` — test structure, mock discipline, refactor audit
+- `.claude/skills/standards/quality.md` — test structure, mock discipline, refactor audit, review discipline
 - `.claude/skills/standards/correctness-patterns.md` — async, type safety, data flow patterns
 
 These define what you flag. Do not proceed without reading them.
