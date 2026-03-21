@@ -7,13 +7,9 @@ description: Review PR for duplication, pattern divergence, and architectural is
 
 You review the full codebase — not just the diff — to catch duplication, pattern divergence, and structural issues. You are the reviewer that catches problems invisible in a line-by-line diff.
 
-## Step 0: Load Standards
+## Step 0: Review Checklist
 
-Before starting the review, **read these files in full**:
-- `.claude/skills/standards/quality.md` — review discipline, false-positive rules, output prioritization
-- `.claude/skills/standards/correctness-patterns.md` — retry scope, dual code paths, and derived data collisions are structural issues invisible in line-by-line diff
-
-These define structural anti-patterns you must check for. Do not proceed without reading them.
+Your review checklist is provided in your prompt. Respond to each item individually in your output.
 
 ## Your Constraints
 
@@ -119,9 +115,32 @@ Before reporting, verify each finding:
 
 ## Report Your Outcome
 
+First, respond to every checklist item. Then state your verdict.
+
+### Checklist Results
+
+For each item in your prompt's checklist, respond with one of:
+- **N/A** — pattern doesn't apply to this diff (with brief reason)
+- **PASS** — checked, no issues found (with what was verified)
+- **FAIL** — issue found (with file path and description)
+
+```
+## Checklist Results
+
+1. **<Checklist Item Name>**: N/A — <reason it doesn't apply>
+2. **<Checklist Item Name>**: PASS — <what was checked and confirmed clean>
+3. **<Checklist Item Name>**: FAIL — <file path> — <description of issue>
+```
+
 ### On Approval
 
 ```
+## Checklist Results
+
+1. **Retry Scope**: N/A — no retry constructs in diff
+2. **Dual Code Paths**: PASS — single unified code path; no function splits introduced
+3. **Refactor Cleanup Audit**: PASS — no dead variables, stale comments, or unused imports
+
 ARCHITECTURE REVIEW: APPROVED
 Notes: <observations, or "None">
 ```
@@ -129,9 +148,15 @@ Notes: <observations, or "None">
 ### On Changes Needed
 
 ```
+## Checklist Results
+
+1. **Retry Scope**: FAIL — service/worker.go — retry wraps config read + API call + write; only the API call is retryable
+2. **Dual Code Paths**: N/A — no function splits in diff
+3. **Refactor Cleanup Audit**: PASS — no orphaned artifacts found
+
 ARCHITECTURE REVIEW: CHANGES NEEDED
 Issues:
-1. [severity: trivial|non-trivial] <description with specific file paths>
+1. [severity: non-trivial] service/worker.go — retry wrapper encloses non-idempotent write; flagged by Retry Scope checklist item
 2. ...
 Duplication found:
 - <file1> duplicates <file2>: <what's duplicated>

@@ -7,13 +7,9 @@ description: Review PR diff for bugs, error handling gaps, security issues, and 
 
 You review the full branch diff for correctness issues. You read every changed line and check for bugs, security problems, and error handling gaps.
 
-## Step 0: Load Standards
+## Step 0: Review Checklist
 
-Before starting the review, **read these files in full**:
-- `.claude/skills/standards/quality.md` — test structure, mock discipline, refactor audit, review discipline
-- `.claude/skills/standards/correctness-patterns.md` — async, type safety, data flow patterns
-
-These define what you flag. Do not proceed without reading them.
+Your review checklist is provided in your prompt. Respond to each item individually in your output.
 
 ## Your Constraints
 
@@ -131,9 +127,32 @@ Before reporting, verify each finding:
 
 ## Report Your Outcome
 
+First, respond to every checklist item. Then state your verdict.
+
+### Checklist Results
+
+For each item in your prompt's checklist, respond with one of:
+- **N/A** — pattern doesn't apply to this diff (with brief reason)
+- **PASS** — checked, no issues found (with what was verified)
+- **FAIL** — issue found (with file:line and description)
+
+```
+## Checklist Results
+
+1. **<Checklist Item Name>**: N/A — <reason it doesn't apply>
+2. **<Checklist Item Name>**: PASS — <what was checked and confirmed clean>
+3. **<Checklist Item Name>**: FAIL — <file:line> — <description of issue>
+```
+
 ### On Approval
 
 ```
+## Checklist Results
+
+1. **Race/Select Orphaned Failures**: N/A — no race/select constructs in diff
+2. **Unbounded Input Accumulation**: PASS — loop at handler.go:45 has MaxItems cap
+3. **Refactor Cleanup Audit**: PASS — no dead variables or stale comments found
+
 CORRECTNESS REVIEW: APPROVED
 Notes: <observations, or "None">
 ```
@@ -141,9 +160,15 @@ Notes: <observations, or "None">
 ### On Changes Needed
 
 ```
+## Checklist Results
+
+1. **Race/Select Orphaned Failures**: N/A — no race/select constructs in diff
+2. **Unbounded Input Accumulation**: PASS — loop at handler.go:45 has MaxItems cap
+3. **Refactor Cleanup Audit**: FAIL — dead variable `oldConfig` at service.go:82
+
 CORRECTNESS REVIEW: CHANGES NEEDED
 Issues:
-1. [severity: trivial|non-trivial] <file:line> — <description>
+1. [severity: non-trivial] service.go:82 — dead variable `oldConfig` from previous approach, flagged by Refactor Cleanup Audit checklist item
 2. ...
 ```
 
