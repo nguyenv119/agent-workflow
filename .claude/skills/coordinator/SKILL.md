@@ -169,6 +169,37 @@ The implementer's final output is a structured summary (Phase 5) containing the 
 
 Reviews are **always required**. Even single-file fixes can introduce orphaned code, stale comments, or partial-failure gaps — especially when fixing reviewer feedback (fix-on-fix commits). The only exception is non-code changes (documentation, config-only tweaks with no logic).
 
+**Before spawning reviewers, read both standards files fresh from the worktree** (do NOT rely on memory — they may have been updated):
+
+```bash
+cat <worktree_path>/.claude/skills/standards/quality.md
+cat <worktree_path>/.claude/skills/standards/correctness-patterns.md
+```
+
+Then construct a per-reviewer checklist by extracting the relevant sections per this mapping:
+
+| Reviewer | Sections to extract |
+|----------|-------------------|
+| Correctness | `correctness-patterns.md` ALL sections (Race/Select, Unbounded Accumulation, Multi-Step Orchestration, Retry Scope, Type Narrowing, Derived Data, Dual Code Paths) + `quality.md` §F (Refactor Cleanup Audit) + `quality.md` §G (Review Discipline) |
+| Test Quality | `quality.md` §A (Test Structure) + §B (Docstrings) + §C (Mock Discipline) + §D (Test Naming) + §E (Core Dependency Flagging) + §G (Review Discipline) |
+| Architecture | `correctness-patterns.md` Retry Scope + Dual Code Paths + Derived Data sections + `quality.md` §F (Refactor Cleanup Audit) + §G (Review Discipline) |
+
+Format each extracted section as a numbered checklist item, e.g.:
+
+```
+## Review Checklist (respond to each item)
+
+1. **Race/Select Orphaned Failures**: When a race or select construct picks a winner,
+   check whether the losing branch can fail after the winner settles. [correctness-patterns.md]
+2. **Unbounded Input Accumulation**: Do loops collecting input have size caps or
+   backpressure? [correctness-patterns.md]
+3. **Refactor Cleanup Audit**: In every modified function, check for dead variables,
+   stale comments, and unused imports. [quality.md §F]
+...
+```
+
+Inject the constructed checklist as `<checklist>` in each reviewer prompt below.
+
 Run all 3 reviewers in parallel. Reviews operate on the **worktree** (the branch is not pushed yet at this point):
 
 **Correctness Reviewer:**
@@ -176,9 +207,11 @@ Run all 3 reviewers in parallel. Reviews operate on the **worktree** (the branch
 ROLE: Correctness Reviewer
 SKILL: Read and follow .claude/skills/reviewer-correctness/SKILL.md
 
-REQUIRED STANDARDS (read before reviewing):
+Standards files (for reference):
 - .claude/skills/standards/quality.md
 - .claude/skills/standards/correctness-patterns.md
+
+<checklist> (correctness sections: all of correctness-patterns.md + quality.md §F + §G)
 
 WORKTREE: <worktree_path>
 BASE: origin/main
@@ -190,9 +223,10 @@ SUMMARY: <what this bead implements>
 ROLE: Test Quality Reviewer
 SKILL: Read and follow .claude/skills/reviewer-tests/SKILL.md
 
-REQUIRED STANDARDS (read before reviewing):
+Standards files (for reference):
 - .claude/skills/standards/quality.md
-- .claude/skills/standards/correctness-patterns.md
+
+<checklist> (test quality sections: quality.md §A + §B + §C + §D + §E + §G)
 
 WORKTREE: <worktree_path>
 BASE: origin/main
@@ -204,8 +238,10 @@ SUMMARY: <what this bead implements>
 ROLE: Architecture Reviewer
 SKILL: Read and follow .claude/skills/reviewer-architecture/SKILL.md
 
-REQUIRED STANDARDS (read before reviewing):
+Standards files (for reference):
 - .claude/skills/standards/correctness-patterns.md
+
+<checklist> (architecture sections: correctness-patterns.md Retry Scope + Dual Code Paths + Derived Data + quality.md §F + §G)
 
 WORKTREE: <worktree_path>
 BASE: origin/main
