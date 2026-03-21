@@ -83,11 +83,18 @@ Run the project's quality gates (typecheck, tests) per CLAUDE.md.
 
 ### 2. Run internal reviewers
 
-**This is mandatory, not optional.** Spawn all 3 reviewers in parallel on the worktree:
+**This is mandatory, not optional.** Follow the same reviewer spawning protocol as `coordinator/SKILL.md` §4a:
 
-- **Correctness Reviewer** — `.claude/skills/reviewer-correctness/SKILL.md`
-- **Test Quality Reviewer** — `.claude/skills/reviewer-tests/SKILL.md`
-- **Architecture Reviewer** — `.claude/skills/reviewer-architecture/SKILL.md`
+1. Read both standards files from the worktree:
+   - `<worktree>/.claude/skills/standards/quality.md`
+   - `<worktree>/.claude/skills/standards/correctness-patterns.md`
+2. Construct per-reviewer checklists using the section-to-reviewer mapping table in `coordinator/SKILL.md` §4a
+3. Spawn all 3 reviewers in parallel with checklists injected inline:
+   - **Correctness Reviewer** — `.claude/skills/reviewer-correctness/SKILL.md`
+   - **Test Quality Reviewer** — `.claude/skills/reviewer-tests/SKILL.md`
+   - **Architecture Reviewer** — `.claude/skills/reviewer-architecture/SKILL.md`
+
+Do NOT summarize the standards from memory — extract the actual section content and format as numbered checklist items. The `enforce-reviewer-standards.sh` hook will verify content signatures are present.
 
 If any reviewer finds issues, fix them before proceeding. Then re-run quality gates.
 
