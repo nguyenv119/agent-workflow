@@ -87,7 +87,16 @@ For every test file, check the following. Go into the implementation only when s
 - [ ] Concurrent scenarios tested if code is concurrent
 - [ ] Async patterns from `correctness-patterns.md` have coverage (race losers, partial orchestration failure, retry boundaries)
 
-### 3. Assess Severity
+### 3. Verify Your Findings
+
+Before reporting, verify each finding:
+- Re-read the test and its corresponding production code — is the issue real or did you misread the context?
+- Check if coverage exists elsewhere (a different test file, an integration suite)
+- Confirm severity: would this gap actually allow a bug to ship, or is it a minor omission?
+
+> See `standards/quality.md` § G (Review Discipline) for what not to flag, false-positive discipline, and output prioritization rules.
+
+### 4. Assess Severity
 
 **Trivial**: misleading test name, minor missing edge case, docstring that describes behavior but omits the "what breaks" clause.
 
