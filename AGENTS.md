@@ -16,7 +16,7 @@ for resolving larger issues in follow-on work.
 
 `/plan` explores the codebase, discusses tradeoffs with you, files beads issues, and runs an architectural plan review. Use it before `/work` for new epics.
 
-`/work` triages the work, creates per-bead worktrees and branches, runs automated reviews, pushes branches, and auto-creates a PR for each bead. Dependent beads are blocked until their blockers are merged and closed.
+`/work` triages the work, creates per-bead worktrees and branches, runs automated reviews with injected standards checklists, pushes branches, and auto-creates a PR for each bead. Dependent beads are blocked until their blockers are merged and closed. A PreToolUse hook enforces that reviewers receive their standards content — the coordinator cannot skip this step.
 
 `/pr` regenerates or updates the PR summary for a branch. Since the coordinator auto-creates PRs, use this when you want to refresh the summary after additional commits. It is idempotent — safe to run multiple times.
 

@@ -46,10 +46,11 @@ The coordinator checks: which tasks are unblocked? Only `bd-a3f8.1` — the othe
 For `bd-a3f8.1`, the coordinator:
 
 1. Creates a worktree and branch: `feature/bd-a3f8.1-users-table`
-2. Spawns an **implementer** (Sonnet) in that worktree — loads shared standards, writes failing tests first, implements, verifies, audits coverage, commits
-3. Spawns three **reviewers** in parallel — each loads the same shared standards, then checks correctness, test quality, and architecture
-4. Fixes trivial findings, files issues for non-trivial ones
-5. Pushes and opens a PR
+2. Spawns an **implementer** (Sonnet) in that worktree — writes failing tests first, implements, verifies, audits coverage, commits
+3. Reads both standards files (`quality.md`, `correctness-patterns.md`) and constructs a **per-reviewer checklist** — each reviewer gets only its relevant sections, injected directly into the prompt
+4. Spawns three **reviewers** in parallel — each responds to every checklist item with N/A/PASS/FAIL, then gives a verdict. A hook verifies the standards content was actually injected (not just referenced)
+5. Fixes trivial findings, files issues for non-trivial ones
+6. Pushes and opens a PR
 
 The handoff includes a **review guide** — which tests to read first, ordered by dependency:
 
@@ -104,8 +105,12 @@ The coordinator creates a bead inline and runs the full cycle — worktree, impl
 
 /work bd-a3f8  (run 1 — only .1 is ready)
   coordinator creates worktree from origin/main
-  implementer: load standards → failing tests → implement → verify → coverage review → commit
-  3 reviewers in parallel (each loads standards): correctness, tests, architecture
+  implementer: failing tests → implement → verify → coverage review → commit
+  coordinator reads standards files → builds per-reviewer checklists
+  3 reviewers in parallel (standards injected as checklist items):
+    correctness → N/A/PASS/FAIL per item → verdict
+    tests       → N/A/PASS/FAIL per item → verdict
+    architecture → N/A/PASS/FAIL per item → verdict
   fix findings → push → PR created with review guide → STOP
 
   you review, merge on GitHub
@@ -122,6 +127,27 @@ The coordinator creates a bead inline and runs the full cycle — worktree, impl
 ```
 
 The human gate between tasks is intentional. A broken foundation must be caught before dependent work builds on it.
+
+---
+
+## Standards Enforcement
+
+Shared standards (`quality.md`, `correctness-patterns.md`) encode quality rules learned from production incidents — mock discipline, refactor cleanup audit, race condition patterns, etc. The challenge: how do you guarantee a spawned reviewer agent actually uses them?
+
+**The approach:** Don't tell reviewers to "go read this file" — inject the relevant content directly into their prompt as a numbered checklist. A `PreToolUse` hook on the Agent tool verifies the coordinator actually did the injection by checking for content signatures (section headers from the standards files). If the coordinator tries to spawn a reviewer with ad-hoc instructions instead of the canonical checklists, the hook blocks the call.
+
+```
+Coordinator reads standards files
+  → extracts relevant sections per reviewer type
+  → injects as numbered checklist in reviewer prompt
+  → hook verifies content signatures before allowing spawn
+
+Reviewer responds to each checklist item
+  → N/A (doesn't apply), PASS (checked, clean), or FAIL (issue found)
+  → verdict: APPROVED or CHANGES NEEDED
+```
+
+This moves standards compliance from probabilistic (instruction-following) to deterministic (mechanical enforcement).
 
 ---
 
