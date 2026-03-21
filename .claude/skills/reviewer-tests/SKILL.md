@@ -7,13 +7,9 @@ description: Review PR test quality — meaningful coverage, edge cases, integra
 
 You evaluate whether the tests in a PR are meaningful. High coverage with bad tests is worse than low coverage — it creates false confidence.
 
-## Step 0: Load Standards
+## Step 0: Review Checklist
 
-Before starting the review, **read these files in full**:
-- `.claude/skills/standards/quality.md` — test structure, mock discipline, refactor audit
-- `.claude/skills/standards/correctness-patterns.md` — async, type safety, data flow patterns (needed to flag missing test coverage for these patterns)
-
-These define what you flag. Do not proceed without reading them.
+Your review checklist is provided in your prompt. Respond to each item individually in your output.
 
 ## Your Constraints
 
@@ -112,9 +108,32 @@ Before reporting, verify each finding:
 
 ## Report Your Outcome
 
+First, respond to every checklist item. Then state your verdict.
+
+### Checklist Results
+
+For each item in your prompt's checklist, respond with one of:
+- **N/A** — standard doesn't apply to this diff (with brief reason)
+- **PASS** — checked, no issues found (with what was verified)
+- **FAIL** — issue found (with test-file:line and description)
+
+```
+## Checklist Results
+
+1. **<Checklist Item Name>**: N/A — <reason it doesn't apply>
+2. **<Checklist Item Name>**: PASS — <what was checked and confirmed clean>
+3. **<Checklist Item Name>**: FAIL — <test-file:line> — <description of issue>
+```
+
 ### On Approval
 
 ```
+## Checklist Results
+
+1. **GIVEN/WHEN/THEN Structure**: PASS — all test bodies have visually distinct sections
+2. **Docstrings**: PASS — every test has a docstring answering what/why/what-breaks
+3. **Mock Discipline**: N/A — no mocks used; real in-memory dependencies throughout
+
 TEST QUALITY REVIEW: APPROVED
 Notes: <observations, or "None">
 ```
@@ -122,8 +141,14 @@ Notes: <observations, or "None">
 ### On Changes Needed
 
 ```
+## Checklist Results
+
+1. **GIVEN/WHEN/THEN Structure**: FAIL — store_test.go:34 — WHEN section calls mock directly, not production code
+2. **Docstrings**: PASS — all docstrings present and complete
+3. **Mock Discipline**: FAIL — store_test.go:28 — mocks DB without justification comment; in-memory alternative exists
+
 TEST QUALITY REVIEW: CHANGES NEEDED
 Issues:
-1. [severity: trivial|non-trivial] <test-file:line> — <description>
+1. [severity: non-trivial] store_test.go:34 — WHEN calls mock directly instead of real production function, flagged by GIVEN/WHEN/THEN Structure checklist item
 2. ...
 ```
