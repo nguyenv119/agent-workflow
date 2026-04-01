@@ -159,12 +159,12 @@ This project integrates **code-review-graph**, a tree-sitter-based structural co
 
 On your **first Claude Code session** in this project, a SessionStart hook automatically:
 1. Checks for Python 3 (exits gracefully if not found)
-2. Installs `code-review-graph` via `pip install --user` (10s)
-3. Runs `code-review-graph install` to write `.mcp.json` and git hooks (1s)
+2. Installs `code-review-graph` via `pip install --user` (~10s)
+3. Runs `code-review-graph install` to write `.mcp.json` (~1s)
 4. Copies `.code-review-graphignore` from the template if it doesn't exist
-5. Backgrounds the initial graph build (writes to `.code-review-graph/build.log`)
+5. Backgrounds the initial graph build, then starts the `watch` daemon for auto-rebuild on file changes
 
-On your **second session** and all subsequent sessions, the hook detects the existing installation and exits in under 100ms. The graph tools appear in Claude's toolbox immediately.
+On your **second session** and all subsequent sessions, the hook ensures the `watch` daemon is running (restarts it if the machine rebooted), then exits in under 100ms. The graph tools appear in Claude's toolbox immediately.
 
 ### Key Tools
 
@@ -190,6 +190,7 @@ If the auto-install hook fails for any reason, you can manually set up the graph
 pip install --user code-review-graph
 code-review-graph install
 code-review-graph build
+code-review-graph watch &   # starts the auto-rebuild daemon
 ```
 
 Then restart Claude Code. The graph tools will appear in the next session.
