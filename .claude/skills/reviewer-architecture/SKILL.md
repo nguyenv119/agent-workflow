@@ -39,6 +39,22 @@ git diff <base-branch>...HEAD --stat
 
 Don't just read the diff. Read the surrounding packages, existing implementations, and shared code. You need the full picture.
 
+#### Graph-Accelerated Context (when available)
+
+If codebase graph MCP tools are available (from code-review-graph), prefer them for structural queries — they return pre-computed results in milliseconds instead of requiring multiple Grep/Read cycles:
+
+| Query | Graph tool | Fallback (no graph) |
+|-------|-----------|---------------------|
+| "What does this codebase look like?" | `get_architecture_overview_tool` | Read package structure + key files |
+| "What's affected by this change?" | `get_impact_radius_tool` on changed files | Grep for callers + Read each result |
+| "Is this duplicated elsewhere?" | `semantic_search_nodes_tool` for similar entities | Grep for function/type names |
+| "What are the dependency layers?" | `list_communities_tool` + `get_community_tool` | Read import statements across packages |
+| "What calls this function?" | `get_impact_radius_tool` on the function | `grep -r "function_name"` |
+
+Use graph tools for structural discovery, then Read for the actual code content. The graph tells you WHERE to look; Read shows you WHAT's there.
+
+If graph tools are NOT available, proceed with the existing approach — read broadly using Grep/Glob/Read.
+
 ### 2.5. Evaluate the Approach
 
 Before checking line-by-line patterns, step back and evaluate the solution at the architectural level.
@@ -57,6 +73,8 @@ If the approach itself is wrong — not just the implementation details — say 
 - Are there utility functions that duplicate existing ones in shared packages?
 - Compare new code against reference directories — flag anything that looks like a copy.
 
+If graph tools are available, use `semantic_search_nodes_tool` to find structurally similar types/functions across the codebase.
+
 #### Pattern Consistency
 - Do new handlers follow the same pattern as existing handlers? (closures vs structs, parameter passing, response format)
 - Is error handling consistent? (same wrapping style, same error types)
@@ -65,11 +83,15 @@ If the approach itself is wrong — not just the implementation details — say 
 - Does logging follow established patterns? (same logger, same fields)
 - Do all public functions in the same package use consistent types for the same concept?
 
+If graph tools are available, use `get_architecture_overview_tool` to see established patterns before checking for divergence.
+
 #### Abstractions & Coupling
 - Are there leaky abstractions? (internal details exposed through interfaces)
 - Is there unnecessary coupling between packages?
 - Are dependencies flowing in the right direction? (handler → service → store, not reversed)
 - Are interfaces defined where they're used, not where they're implemented?
+
+If graph tools are available, use `get_impact_radius_tool` to verify dependency direction — it shows the full call graph.
 
 #### Missing Shared Code
 - Should any new types be in a shared package instead of a local one?
