@@ -27,6 +27,15 @@ Before proposing anything, understand the landscape:
    - Shared types and packages
    - Code that will be affected
    - Similar existing implementations to follow as reference
+
+**Graph-accelerated exploration (when available):**
+If codebase graph MCP tools are available, start with:
+- `get_architecture_overview_tool` — understand the codebase structure before diving in
+- `get_impact_radius_tool` on files likely to change — see the blast radius early
+- `semantic_search_nodes_tool` — find similar existing implementations to use as reference
+
+Then use Grep/Read for detailed content. The graph tells you where to look.
+
 3. Identify:
    - Tradeoffs and design decisions that need user input
    - Risks and potential pitfalls
