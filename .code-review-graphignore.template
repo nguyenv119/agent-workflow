@@ -1,0 +1,32 @@
+# code-review-graph exclusion patterns
+# Copy this to .code-review-graphignore and customize for your project
+
+# Dependencies
+node_modules/
+vendor/
+.venv/
+__pycache__/
+
+# Build outputs
+dist/
+build/
+out/
+.next/
+
+# Generated files
+*.generated.*
+*.min.js
+*.min.css
+
+# Binary and media files
+*.pdf
+*.png
+*.jpg
+*.jpeg
+*.svg
+*.gif
+*.ico
+
+# Internal directories
+.beads/dolt/**
+.code-review-graph/**

@@ -4,3 +4,4 @@ __pycache__/
 .venv/
 .env
 dolt/
+.code-review-graph/
