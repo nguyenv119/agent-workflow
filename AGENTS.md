@@ -151,6 +151,55 @@ For example: `bd create --help` shows `--parent`, `--deps`, `--assignee`, etc.
 - Do NOT duplicate tracking systems
 - Do NOT clutter repo root with planning documents
 
+## Codebase Graph (Auto-Installed)
+
+This project integrates **code-review-graph**, a tree-sitter-based structural codebase analyzer that provides 23 MCP tools for pre-computed graph queries. It delivers an average **8.2x token reduction** for codebase exploration compared to reading files directly.
+
+### Auto-Install Behavior
+
+On your **first Claude Code session** in this project, a SessionStart hook automatically:
+1. Checks for Python 3 (exits gracefully if not found)
+2. Installs `code-review-graph` via `pip install --user` (10s)
+3. Runs `code-review-graph install` to write `.mcp.json` and git hooks (1s)
+4. Copies `.code-review-graphignore` from the template if it doesn't exist
+5. Backgrounds the initial graph build (writes to `.code-review-graph/build.log`)
+
+On your **second session** and all subsequent sessions, the hook detects the existing installation and exits in under 100ms. The graph tools appear in Claude's toolbox immediately.
+
+### Key Tools
+
+| Tool | Purpose |
+|------|---------|
+| `get_impact_radius_tool` | Given a file or function, return all callers, transitive dependencies, and affected tests |
+| `get_review_context_tool` | Get focused context for reviewing a specific file or set of changes |
+| `semantic_search_nodes_tool` | Find structurally similar types, functions, or patterns across the codebase |
+| `get_architecture_overview_tool` | Get high-level architecture summary: packages, layers, and key entry points |
+| `detect_changes_tool` | Detect what changed between two commits and return affected nodes |
+
+See the full tool list at [code-review-graph documentation](https://github.com/kodu-ai/code-review-graph).
+
+### Graceful Degradation
+
+If Python is not installed on your machine, the hook exits instantly without errors. Claude Code continues to work normally, and all skills fall back to their existing Grep/Glob/Read workflows. The graph tools are an optimization, not a requirement.
+
+### Manual Setup Fallback
+
+If the auto-install hook fails for any reason, you can manually set up the graph:
+
+```bash
+pip install --user code-review-graph
+code-review-graph install
+code-review-graph build
+```
+
+Then restart Claude Code. The graph tools will appear in the next session.
+
+### Customizing Exclusions
+
+The hook copies `.code-review-graphignore.template` to `.code-review-graphignore` on first setup. Edit `.code-review-graphignore` to exclude additional files or directories from the graph (e.g., large generated files, third-party code, test fixtures).
+
+Common exclusions are already included: `node_modules/`, `vendor/`, `.venv/`, `dist/`, `build/`, `*.generated.*`, `*.min.js`, and binary/media files.
+
 ## Multi-Machine Collaboration
 
 Beads issues can be shared across machines via DoltHub, the hosted Dolt database service. When configured, every `bd` command automatically syncs: hooks pull the latest data before each read and push changes after each write.

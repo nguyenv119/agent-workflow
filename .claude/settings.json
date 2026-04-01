@@ -6,7 +6,8 @@
     ]
   },
   "enabledMcpjsonServers": [
-    "beads"
+    "beads",
+    "code-review-graph"
   ],
   "hooks": {
     "SessionStart": [
@@ -15,6 +16,15 @@
           {
             "type": "command",
             "command": "cat AGENTS.md"
+          }
+        ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": ".claude/hooks/ensure-code-review-graph.sh",
+            "timeout": 60
           }
         ]
       }
