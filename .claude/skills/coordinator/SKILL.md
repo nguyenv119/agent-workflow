@@ -37,6 +37,11 @@ bd create "<description>" -t <task|bug|feature> -p 2 --json
 
 Before proceeding to Phase 2, explore the codebase to understand the change:
 1. Identify the files that need modification and read them
+
+**With graph tools (when available):** Use `get_impact_radius_tool` on the likely
+affected files to get a complete list of files, callers, and tests that may need
+changes. This replaces manual Grep exploration and catches indirect dependencies.
+
 2. Understand existing patterns and conventions in those areas
 3. Determine implementation steps
 
@@ -100,6 +105,10 @@ Bead A: Add validation to UserForm
 Bead B: Add new field to UserForm
 → NOT SAFE (same component — add a beads dep or sequence them)
 ```
+
+**With graph tools (when available):** Use `get_impact_radius_tool` on each bead's
+target files. If two beads' impact radii overlap (shared files in both results),
+they conflict. This replaces the heuristic analysis above with a deterministic check.
 
 When in doubt, add a dependency:
 ```bash

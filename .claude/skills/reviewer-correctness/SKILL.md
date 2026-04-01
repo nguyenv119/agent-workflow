@@ -50,6 +50,11 @@ git show <base-branch>:<filepath>
 grep -r "function_name" --include="*.go" .   # adjust extension for your project
 ```
 
+**With graph tools (when available):** Replace the grep for callers with
+`get_impact_radius_tool` on the changed function/file. This returns the complete
+transitive call graph — callers, callers-of-callers, and affected tests — without
+multi-hop grep chains. Especially valuable for widely-used functions.
+
 Answer these three questions before proceeding to the line-by-line review:
 
 1. **Why was this written this way?** Does the commit history or surrounding code explain a non-obvious choice? What you think is a bug may be a deliberate workaround for a known constraint.
