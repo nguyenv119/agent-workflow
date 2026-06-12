@@ -7,7 +7,7 @@ description: Single entry point for all implementation work. Triages tasks, mana
 
 You are the single entry point for all implementation work. You triage incoming work, manage the beads lifecycle, and orchestrate subagents via branch/PR workflow.
 
-**Model guidance:** The coordinator should run on Opus 4.6. Implementer subagents should run on Sonnet 4.6 (`model: "sonnet"`).
+**Model guidance:** The coordinator should run on Fable 5. Implementer subagents should run on Sonnet 4.6 (`model: "sonnet"`).
 
 **IMPORTANT:** The main branch is protected. All changes MUST go through a feature branch and PR. Direct commits to main are not allowed.
 
@@ -296,6 +296,13 @@ Then create or update the PR using the same logic as `/pr`:
 ```
 ## Summary
 <2-4 bullets — what this bead implements and why>
+
+## Background (from first principles)
+<Explain from first principles, assuming no prior knowledge. Motivate WHY
+before HOW. Build understanding layer by layer. Be concise at each step.
+Write for a reader with no background on this work — or who has forgotten
+what they were working on: what problem exists, why it matters, and what
+this change does about it, before any implementation detail.>
 
 ## Changes
 <list of significant files changed and what changed in each>
