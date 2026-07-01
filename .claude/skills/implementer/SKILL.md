@@ -26,10 +26,26 @@ Prevention is better than detection — knowing these patterns avoids creating t
 - No type casts that bypass the type system.
 - No optional chaining on required properties.
 - **Every production code change requires tests.** No exceptions for migrations, refactors, copy-paste, or "just wiring things up." If you wrote or modified production code, you must write tests for it. Never defer tests to a follow-up issue.
+- **Delegate quality-gate runs to a test-runner sub-agent.** Verbose test output consumes your context window — never run the gates directly with Bash. See "Running quality gates" below.
 
 ### Mock Discipline
 
 → See `.claude/skills/standards/quality.md` § C (Mock Discipline) for the full real > in-memory > mock hierarchy and rules.
+
+### Running quality gates
+
+Whenever a phase says to run tests or quality gates, do **not** run them directly — spawn a test-runner sub-agent so the noisy output stays out of your context. Use the Agent tool with `subagent_type: "claude"` and `model: "haiku"`:
+
+```
+ROLE: Test Runner
+SKILL: Read and follow .claude/skills/test-runner/SKILL.md
+
+WORKTREE: <your worktree path>
+COMMANDS:
+- <the quality-gate commands from the Quality Gates / Verification table in CLAUDE.md that match the code you changed>
+```
+
+The sub-agent replies `RESULT: PASS` or `RESULT: FAIL` with a trimmed error summary. On FAIL, read the summary, fix the issue, and re-delegate. Only run a gate directly in your own context if you need to debug a failure interactively.
 
 ## Phase 0: Announce Approach
 
@@ -56,7 +72,7 @@ Write tests for the behavior you are about to change or add. Do this **before** 
 
 1. Read the relevant production code to understand current behavior
 2. Write new test cases that describe the desired behavior after your change
-3. Run the tests using the appropriate test command (see **Quality Gates** in CLAUDE.md)
+3. Verify the new tests fail by delegating to a test-runner sub-agent (see "Running quality gates" above)
 
 ### Test Structure Requirements
 
@@ -70,13 +86,19 @@ Every test **must** follow those standards — they are not optional. The goal i
 
 **Frontend work:** If the task involves building or modifying frontend UI (components, pages, layouts, styles), invoke the `/frontend-design` skill. It produces distinctive, production-grade interfaces — use it instead of writing frontend UI code from scratch.
 
+**Minimal-code discipline (ponytail):** Before writing production code, apply the `ponytail` skill. Climb its ladder and stop at the first rung that holds: (1) does this need to exist at all? (YAGNI) (2) stdlib does it? (3) native platform feature covers it? (4) already-installed dependency solves it? (5) can it be one line? (6) only then, the minimum code that works. Ship the shortest diff that fully does the task. Mark deliberate simplifications with a `ponytail:` comment naming the upgrade path. This does **not** relax anything else in this skill: input validation at trust boundaries, error handling that prevents data loss, security, accessibility basics, and the test requirements below are never simplified away — lazy means writing less code, not cutting the checks.
+
 Make the production code changes. Keep changes minimal and focused on the task.
 
 ## Phase 3: Verify
 
-Run quality gates matching the code you changed. See the **Quality Gates** table in CLAUDE.md for all targets.
+Run quality gates matching the code you changed by delegating to a test-runner sub-agent (see "Running quality gates" above). Pull the command list from the **Quality Gates** / Verification table in CLAUDE.md.
 
-**Gate:** All quality gate commands pass with zero errors. If any fails, fix the issues before proceeding.
+**Gate:** The sub-agent reports `RESULT: PASS`. If it reports FAIL, read the error summary, fix the issues, and re-delegate before proceeding.
+
+### Real-acceptance artifact (not just mocks)
+
+The unit/quality gates above are the **CI gate** — they prove the code is shaped right. They are **not** the acceptance bar (see `standards/quality.md` §H). The bead's `## Real acceptance` names a check **against reality**: a live API/model call, real corpus data, or a real dev-DB integration. If that runnable artifact doesn't exist yet, **build it** — a small `*.live-check.ts` script or a real integration test — so the coordinator can run it for real. Do **not** run a live check needing credentials you weren't given; leave it runnable and record its path + exact command in your Phase 5 summary.
 
 ## Phase 4: Test Coverage Review
 
@@ -116,7 +138,7 @@ If integration tests are needed, write them.
 
 ### Step 5: Fill gaps
 
-Write any missing tests identified above. Then re-run quality gates.
+Write any missing tests identified above. Then re-run quality gates via the test-runner sub-agent (see "Running quality gates" above).
 
 **Gate:** All tests pass, including your new coverage additions. If you identified no gaps in Steps 2-3, document your reasoning (e.g., "Changes were purely deletions; added regression tests in Phase 1 confirming removed elements no longer render").
 
@@ -148,6 +170,9 @@ Commit: <full commit hash, or "N/A" on failure>
 
 ## Test coverage
 - <1 bullet per test file added/modified, what it covers>
+
+## Real acceptance
+- <the runnable real-acceptance check (path + exact command), and its output if you ran it; else "left for coordinator to run — needs <creds/data>">
 
 ## Concerns
 - <anything the coordinator should know, or "None">

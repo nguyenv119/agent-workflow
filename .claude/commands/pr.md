@@ -71,6 +71,13 @@ gh pr edit <number> --repo $REPO --title "<type>: <concise title>" --body "<gene
 ## Summary
 <2-4 bullets — what this PR does and why, written from the diff>
 
+## Background (from first principles)
+<Explain from first principles, assuming no prior knowledge. Motivate WHY
+before HOW. Build understanding layer by layer. Be concise at each step.
+Write for a reader with no background on this work — or who has forgotten
+what they were working on: what problem exists, why it matters, and what
+this change does about it, before any implementation detail.>
+
 ## Changes
 <list of significant files changed and what changed in each>
 

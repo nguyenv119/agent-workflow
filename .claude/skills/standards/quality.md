@@ -111,6 +111,11 @@ If a change modifies existing functions (not just adds new ones), do a targeted 
 1. **Dead variables** — In every modified function, check that every declared variable is still read. Pay special attention to variables from the previous approach that survived the refactor.
 2. **Stale comments** — In every touched block, verify that inline comments describe the current code, not the code that was there before.
 3. **Unused imports** — Check the top of every modified file for imports no longer referenced.
+4. **Provenance claims** — If a comment, docstring, or commit message makes a claim about where data, values, or rules come from (e.g. *"sourced from X"*, *"derived from Y"*, *"copied from the spec"*), verify that the claim is true for every item listed. A comment that says "these 5 values came from N" must actually have all 5 traceable to N. False provenance erodes trust in every other comment in the file.
+
+   **Why this matters:** Sourcing claims are how future readers decide what's safe to change. If the claim is partially false, a reader who removes a phrase they think is "attested" will silently break the assumption the comment created. The fix is either to make the claim true (add the missing attribution), trim the list to what's actually attested, or rewrite the comment to separate attested from proposed items.
+
+   **Real pattern:** A YAML comment said *"Sourced from confirmed-qualified handles @A, @B, @C"* above a 5-item list, but only 3 of the 5 items were attested by those handles' fixture notes — the other 2 were proposed-adjacent guesses. An external reviewer flagged the claim; the fix was to split the comment into "attested" vs "proposed" subsections.
 
 Refactors that change approach (e.g., truncation to chunking, sync to async, single call to loop) reliably leave behind scaffolding from the old approach. The new logic is correct but the old declarations linger.
 
@@ -145,3 +150,14 @@ If the answer to question 3 is "just looks slightly off," remove the finding.
 - **Most important findings first.** A reviewer who buries the critical bug under five style nits gets ignored.
 - **Maximum 5 non-trivial findings per review.** If you have more, you've miscategorized — re-audit your list and promote only the real problems.
 - **Every finding must include a file path and line number.** "There's a potential issue with error handling" is not a finding. "`handler/user.go:47` — error from `db.Get` is discarded; if the DB is down, the handler returns 200 with an empty response" is a finding.
+
+## H. Acceptance vs. CI gate — real over mock, at the door
+
+Mocks and unit tests are the **fast CI gate**: they prove the code is shaped right and catch regressions cheaply. They are **never the acceptance bar.** A bead is "done" only when a **real-acceptance check** passes — the real dependency exercised for real (a live API/model call, real corpus data, a real dev-DB integration) producing observable evidence (counts, shapes, the actual values).
+
+Why this is its own rule: a mock returns whatever you told it to. A mock-injected embedder test passes even if the model id, API auth, `inputType`, and dimensionality are all wrong. *Lived example:* a local `db:verify` reported "no drift" and every unit test was green, while CI's from-zero migrate — the real check — failed on the same change.
+
+1. **Every bead carries a `## Real acceptance` check.** The planner emits it; the coordinator runs it before the approval gate and puts its output in the `BEAD COMPLETE` block.
+2. **Mocks gate CI; reality gates "done."** Keep both — never let a green mock suite stand in for the real check.
+3. **Migrations/schema:** "verified" means **applied from a blank / from-zero DB on real Postgres** (CI `migration-check` + the preview deploy migrate), NOT a local `db:verify` on a branch that already has the migration applied — a self-check on already-migrated state cannot see a duplicate/ordering bug.
+4. If reality genuinely cannot be exercised for a change, **say so explicitly** and name the closest real proxy — don't silently fall back to "unit tests pass."

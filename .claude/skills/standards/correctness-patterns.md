@@ -79,3 +79,15 @@ These patterns are language-agnostic — they describe structural problems, not 
 **Why this matters:** Before the refactor, there was one code path that did steps A → B → C. After the split, path 1 does A → B and path 2 does A → C. Step B is missing from path 2 and step C is missing from path 1. Both paths "work" in isolation but produce incomplete results.
 
 **Real pattern:** A notification function is split into "urgent" and "normal" paths. The urgent path sends the message but skips the audit log. The normal path logs but uses a stale template. Neither path does everything the original did.
+
+---
+
+### Documented Contract Drift
+
+**What to look for:** A change to a file whose shape is documented elsewhere (README, slash command markdown, OpenAPI spec, schema file, sibling docs). Cross-check that every field name, value type, and required key in the change matches what the documentation says — exactly, including singular/plural and string-vs-bool.
+
+**Why this matters:** When a data file or config file is consumed by code that follows a documented schema, an off-by-one-letter rename (`note` → `notes`) or a type swap (`"QUALIFIED"` → `true`) breaks the consumer silently. A lenient runtime (an LLM judge, a permissive parser, a script with `dict.get(key, default)`) can mask the break with passing-looking output — until a stricter reader (CI gate, second consumer, audit script) reports the opposite of what the file claims. The drift is invisible to typecheckers because the documentation lives in prose, not in code.
+
+**Real pattern:** A fixture file shipped with `{"expected_qualified": true, "notes": "..."}` while the README documents `{"expected": "QUALIFIED", "note": "..."}`. The slash-command-as-judge accepted the variant via in-context interpretation and reported `3/3` accuracy. A deterministic CI check reading `entry["expected"]` would have reported `0/3` — the opposite verdict — without flagging the missing key.
+
+**How to check:** When reviewing any change to a file shape (JSON, YAML, fixture, schema, config), grep the repo for documentation of that file's contract — typically a README section, a slash command markdown, or sibling docs in the same directory. Compare field names character-for-character, including singular/plural and casing. If the contract isn't documented anywhere, flag that as a finding too — undocumented data shapes invite this drift.

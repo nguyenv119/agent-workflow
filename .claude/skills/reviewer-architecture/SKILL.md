@@ -37,23 +37,7 @@ git diff <base-branch>...HEAD --stat
 
 ### 2. Read the Full Codebase Context
 
-Don't just read the diff. Read the surrounding packages, existing implementations, and shared code. You need the full picture.
-
-#### Graph-Accelerated Context (when available)
-
-If codebase graph MCP tools are available (from code-review-graph), prefer them for structural queries — they return pre-computed results in milliseconds instead of requiring multiple Grep/Read cycles:
-
-| Query | Graph tool | Fallback (no graph) |
-|-------|-----------|---------------------|
-| "What does this codebase look like?" | `get_architecture_overview_tool` | Read package structure + key files |
-| "What's affected by this change?" | `get_impact_radius_tool` on changed files | Grep for callers + Read each result |
-| "Is this duplicated elsewhere?" | `semantic_search_nodes_tool` for similar entities | Grep for function/type names |
-| "What are the dependency layers?" | `list_communities_tool` + `get_community_tool` | Read import statements across packages |
-| "What calls this function?" | `get_impact_radius_tool` on the function | `grep -r "function_name"` |
-
-Use graph tools for structural discovery, then Read for the actual code content. The graph tells you WHERE to look; Read shows you WHAT's there.
-
-If graph tools are NOT available, proceed with the existing approach — read broadly using Grep/Glob/Read.
+Don't just read the diff. Read the surrounding packages, existing implementations, and shared code. You need the full picture. Read broadly using Grep/Glob/Read.
 
 ### 2.5. Evaluate the Approach
 
