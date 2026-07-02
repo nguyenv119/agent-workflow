@@ -117,7 +117,7 @@ Key things to remember:
 
 ### Capture the takeaways
 
-After presenting the summary, offer each "Key things to remember" bullet as a capture candidate, one at a time. For each bullet, bind it as `<concept>` and follow §§2–4 of `.claude/commands/learned.md` with `<concept>` bound to that takeaway — same haiku dedupe subagent, same one-keystroke approve/reject flow, same `bash .claude/hooks/anki.sh capture ...` call (repo-relative, no HOME path, no symlink). Set Source to the PR/bead/topic that was taught this session (i.e. the `$ARGUMENTS` this session started from).
+After presenting the summary, offer each "Key things to remember" bullet as a capture candidate, one at a time. For each bullet, bind it as `<concept>` and follow §§1–4 of `.claude/commands/learned.md` with `<concept>` bound to that takeaway — §1's field conventions (Summary = the bullet stated as one sentence, Context = `<repo> / <bead-id if any> / <today>`) with **Source overridden** to the PR/bead/topic that was taught this session (i.e. the `$ARGUMENTS` this session started from); then the same haiku dedupe subagent, one-keystroke approve/reject flow, and `bash .claude/hooks/anki.sh capture ...` call (repo-relative, no HOME path, no symlink). §1's ask-if-empty clause doesn't apply — the bullet is already bound.
 
 After all bullets are offered, report one line per bullet using the §5 report format from `learned.md` (saved / merged / queued / skipped).
 
