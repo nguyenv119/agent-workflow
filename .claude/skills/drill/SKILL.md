@@ -14,15 +14,19 @@ problem → reasoning-graded ease written back immediately.
 ## One-time setup note (deck config)
 
 Before the first real drill session, set the **Concepts** deck's learning
-steps to short-or-none (Anki Deck Options → Learning steps): either a single
-short step or none at all, so a failed card's next appearance is ~1 day out.
+steps to a **single short step** (e.g. `1m`) in Anki Deck Options → Learning
+steps. The short step is what makes step 4's in-session retry work: a card
+graded Again re-enters the learning queue and is due again within this
+session. (With learning steps set to none, a failed card's next appearance is
+~1 day out and the in-session retry never fires — don't use "none" unless you
+deliberately want failures deferred to tomorrow.)
 
-Why: Anki's default learning-step ladder (1m / 10m) is designed for
-3-second flashcard flips that you can re-ask minutes later. Our transfer
-problems take minutes to work through, so faithfully simulating the default
-ladder would make a session with any failure unbounded for little retention
-gain. This is a one-time manual step in Anki's UI — the skill does not
-configure it.
+Why not Anki's default ladder: the default learning steps (1m / 10m) are
+designed for 3-second flashcard flips that you can re-ask minutes later. Our
+transfer problems take minutes to work through, so faithfully simulating the
+full ladder would make a session with any failure unbounded for little
+retention gain. One short step keeps the retry in-session without the ladder.
+This is a one-time manual step in Anki's UI — the skill does not configure it.
 
 ## Session Loop
 
@@ -108,7 +112,16 @@ bash .claude/hooks/anki.sh due
 
 Any card that was graded 1 (Again) and is now due again gets a **quick
 regurgitation-only retry** — Stage 1 only, no fresh transfer problem. Grade
-and write back the same way (step 2's ease map, step 3's write-back rule).
+the retry on recall alone (step 2's map keys on transfer quality, which a
+Stage-1-only retry doesn't have):
+
+| Retry outcome | Ease |
+|---|---|
+| Failed recall again | 1 (Again) |
+| Clean recall | 3 (Good) |
+
+(2/Hard and 4/Easy are not applicable to a regurgitation-only retry.) Write
+back per step 3's rule — immediately, checking the exit code.
 
 Repeat this re-query → retry cycle until `due` returns nothing due from this
 session's cards, then stop.
@@ -137,11 +150,12 @@ to `.learning/drills.jsonl`:
 
 ## Quiz Mechanics
 
-These rules govern how questions are asked and answers are handled,
-throughout both the Regurgitate and Transfer stages:
+These rules govern how questions are asked and answers are handled:
 
 - Use `AskUserQuestion` for quizzes.
-- Mix open-ended and multiple-choice questions.
+- Mix open-ended and multiple-choice questions **in the Transfer stage only**
+  — Stage 1 (Regurgitate) is always open-ended, since multiple-choice recall
+  is recognition, not retrieval, and would inflate the ease grade.
 - For multiple-choice: randomize the position of the correct answer across
   questions (never always the same option letter/position).
 - **Never reveal the answer in the question options** — wait until after the
