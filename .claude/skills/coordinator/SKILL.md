@@ -7,9 +7,14 @@ description: Single entry point for all implementation work. Triages tasks, mana
 
 You are the single entry point for all implementation work. You triage incoming work, manage the beads lifecycle, and orchestrate subagents via branch/PR workflow.
 
-**Model guidance:** The coordinator should run on Fable 5. Implementer subagents should run on Sonnet 4.6 (`model: "sonnet"`).
+**Model guidance:** The coordinator should run on Opus 4.8. Implementer subagents should run on Sonnet 5 (`model: "sonnet"`).
 
 **IMPORTANT:** The main branch is protected. All changes MUST go through a feature branch and PR. Direct commits to main are not allowed.
+
+## Modes
+
+- **Interactive (default)** — process ready beads and gate on human approval after each (Phase 2 §4e). Current behavior; nothing changes.
+- **Autonomous Loop Mode** — when the epic carries a `## Win Condition`, offer to run the loop unattended: the §4e human gate is replaced by the win-condition eval, and you iterate until it passes (or a cap trips). See "Autonomous Loop Mode" below. The per-bead machinery (worktree, branch, implementer, reviewers, gates, PR) is identical in both modes.
 
 ## Phase 1: Triage
 
@@ -163,6 +168,7 @@ CONSTRAINTS:
 - Commit your work when implementer phases are complete (do NOT push)
 - Phase 5 of the implementer skill produces a structured summary — that is your final output
 - If this task involves frontend UI work, use the /frontend-design skill during Phase 2
+- Apply the `ponytail` skill during Phase 2: climb its ladder (YAGNI → stdlib → native platform → existing dep → one line → minimum code) and ship the shortest diff that fully does the task, without cutting validation, error handling, security, accessibility, or tests
 ```
 
 Mark each bead as claimed before spawning its implementer:
@@ -263,13 +269,28 @@ REFERENCE DIRS: <key directories in the existing codebase to compare against>
 - **Trivial issues** (typos, minor naming): fix directly via `git -C <worktree_path>` commands, commit, then push the fix to the same branch
 - **Non-trivial issues** (bugs, missing tests, duplication): file a beads issue, spawn an implementer subagent in the same worktree, close when fixed
 
-After all issues resolved, re-run quality gates in the worktree:
-```bash
-cd <worktree_path>
-# Run quality gates per the Quality Gates table in CLAUDE.md
+After all issues resolved, re-run quality gates. **Delegate to a test-runner sub-agent** so verbose output doesn't pollute the coordinator's context — do NOT run the gates directly with Bash. Use the Agent tool with `subagent_type: "claude"` and `model: "haiku"`, pulling the command list from the **Quality Gates** / Verification table in CLAUDE.md:
+
+```
+ROLE: Test Runner
+SKILL: Read and follow .claude/skills/test-runner/SKILL.md
+
+WORKTREE: <worktree_path>
+COMMANDS:
+- <quality-gate commands matching the changed code>
 ```
 
-**Do NOT push if any checks fail.** Fix locally first.
+**Do NOT push if the sub-agent reports FAIL.** Fix locally first (spawn an implementer if the fix is non-trivial), then re-delegate.
+
+#### c2. Run the Real Acceptance — against reality, NOT mocks
+
+Reviewers + unit tests prove the code is *shaped* right; they do **not** prove it *works against reality*. A green mock suite passes even when the real model id, API auth, data shape, or DB behavior is wrong (lived example: a local `db:verify` reported "no drift" and all unit tests were green, while CI's from-zero migrate — the real check — failed on the same change). So **before pushing**, run the bead's **real-acceptance check** — the runnable check in its `## Real acceptance` section — and capture its actual output.
+
+- **Real** = against the real dependency: a live API/model call, real corpus data, a real dev-DB integration. Never a mock. (See `standards/quality.md` §H — mocks are the fast CI gate, never the acceptance bar.)
+- Run it from the worktree with the real creds/data it needs (e.g. `set -a; source <env>; set +a; tsx <worktree>/<live-check>.ts`).
+- **If the real-acceptance check fails, do NOT push.** Fix (or spawn an implementer), re-run. A green unit suite with a failing real-acceptance is a FAIL.
+- Capture the check's key output **verbatim** — it goes into the `BEAD COMPLETE` block so the human approves on *evidence* ("dim 1024; cosine 0.83 vs 0.11"), not on "tests passed."
+- **Migration/schema beads** (reality can't be fully exercised pre-merge): the real acceptance is the **from-zero apply on a real Postgres** — CI's `migration-check` plus the Vercel preview migrate — NOT a local `db:verify` on an already-migrated branch.
 
 #### d. Push Branch and Create PR
 
@@ -318,6 +339,8 @@ Generated with Claude Code
 
 #### e. Approval Gate
 
+> **Autonomous Loop Mode:** skip this human gate. Instead run the win-condition eval and let the triage step decide continue/stop (see "Autonomous Loop Mode"). The rest of §4 (push, PR, beads status) is unchanged.
+
 After creating or updating the PR, build a **Review Guide** before outputting the
 completion block. The guide tells the human which tests to read first for maximum
 understanding.
@@ -342,6 +365,7 @@ before proceeding to the next bead:
 BEAD [n] COMPLETE
 Tasks completed: <bead-id>: <bead-title>
 Tests passing: <quality gate commands that passed>
+Real acceptance: <the real check that ran> → <its actual output / verdict — the evidence, not "passed">
 Branch: <branch-name>
 PR: <url>
 
@@ -386,6 +410,42 @@ Check the "Concerns" section in the implementer summary — file follow-up issue
 
 ---
 
+## Autonomous Loop Mode
+
+Entered when the epic carries a `## Win Condition` **and** the user confirms an autonomous run at the start of `/work` (ask once — this is the manual "start the loop" step; never start unattended without it). Everything in Phase 2 still applies per bead; the only change is that the §4e human approval gate is replaced by the win-condition eval inside an outer loop.
+
+**Read first:**
+```bash
+bd show <epic-id> --json        # read the ## Win Condition block
+```
+Then load `.claude/skills/triage/SKILL.md` and `.claude/skills/win-condition/SKILL.md`.
+
+**The eval lives out-of-tree** at the outer (un-versioned) `.claude/loop-evals/<epic-id>/` — never in the repo. If it doesn't exist yet, authoring it is the loop's first action (per win-condition R2). It runs locally as you (Claude Code), so it may reach the dev system directly — Neon Dev, Vercel, dev Trigger — to fetch / parse / seed / insert / update / delete.
+
+**Confirm guardrails once** before starting: max-iterations N, **per-bead max attempts (default 3)**, the stagnation thresholds (from the win-condition), and that merges stay manual. Initialize a loop log (e.g. `.claude/loop-<epic-id>.log`), one line per iteration.
+
+**Each iteration:**
+
+1. **Triage** — follow the triage skill. Run the win-condition's verification; if it passes **and** its output ends with the success sentinel → exit **SUCCESS** (triage must cite the evidence). Otherwise get exactly one action: `RUN_BEAD <id>` / `NEW_BEAD <desc>` / `QUICK_FIX <desc>` / `STOP <reason>`.
+2. **Execute (bounded per-bead fix-loop)** — carry out the action via the existing Phase 2 machinery: its own worktree + branch, implementer subagent, all three reviewers, quality gates, **and the bead's acceptance check** (the integration check for risky beads, per the win-condition skill — not just unit gates). One action = one PR (drift containment). **No human approval gate** in this mode.
+   - If reviewers / gates / acceptance fail: have **triage diagnose** the failure (see triage's "Per-bead failure diagnosis"), then re-spawn the implementer with that diagnosis as context. Repeat up to **per-bead max attempts (default 3)**.
+   - **Carry state across attempts**: append each attempt's failure + diagnosis to the loop log (and the bead notes) so attempt N+1 sees what N tried — this is what stops it repeating the same mistake or drifting on stale context.
+   - Still failing after the cap → mark the bead **BLOCKED**, log it, and let the outer triage decide: try a different ready bead, or stop the run.
+3. **Verify** — re-run the win-condition's runnable check. Dual-condition: it must exit 0 **and** its output must end with the success sentinel `<promise>WIN</promise>` (printed by the eval, not the implementer). Absence of errors alone is never success.
+4. **Record** — append to the loop log: action, result, verification output (exit code + key line), files touched, and approximate token cost (track cost-per-accepted-change; if the accept rate craters, stop and re-tune rather than burning tokens).
+5. **Stop checks** — exit the loop if:
+   - win-condition met → **SUCCESS**
+   - max-iterations reached → **BLOCKED**
+   - stagnation: no progress in 3 iterations, or the same error 5 times → **BLOCKED**
+
+**On SUCCESS:** output the run summary and the open PRs. Merging is still the human's job.
+
+**On BLOCKED:** produce a handoff-style report (in chat) — what the win-condition still needs, what each iteration attempted, the blocking error, and the single most likely next action. Do **not** keep looping.
+
+**Irreversible actions stay OUTSIDE the loop body** — merging PRs, deploying, deleting data, rotating secrets. The loop only ever produces reviewed PRs; a human (or a separate gated step) merges.
+
+---
+
 ## Phase 3: Hand Off
 
 After all beads in this run are complete and approved, output a short final summary:
@@ -414,6 +474,9 @@ information. Phase 3 is a short wrap-up only.
 - Starting a dependent bead before its blocker is closed
 - Parallelizing beads that touch the same files — analyze overlap first
 - Pushing with failing tests or quality gate failures
+- Running quality gates directly in coordinator context — always delegate to a test-runner sub-agent (`model: "haiku"`) so verbose output doesn't pollute context
+- Treating unit tests / mocks as the acceptance bar — the **real-acceptance check** (§4c2: live dependency / real data / real from-zero DB, run before the gate) is what makes a bead "done"; mocks are only the CI gate
+- Approving a bead on "tests passed" instead of on the real-acceptance **evidence** (the actual output) in the `BEAD COMPLETE` block
 - Merging PRs (that's the human's job)
 - Watching CI (that's the human's job)
 - Cleaning up worktrees before merge (that's the human's job — `/merged` handles it)
@@ -422,3 +485,8 @@ information. Phase 3 is a short wrap-up only.
 - Fixing non-trivial review issues inline — file issues and spawn implementers instead
 - Using `isolation: "worktree"` for implementers — worktrees are ephemeral and disappear before reviews run; always create worktrees manually with `git worktree add`
 - Omitting `--repo` from `gh` commands — always derive it from `git remote get-url origin`
+- (Autonomous Loop Mode) Performing irreversible actions inside the loop — merging, deploying, deleting data, and rotating secrets all stay outside the loop body
+- (Autonomous Loop Mode) Committing the loop eval into the repo or filing it as a bead/PR — it is local-only scaffolding under the outer `.claude/loop-evals/<epic-id>/`
+- (Autonomous Loop Mode) Treating "no errors" / exit 0 as success — gate on the positive win-condition assertion (rows landed, expected output), never on absence of errors alone
+- (Autonomous Loop Mode) Looping past the max-iteration or stagnation caps instead of stopping with a handoff
+- (Autonomous Loop Mode) Starting an unattended run without the user's go-ahead, or on an epic with no `## Win Condition`

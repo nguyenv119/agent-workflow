@@ -8,6 +8,12 @@ user_invocable: true
 
 You are a planner agent. Your job is to collaboratively design implementation plans with the user, then file well-structured beads issues ready for `/work`.
 
+## Win Condition (required for loopable epics)
+
+Any epic that may be run autonomously (`/work` in Autonomous Loop Mode) needs a **measurable win-condition** — the eval the loop checks each iteration to decide continue vs. stop. You agree the high-level outcome with the user (Phase 2) and derive + file the technical eval (Phase 3), following the included skill below. Skip only for throwaway, non-loopable work.
+
+@.claude/skills/win-condition/SKILL.md
+
 ## Invocation
 
 `/plan <epic-id-or-description>`
@@ -53,7 +59,8 @@ This is collaborative. Do NOT silently make decisions — discuss with the user.
    - Tradeoffs (simplicity vs. flexibility, etc.)
 4. Point out risks and tradeoffs proactively — don't wait to be asked
 5. Iterate until you and the user agree on the approach
-6. Write the agreed plan to the plan file, then use ExitPlanMode for approval
+6. **Agree the win-condition** — settle the high-level success outcome with the user ("done means X is observable, unattended"). You turn it into a runnable eval in Phase 3; here, just lock the outcome.
+7. Write the agreed plan to the plan file, then use ExitPlanMode for approval
 
 ### Phase 3 — File Issues
 
@@ -63,6 +70,8 @@ After the user approves the plan:
    ```bash
    bd create "Epic title" -t epic -p <priority> --json
    ```
+
+   Then write the **`## Win Condition`** block (from the win-condition skill) onto the epic body. The eval itself is **not** a filed subtask — it is local loop scaffolding the coordinator authors at run time under the outer `.claude/loop-evals/<epic-id>/` (rule R2), never committed and never a PR. Do not create a "Build the eval harness" bead or make subtasks depend on one.
 
 2. Create subtasks with proper dependencies:
    ```bash
@@ -79,6 +88,7 @@ After the user approves the plan:
 - **Files to modify**: Exact paths (with line numbers if relevant)
 - **Implementation steps**: Numbered, specific actions
 - **Example**: Show before → after transformation when applicable
+- **Real acceptance**: a runnable pass/fail for this bead **against reality, not mocks** (bead-level R1) — a live API/model call, real corpus data, or a real dev-DB integration, naming the observable it asserts (the actual values/counts/shape). The coordinator runs this *before* the approval gate and records its output as **evidence**; mocks/unit tests are the CI gate, never the acceptance bar (see `standards/quality.md` §H). Tier by risk — standard beads may lean on reviewers + quality gates, but the acceptance bar is still a real check; **risky beads (DB schema/migrations, shared infra, prod-affecting) REQUIRE a runnable real check — for schema, "applies from-zero on real Postgres" (CI migration-check), never a local `db:verify` on already-migrated state** (see the win-condition skill's "Bead-level acceptance").
 
 A future implementer session must understand the task completely from its description alone — no external context.
 
@@ -93,14 +103,14 @@ SKILL: Read and follow .claude/skills/reviewer-plan/SKILL.md
 EPIC: <epic-id>
 ```
 
-The reviewer checks the filed issues against the codebase for architectural issues, duplication risks, missing tasks, and dependency correctness.
+The reviewer checks the filed issues against the codebase for architectural issues, duplication risks, missing tasks, and dependency correctness — and confirms the epic's `## Win Condition` is present and **measurable** (a positive runnable check, not absence-of-errors).
 
 **Handle reviewer feedback:**
 - Present findings to the user
 - Iterate: update, create, or close issues as needed
 - Re-run reviewer if significant changes were made
 
-**Output**: An epic with subtasks ready for `/work <epic-id>`. Tell the user the epic ID and suggest running `/work <epic-id>` to start implementation.
+**Output**: An epic (carrying a `## Win Condition`) with subtasks ready for `/work <epic-id>`. Tell the user the epic ID and suggest running `/work <epic-id>` — interactively, or as an autonomous run to the win-condition (the coordinator offers this when a win-condition is present).
 
 ## Your Constraints
 
@@ -109,6 +119,7 @@ The reviewer checks the filed issues against the codebase for architectural issu
 - **NEVER** skip the discussion phase — always get user input on key decisions
 - **ALWAYS** explore the codebase before proposing an approach
 - **ALWAYS** make subtasks self-contained
+- **ALWAYS** define a measurable win-condition for loopable epics (positive + runnable; the eval is local out-of-tree scaffolding, never committed)
 
 ## What You Do NOT Do
 

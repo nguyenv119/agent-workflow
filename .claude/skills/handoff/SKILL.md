@@ -17,11 +17,11 @@ User says: "session handoff", "wrap up session", "hand off", "handoff summary", 
 
 1. **Review the full conversation**, not just the last few turns. Handoffs miss things when they only summarize recent context.
 2. **Pull state from these sources (in order):**
-   - Plan files referenced this session (check `~/.claude/plans/` if a plan was mentioned).
+   - Plan files referenced this session (check `/Users/nguyenv/.claude/plans/` if a plan was mentioned).
    - TodoWrite state — any in-progress or pending tasks.
    - Background processes you started with `run_in_background` — shell IDs are load-bearing for the next agent.
    - Files created or modified this session — you know what you touched; don't grep to re-discover.
-   - Memory files written or updated (`~/.claude/projects/<project>/memory/`).
+   - Memory files written or updated (`/Users/nguyenv/.claude/projects/<project>/memory/`).
    - Unresolved questions — things you asked the user that never got a clear answer, or things the user asked that got deflected.
 3. **Do NOT audit the filesystem.** This is synthesis of what happened in THIS session. No `git log`, no broad `Glob` sweeps. If you didn't touch it this session, it doesn't belong here.
 4. **Produce the output in chat.** Do not write a file. Do not update memory. Chat-only.
