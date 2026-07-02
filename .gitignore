@@ -6,3 +6,5 @@ __pycache__/
 dolt/
 .code-review-graph/
 .code-review-graphignore
+.learning/
+.claude/loop-evals/
