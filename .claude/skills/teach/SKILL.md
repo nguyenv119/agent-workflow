@@ -115,6 +115,12 @@ Key things to remember:
 [3-5 bullet points of the most important takeaways]
 ```
 
+### Capture the takeaways
+
+After presenting the summary, offer each "Key things to remember" bullet as a capture candidate, one at a time. For each bullet, bind it as `<concept>` and follow §§2–4 of `.claude/commands/learned.md` with `<concept>` bound to that takeaway — same haiku dedupe subagent, same one-keystroke approve/reject flow, same `bash .claude/hooks/anki.sh capture ...` call (repo-relative, no HOME path, no symlink). Set Source to the PR/bead/topic that was taught this session (i.e. the `$ARGUMENTS` this session started from).
+
+After all bullets are offered, report one line per bullet using the §5 report format from `learned.md` (saved / merged / queued / skipped).
+
 ## Starting the Session
 
 When invoked:
