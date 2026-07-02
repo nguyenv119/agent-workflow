@@ -3,7 +3,8 @@
 #
 # Shared by any repo that wants to capture/query/answer Anki cards. Contains
 # NO repo-relative assumptions: the offline queue is written relative to the
-# CALLING repo's $PWD, and ANKI_URL/deck/model names are the only config.
+# CALLING repo's $PWD. ANKI_URL is the only env-overridable config; DECK and
+# MODEL below are hardcoded constants.
 #
 # Install (one machine, once): symlink this file into ~/.claude/hooks so any
 # repo/skill can call it via the HOME path:
@@ -101,6 +102,23 @@ ensure_deck_model() {
   fi
 }
 
+# escape_query_value <value>
+# Escapes a value for embedding in a quoted Anki search-query field term
+# (e.g. Concept:"<escaped>"). Anki's search syntax treats backslash, double
+# quote, and the wildcards * and _ as special inside a quoted term; each must
+# be backslash-escaped or an unusual concept name (embedded quote, or one
+# that happens to contain * / _) either breaks the query or silently
+# broadens the match to unrelated notes. Verified against live AnkiConnect
+# with values containing spaces, parens, and an embedded double quote.
+escape_query_value() {
+  local v="$1"
+  v="${v//\\/\\\\}"
+  v="${v//\"/\\\"}"
+  v="${v//\*/\\*}"
+  v="${v//_/\\_}"
+  printf '%s' "$v"
+}
+
 # queue_capture <concept> <summary> <context> <source>
 # Appends a capture as a JSONL row to .learning/queue.jsonl relative to the
 # CALLING repo's $PWD (not this script's location) — never loses a capture.
@@ -116,10 +134,12 @@ queue_capture() {
 
 # capture <concept> <summary> <context> <source>
 # Dedupes on Concept: updates Context on an existing note, else creates one.
-# Never errors the caller's session — falls back to the offline queue if
-# Anki is unreachable OR if any AnkiConnect call fails partway through
-# (e.g. a malformed search query from an unusual concept name), so a capture
-# is never silently dropped.
+# The dedupe query field is escaped (see escape_query_value) so unusual
+# concept names (spaces, parens, quotes, * / _) match correctly instead of
+# breaking the query or silently matching the wrong note. Never errors the
+# caller's session — falls back to the offline queue if Anki is unreachable
+# or if any AnkiConnect call fails partway through (genuine unreachability
+# or a mid-flow error), so a capture is never silently dropped.
 capture() {
   local concept="$1" summary="$2" context="$3" source="$4"
 
@@ -146,7 +166,7 @@ _capture_live() {
   flush_queue
 
   local query note_ids note_id fields
-  query="deck:${DECK} Concept:${concept}"
+  query="deck:${DECK} Concept:\"$(escape_query_value "$concept")\""
   note_ids="$(anki_request findNotes "$(jq -nc --arg q "$query" '{query: $q}')")" || return 1
   note_id="$(jq -r '.[0] // empty' <<<"$note_ids")"
 
@@ -179,8 +199,15 @@ _capture_live() {
 # up front and each row is individually re-queued by capture() if its own
 # replay fails, so a per-row AnkiConnect failure keeps that row queued
 # rather than losing it (not a guarantee against the process being killed
-# mid-replay, e.g. via SIGKILL).
+# mid-replay, e.g. via SIGKILL). A row that fails to parse as JSON (a torn
+# line) is re-queued as-is rather than letting the parse failure raise under
+# set -e — an abort after truncation but before replay would otherwise
+# orphan the rest of the queue in the tmp copy. Re-entrancy-guarded: capture()
+# during replay may itself call flush_queue (via _capture_live), which would
+# otherwise re-replay rows already re-queued earlier in this same pass.
+_flush_in_progress=0
 flush_queue() {
+  [[ "$_flush_in_progress" == "1" ]] && return 0
   [[ -s "$QUEUE_FILE" ]] || return 0
 
   if ! anki_request version >/dev/null 2>&1; then
@@ -194,15 +221,19 @@ flush_queue() {
   cp "$QUEUE_FILE" "$tmp"
   : >"$QUEUE_FILE"
 
-  local line concept summary context source
+  _flush_in_progress=1
+  local line concept summary context source parsed
   while IFS= read -r line; do
     [[ -n "$line" ]] || continue
-    concept="$(jq -r '.concept' <<<"$line")"
-    summary="$(jq -r '.summary' <<<"$line")"
-    context="$(jq -r '.context' <<<"$line")"
-    source="$(jq -r '.source' <<<"$line")"
+    if ! parsed="$(jq -r '[.concept, .summary, .context, .source] | @tsv' <<<"$line" 2>/dev/null)"; then
+      echo "anki.sh: unparseable queue row, re-queued as-is: $line" >&2
+      printf '%s\n' "$line" >>"$QUEUE_FILE"
+      continue
+    fi
+    IFS=$'\t' read -r concept summary context source <<<"$parsed"
     capture "$concept" "$summary" "$context" "$source"
   done <"$tmp"
+  _flush_in_progress=0
 
   rm -f "$tmp"
 }
@@ -229,18 +260,36 @@ info() {
 
 # answer <cardId> <ease>
 # Writes a review grade back to Anki via answerCards. Ease: 1=Again, 2=Hard,
-# 3=Good, 4=Easy.
+# 3=Good, 4=Easy. AnkiConnect reports a bad/unanswerable card id as
+# error:null with result:[false], not as a request error, so anki_request's
+# error check alone would miss it — assert the result explicitly.
 answer() {
   [[ $# -eq 2 ]] || { echo "anki.sh: answer requires <cardId> <ease>" >&2; return 1; }
   local card_id="$1" ease="$2"
   ensure_available || { echo "anki.sh: Anki unreachable, cannot record answer" >&2; return 1; }
   flush_queue
-  anki_request answerCards "$(jq -nc --argjson id "$card_id" --argjson ease "$ease" \
-    '{answers: [{cardId: $id, ease: $ease}]}')"
+  local result
+  result="$(anki_request answerCards "$(jq -nc --argjson id "$card_id" --argjson ease "$ease" \
+    '{answers: [{cardId: $id, ease: $ease}]}')")" || { echo "anki.sh: answerCards request failed" >&2; return 1; }
+  if ! jq -e '.[0] == true' <<<"$result" >/dev/null 2>&1; then
+    echo "anki.sh: answerCards did not confirm the grade for card $card_id (result: $result)" >&2
+    return 1
+  fi
+  printf '%s\n' "$result"
 }
 
 version() {
   anki_request version
+}
+
+# flush (CLI command)
+# Unlike flush_queue (the internal helper other commands call once already
+# known-reachable), this is the only write-path CLI entry that skipped
+# ensure_available — with Anki closed it silently exited 0 with no output
+# and never attempted to launch Anki or flush anything.
+flush_cmd() {
+  ensure_available || { echo "anki.sh: Anki unreachable, queue left as-is (still queued)" >&2; return 1; }
+  flush_queue
 }
 
 main() {
@@ -255,7 +304,7 @@ main() {
     due) due ;;
     info) info "$@" ;;
     answer) answer "$@" ;;
-    flush) flush_queue ;;
+    flush) flush_cmd ;;
     version) version ;;
     *)
       echo "usage: anki.sh <capture|due|info|answer|flush|version> ..." >&2
