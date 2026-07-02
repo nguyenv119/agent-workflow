@@ -222,15 +222,18 @@ flush_queue() {
   : >"$QUEUE_FILE"
 
   _flush_in_progress=1
-  local line concept summary context source parsed
+  local line concept summary context source
   while IFS= read -r line; do
     [[ -n "$line" ]] || continue
-    if ! parsed="$(jq -r '[.concept, .summary, .context, .source] | @tsv' <<<"$line" 2>/dev/null)"; then
+    if ! jq -e . <<<"$line" >/dev/null 2>&1; then
       echo "anki.sh: unparseable queue row, re-queued as-is: $line" >&2
       printf '%s\n' "$line" >>"$QUEUE_FILE"
       continue
     fi
-    IFS=$'\t' read -r concept summary context source <<<"$parsed"
+    concept="$(jq -r '.concept' <<<"$line")"
+    summary="$(jq -r '.summary' <<<"$line")"
+    context="$(jq -r '.context' <<<"$line")"
+    source="$(jq -r '.source' <<<"$line")"
     capture "$concept" "$summary" "$context" "$source"
   done <"$tmp"
   _flush_in_progress=0
