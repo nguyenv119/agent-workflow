@@ -1,14 +1,11 @@
 #!/usr/bin/env bash
 # anki.sh — path-independent AnkiConnect helper (localhost:8765, version 6).
 #
-# Shared by any repo that wants to capture/query/answer Anki cards. Contains
-# NO repo-relative assumptions: the offline queue is written relative to the
-# CALLING repo's $PWD. ANKI_URL is the only env-overridable config; DECK and
-# MODEL below are hardcoded constants.
-#
-# Install (one machine, once): symlink this file into ~/.claude/hooks so any
-# repo/skill can call it via the HOME path:
-#   ln -sf "$(pwd)/.claude/hooks/anki.sh" ~/.claude/hooks/anki.sh
+# Shared by any repo that carries this harness: skills/commands call it as
+# `bash .claude/hooks/anki.sh ...` relative to their own repo root. Contains
+# NO repo-relative assumptions internally: the offline queue is written
+# relative to the CALLING repo's $PWD. ANKI_URL is the only env-overridable
+# config; DECK and MODEL below are hardcoded constants.
 #
 # Usage:
 #   anki.sh capture <concept> <summary> <context> <source>
