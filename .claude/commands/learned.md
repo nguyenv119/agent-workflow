@@ -2,7 +2,10 @@
 
 Capture **$ARGUMENTS** as a concept in the Anki-backed learning loop.
 
-If `$ARGUMENTS` is empty, ask the user what concept to capture.
+If `$ARGUMENTS` is empty, ask the user what concept to capture. Bind the
+result either way: below, `<concept>` means this concept name — sections 2–4
+are written against `<concept>` so other capture surfaces (handoff, teach,
+planner) can reuse them with their own binding.
 
 ## 1. Draft the note
 
@@ -20,9 +23,10 @@ Run `bash .claude/hooks/anki.sh concepts` from the repo root. It prints a JSON
 array of existing concept names (or exits 1 if Anki is unreachable — treat
 that as "no candidates", not an error).
 
-Compare "$ARGUMENTS" against the list using SEMANTIC similarity, not string
+Compare "<concept>" against the list using SEMANTIC similarity, not string
 match (e.g. "KV store" should match "key-value store"). Return at most 3
 candidate matches, each with the existing concept's exact name, or "none".
+Do NOT include the full concept list in your reply — only the candidates.
 ```
 
 ## 3. Confirm with the user

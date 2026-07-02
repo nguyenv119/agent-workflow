@@ -173,7 +173,7 @@ _capture_live() {
     anki_request updateNoteFields \
       "$(jq -nc --argjson id "$note_id" --argjson fields "$fields" \
         '{note: {id: $id, fields: $fields}}')" >/dev/null || return 1
-    echo "anki.sh: updated existing note for \"$concept\" in $DECK"
+    echo "anki.sh: updated existing note for \"$concept\" in $DECK" >&2
   else
     local note
     note="$(jq -nc --arg deck "$DECK" --arg model "$MODEL" \
@@ -186,7 +186,7 @@ _capture_live() {
         options: {allowDuplicate: false}
       }}')"
     anki_request addNote "$note" >/dev/null || return 1
-    echo "anki.sh: captured \"$concept\" to $DECK"
+    echo "anki.sh: captured \"$concept\" to $DECK" >&2
   fi
 }
 
@@ -240,8 +240,10 @@ flush_queue() {
 }
 
 # concepts
-# Read-only: lists all Concept-field values of every note in the Concepts
-# deck, as a JSON array. Used by the /learned semantic-dedupe subagent to
+# Listing (after flushing the queue — a queued offline capture must be
+# visible to dedupe): prints all Concept-field values of every note in the
+# Concepts deck, as a JSON array. Used by the /learned semantic-dedupe
+# subagent to
 # compare a proposed concept name against what already exists, without that
 # subagent needing to know any AnkiConnect call shapes itself.
 concepts() {
