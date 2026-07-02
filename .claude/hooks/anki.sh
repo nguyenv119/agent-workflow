@@ -9,6 +9,7 @@
 #
 # Usage:
 #   anki.sh capture <concept> <summary> <context> <source>
+#   anki.sh concepts
 #   anki.sh due
 #   anki.sh info <cardId> [cardId ...]
 #   anki.sh answer <cardId> <ease>
@@ -172,7 +173,7 @@ _capture_live() {
     anki_request updateNoteFields \
       "$(jq -nc --argjson id "$note_id" --argjson fields "$fields" \
         '{note: {id: $id, fields: $fields}}')" >/dev/null || return 1
-    echo "anki.sh: updated existing note for \"$concept\" in $DECK"
+    echo "anki.sh: updated existing note for \"$concept\" in $DECK" >&2
   else
     local note
     note="$(jq -nc --arg deck "$DECK" --arg model "$MODEL" \
@@ -185,7 +186,7 @@ _capture_live() {
         options: {allowDuplicate: false}
       }}')"
     anki_request addNote "$note" >/dev/null || return 1
-    echo "anki.sh: captured \"$concept\" to $DECK"
+    echo "anki.sh: captured \"$concept\" to $DECK" >&2
   fi
 }
 
@@ -236,6 +237,28 @@ flush_queue() {
   _flush_in_progress=0
 
   rm -f "$tmp"
+}
+
+# concepts
+# Listing (after flushing the queue — a queued offline capture must be
+# visible to dedupe): prints all Concept-field values of every note in the
+# Concepts deck, as a JSON array. Used by the /learned semantic-dedupe
+# subagent to
+# compare a proposed concept name against what already exists, without that
+# subagent needing to know any AnkiConnect call shapes itself.
+concepts() {
+  ensure_available || { echo "anki.sh: Anki unreachable, cannot list concepts" >&2; return 1; }
+  flush_queue
+  local note_ids info
+  note_ids="$(anki_request findNotes "$(jq -nc --arg q "deck:${DECK}" '{query: $q}')")" || {
+    echo "anki.sh: findNotes failed" >&2
+    return 1
+  }
+  info="$(anki_request notesInfo "$(jq -nc --argjson n "$note_ids" '{notes: $n}')")" || {
+    echo "anki.sh: notesInfo failed" >&2
+    return 1
+  }
+  jq -c '[.[].fields.Concept.value]' <<<"$info"
 }
 
 # due
@@ -301,13 +324,14 @@ main() {
       [[ $# -eq 4 ]] || { echo "usage: anki.sh capture <concept> <summary> <context> <source>" >&2; exit 1; }
       capture "$1" "$2" "$3" "$4"
       ;;
+    concepts) concepts ;;
     due) due ;;
     info) info "$@" ;;
     answer) answer "$@" ;;
     flush) flush_cmd ;;
     version) version ;;
     *)
-      echo "usage: anki.sh <capture|due|info|answer|flush|version> ..." >&2
+      echo "usage: anki.sh <capture|concepts|due|info|answer|flush|version> ..." >&2
       exit 1
       ;;
   esac
