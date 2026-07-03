@@ -60,9 +60,23 @@ User says: "session handoff", "wrap up session", "hand off", "handoff summary", 
 <1-2 sentences: the single most likely next action for a fresh agent>
 ```
 
+## Concept capture (after the summary, before final output)
+
+Scan the **whole session** (not just recent turns) for concepts worth capturing into the Anki-backed learning loop. Propose **at most 3** candidates, each meeting ALL of:
+
+- **Novel to the user** — not something they clearly already knew going in.
+- **Non-trivial** — not a one-line syntax fact.
+- **Decision-relevant** — knowing it would change a design choice.
+
+**Zero qualifying candidates → skip this step silently.** Do not mention it, do not ask the user "nothing to capture, right?" — just omit it.
+
+For each candidate, follow **§§1–4 of `.claude/commands/learned.md`** (draft the note's Summary/Context/Source per §1's field conventions → haiku dedupe subagent → AskUserQuestion confirm → `anki.sh` capture) with `<concept>` bound to that candidate — §1's ask-if-empty clause doesn't apply, since the candidate is already bound. Do not restate those steps here — always defer to learned.md so the capture UX has one source of truth. Present multiple candidates as separate approve/reject decisions (a single multi-select AskUserQuestion across candidates is fine).
+
+This step runs **after** the handoff summary has been produced and shown, never before — the summary is the priority; capture is a coda.
+
 ## Hard rules
 
-1. **Chat output only.** Never write the handoff to a file. Never update memory from this skill.
+1. **Chat output only for the handoff summary.** Never write the summary to a file. Never update memory from this skill. *Carve-out:* the concept-capture step above may invoke `anki.sh`, which writes to `.learning/queue.jsonl` when Anki is unreachable (see learned.md §4) — that is the capture flow's own persistence, not the handoff summary, and does not violate this rule.
 2. **Never invent state.** If a section has nothing to report, write "none" — do not omit the section. Structure stability is the whole point.
 3. **Absolute paths always.** The next agent may have a different working directory.
 4. **If a plan file drove the session, name it first** in "Key files" so the next agent reads it before anything else.
@@ -74,6 +88,6 @@ User says: "session handoff", "wrap up session", "hand off", "handoff summary", 
 - Summarizing the last 3 turns and calling it a handoff.
 - Listing files by relative path.
 - Skipping the "Running state" section because "nothing is running" — write "none" instead.
-- Writing the summary to `~/.claude/handoffs/` or any file. This is chat-only by design.
+- Writing the summary to `~/.claude/handoffs/` or any file. This is chat-only by design. (Does not apply to the concept-capture step's own `anki.sh` queue write — see hard rule 1's carve-out.)
 - Adding a "what went well / what went poorly" retrospective. This isn't a retro.
 - Recommending next steps beyond the single "Pick up here" line. The next agent decides; you just hand off.

@@ -46,7 +46,7 @@ On `Save as new` or `Merge`:
 bash .claude/hooks/anki.sh capture "<concept>" "<summary>" "<context>" "<source>"
 ```
 
-Use the existing candidate's exact name as `<concept>` for a merge; use `$ARGUMENTS` (or the edited name) for a new save. anki.sh handles launch-attempt, exact-name dedupe, and offline queueing itself — do not reimplement any of that here.
+Use the existing candidate's exact name as `<concept>` for a merge; use `<concept>` (or the edited name) for a new save. anki.sh handles launch-attempt, exact-name dedupe, and offline queueing itself — do not reimplement any of that here.
 
 On `Skip`, do nothing further.
 
