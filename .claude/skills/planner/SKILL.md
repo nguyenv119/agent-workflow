@@ -51,6 +51,17 @@ Then use Grep/Read for detailed content. The graph tells you where to look.
 
 This is collaborative. Do NOT silently make decisions — discuss with the user.
 
+0. **Predict-then-diff.** Before presenting your findings, invite the user's own pre-plan sketch:
+   1. their plan and win condition
+   2. their beads and each bead's acceptance criteria
+   3. which beads can run in parallel and where they attach in the codebase
+   4. hidden test cases that might be missed
+
+   Offer a one-keystroke skip — the user may not want this ritual every time. Also skip automatically when the user has already delegated planning entirely (e.g. "just plan it," a description with no sketch of their own). This is a skip of the ritual, not of the discussion phase itself — Phase 2 still happens either way.
+
+   If the user gives a sketch, do steps 1-5 below as usual, but present your plan explicitly as a **diff against their sketch** ("you missed X, I missed Y") rather than a fresh standalone plan. Each miss on the user's side is a capture candidate — offer it to `/learned` on the spot, following `.claude/commands/learned.md` §§2-4 with `<concept>` bound to the missed concept (semantic dedupe, confirm, capture — don't reimplement, just invoke the same flow).
+
+   If no sketch is given (skipped), proceed straight to step 1.
 1. Present your findings: what you learned from exploring the codebase
 2. Propose an approach with rationale
 3. **Ask questions** about key decisions using AskUserQuestion:
