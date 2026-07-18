@@ -31,6 +31,8 @@ The skills reference a **Quality Gates** table in CLAUDE.md. Define what command
 | Frontend | `npm test` | `npm run lint` | `npx tsc --noEmit` |
 | Integration | `make test-integration` | — | — |
 
+**Local vs. CI scope:** Locally, agents run only the **changed package(s) and their dependents** — never the whole monorepo. The full / timing-sensitive suite is **CI's job**, run on push on a clean machine; scoped-local is allowed to miss cross-package breaks by design because CI is the authoritative gate. If your build tool supports affected-scope test selection, put that command in the table above (e.g. `turbo run test --filter=...[origin/main]` — replace for your stack).
+
 ### Development Guidelines
 
 Document your project's conventions:
