@@ -8,17 +8,34 @@ A single AI agent can't hold an entire project in its context window. Large feat
 
 Break large work into small tasks. Give each task to a fresh agent with a clean context window. Use an external system (not the agent's memory) to track what's done, what's next, and what's blocked.
 
-This repo is that system. Five commands, specialized agents, and structured issue tracking.
+This repo is that system: specialized agent teams, structured issue tracking, and many other utility tools.
 
 ## Commands
+
+**Core workflow**
 
 | Command | What it does |
 |---------|-------------|
 | `/plan <description>` | Explore the codebase, discuss approach with you, file issues with dependencies |
 | `/work <id-or-description>` | Implement, review, and open a PR per task |
 | `/merged [branch]` | After you merge a PR: close the task, clean up, unblock dependents |
-| `/pr [branch]` | Regenerate a PR summary |
 | `/setup-remote` | Connect beads to DoltHub for multi-machine collaboration |
+
+**Understanding & learning**
+
+| Command | What it does |
+|---------|-------------|
+| `/graph [change]` | Maintain a live per-session concept/architecture map, rendered in a local viewer |
+| `/teach <topic>` | Teach a topic to mastery — why-first, quizzed, one layer at a time |
+| `/learned <concept>` | Capture a concept into the Anki-backed learning loop |
+| `/drill` | Quiz the concepts that are due (Anki FSRS) |
+
+**Utility**
+
+| Command | What it does |
+|---------|-------------|
+| `/review <source>` | Process external review feedback and improve the harness |
+| `/handoff` | Produce an end-of-session handoff summary before clearing context |
 
 ## Quick Start
 
