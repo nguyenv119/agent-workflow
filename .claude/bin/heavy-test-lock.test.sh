@@ -104,47 +104,63 @@ test_serialization() {
 }
 
 # ---------------------------------------------------------------------------
-# WHAT: while a wrapper holds the lock, $LOCK/pid and $LOCK/pgid are both
-#       present and numeric.
+# WHAT: while a wrapper holds the lock, $LOCK/pid equals the WRAPPER's own
+#       actual pid, and $LOCK/pgid equals the WRAPPED COMMAND's actual
+#       process group — not merely "some numeric value".
 # WHY: bead 2ux.3's reaper hook keys off exactly these two files to identify
 #      and PGID-scope-kill a crashed holder's orphans without touching a
-#      live sibling. If either file is missing or malformed, the reaper
-#      cannot safely act.
+#      live sibling. A numeric-but-wrong value (e.g. the wrapper's own pgid
+#      instead of the wrapped command's) would pass a shallow "is it
+#      numeric" check yet still make the reaper kill the wrong process group
+#      or miss the real one entirely.
 # BREAKS: a missing/non-numeric pid or pgid means the reaper either can't
 #         detect a dead holder at all (wedges the machine forever) or, worse,
-#         passes a garbage value to `kill` on a scoped process group.
+#         passes a garbage-but-plausible value to `kill` on a scoped process
+#         group, killing an unrelated live sibling's workers.
 # ---------------------------------------------------------------------------
 test_records_pid_and_pgid() {
-  local name="records a numeric pid and pgid in the lock dir while held"
-  # GIVEN — a wrapper holding the lock for long enough to inspect it.
-  local sandbox lock
+  local name="records the wrapper's real pid and the wrapped command's real pgid, not just any numeric value"
+  # GIVEN — a wrapper holding the lock, running a command that exposes its
+  # own pid to us via a marker file so we can independently query its real
+  # pgid with `ps` — ground truth derived separately from anything the
+  # script itself recorded, so a hardcoded or wrong-but-numeric value (e.g.
+  # pgid=1, or the wrapper's own pgid) cannot pass by accident.
+  local sandbox lock marker
   new_sandbox
   sandbox="$SANDBOX"
   lock="$sandbox/agent-workflow-heavy-test.lock"
+  marker="$sandbox/child.pid"
 
-  # WHEN — the wrapper acquires and we read the recorded identity mid-run.
-  TMPDIR="$sandbox" "$LOCK_SCRIPT" bash -c 'sleep 1' &
+  # WHEN — the wrapper acquires; the wrapped command records its own pid,
+  # then sleeps long enough for us to read everything before it exits.
+  TMPDIR="$sandbox" "$LOCK_SCRIPT" bash -c "echo \$\$ > \"$marker\"; sleep 2" &
   local holder_pid=$!
 
   local waited=0
-  while [ ! -f "$lock/pid" ] && [ "$waited" -lt 50 ]; do
+  while [ ! -s "$marker" ] && [ "$waited" -lt 50 ]; do
+    sleep 0.1
+    waited=$((waited + 1))
+  done
+  local child_actual_pid child_actual_pgid
+  child_actual_pid="$(cat "$marker" 2>/dev/null || true)"
+  child_actual_pgid="$(ps -o pgid= -p "$child_actual_pid" 2>/dev/null | tr -d ' ')"
+
+  waited=0
+  while [ ! -f "$lock/pgid" ] && [ "$waited" -lt 50 ]; do
     sleep 0.1
     waited=$((waited + 1))
   done
   local pid_val pgid_val
   pid_val="$(cat "$lock/pid" 2>/dev/null || true)"
   pgid_val="$(cat "$lock/pgid" 2>/dev/null || true)"
-  wait "$holder_pid"
+  wait "$holder_pid" 2>/dev/null
 
-  # THEN — both values are present and purely numeric.
-  local pid_ok=0 pgid_ok=0
-  case "$pid_val" in '' | *[!0-9]*) ;; *) pid_ok=1 ;; esac
-  case "$pgid_val" in '' | *[!0-9]*) ;; *) pgid_ok=1 ;; esac
-
-  if [ "$pid_ok" -eq 1 ] && [ "$pgid_ok" -eq 1 ]; then
+  # THEN — $LOCK/pid is exactly the wrapper's own pid, and $LOCK/pgid is
+  # exactly the wrapped command's real, independently-queried pgid.
+  if [ -n "$child_actual_pgid" ] && [ "$pid_val" = "$holder_pid" ] && [ "$pgid_val" = "$child_actual_pgid" ]; then
     pass "$name"
   else
-    fail "$name (pid='$pid_val' pgid='$pgid_val')"
+    fail "$name (pid_val='$pid_val' holder_pid='$holder_pid' pgid_val='$pgid_val' child_actual_pgid='$child_actual_pgid')"
   fi
 }
 
@@ -187,18 +203,31 @@ test_stale_holder_release() {
 
 # ---------------------------------------------------------------------------
 # WHAT: with a dead-pid lock in place, three concurrent waiters reclaim it
-#       without double-acquiring — exactly one runs at a time and all three
-#       eventually complete.
+#       without double-acquiring — exactly one runs at a time, all three
+#       eventually complete, and none leaks a raw filesystem error to
+#       stderr while doing so.
 # WHY: regression test for the TOCTOU race in stale reclaim (S2): a naive
 #      `rm -rf "$LOCK"; mkdir "$LOCK"` lets every waiter's `rm` succeed, so
 #      all of them can `mkdir` and believe they hold the lock simultaneously.
-# BREAKS: if this regresses, "stale holder released" silently becomes
-#         "N agents now run heavy suites concurrently" — the exact meltdown
-#         this epic exists to prevent, just moved to the reclaim path.
+#      This is also the highest-contention path over the mkdir-then-pid-write
+#      window a losing waiter can yank the winner's freshly-created lock dir
+#      out from under (see acquire_lock's ponytail comment) — bead 2ux.2
+#      finding A2, where `echo ... > "$LOCK/pid" 2>/dev/null` does NOT
+#      suppress the redirect-failure message once the target directory
+#      disappears mid-write (bash applies `>` before `2>/dev/null`).
+# BREAKS: if the serialization regresses, "stale holder released" silently
+#         becomes "N agents now run heavy suites concurrently" — the exact
+#         meltdown this epic exists to prevent, just moved to the reclaim
+#         path. If the stderr-suppression regresses, a losing waiter's raw
+#         "No such file or directory" leaks into whatever invoked the
+#         wrapper (e.g. a CI log), which a strict caller could mistake for a
+#         real failure even though the wrapper itself still degrades safely.
 # ---------------------------------------------------------------------------
 test_concurrent_stale_reclaim() {
-  local name="exactly one of several concurrent waiters reclaims a dead-pid lock"
-  # GIVEN — a dead-pid lock and three waiters launched simultaneously.
+  local name="exactly one of several concurrent waiters reclaims a dead-pid lock, none leaking raw errors to stderr"
+  # GIVEN — a dead-pid lock and three waiters launched simultaneously, each
+  # with its own stderr captured separately so a leaked redirect-failure
+  # message from any one of them is individually attributable.
   local sandbox lock log
   new_sandbox
   sandbox="$SANDBOX"
@@ -210,23 +239,28 @@ test_concurrent_stale_reclaim() {
   echo 999999 > "$lock/pgid"
 
   # WHEN — three wrapped runs race to reclaim the stale lock.
-  local pids=() i
+  local pids=() err_files=() i
   for i in 1 2 3; do
-    TMPDIR="$sandbox" "$LOCK_SCRIPT" bash -c "echo \"start \$\$\" >>\"$log\"; sleep 0.5; echo \"end \$\$\" >>\"$log\"" &
+    TMPDIR="$sandbox" "$LOCK_SCRIPT" bash -c "echo \"start \$\$\" >>\"$log\"; sleep 0.5; echo \"end \$\$\" >>\"$log\"" 2>"$sandbox/err.$i" &
     pids+=("$!")
+    err_files+=("$sandbox/err.$i")
   done
   local pid
   for pid in "${pids[@]}"; do
     wait "$pid"
   done
 
-  # THEN — all three ran, strictly serialized (no double-acquire).
-  local line_count
+  # THEN — all three ran, strictly serialized (no double-acquire), and no
+  # wrapper's stderr file picked up a raw bash/OS error from the race.
+  local line_count leaked=0 err_file
   line_count="$(wc -l < "$log" | tr -d ' ')"
-  if log_is_serialized "$log" && [ "$line_count" -eq 6 ]; then
+  for err_file in "${err_files[@]}"; do
+    [ -s "$err_file" ] && leaked=1
+  done
+  if log_is_serialized "$log" && [ "$line_count" -eq 6 ] && [ "$leaked" -eq 0 ]; then
     pass "$name"
   else
-    fail "$name (log: $(tr '\n' '|' < "$log"))"
+    fail "$name (log: $(tr '\n' '|' < "$log") leaked=$leaked $(for err_file in "${err_files[@]}"; do [ -s "$err_file" ] && echo "[$err_file: $(cat "$err_file")]"; done))"
   fi
 }
 
@@ -303,6 +337,64 @@ test_release_on_signal() {
     pass "$name"
   else
     fail "$name (lock_gone=$lock_gone child_gone=$child_gone child_pid=$child_pid)"
+  fi
+}
+
+# ---------------------------------------------------------------------------
+# WHAT: SIGTERM-ing the wrapper kills the wrapped command's ENTIRE process
+#       tree, including a grandchild the wrapped command itself forked and
+#       backgrounded — not just the direct child pid.
+# WHY: real heavy commands (pnpm/turbo/vitest) fork+supervise worker
+#      processes rather than doing the work in a single pid. A trap that
+#      only signals its direct child (`kill "$child"`) reaches the
+#      supervisor but not the workers it already spawned: the lock frees for
+#      the next waiter while those workers keep running unlocked — bead
+#      2ux.2 finding A1, and the exact meltdown this lock exists to prevent.
+# BREAKS: a naive single-pid kill in the trap makes every "signaled cleanly"
+#         heavy run leave orphaned, unlocked worker processes behind,
+#         silently reproducing the machine-meltdown this whole lock exists
+#         to stop — while every OTHER test in this suite (which only ever
+#         signals single-process commands) would keep passing, masking it.
+# ---------------------------------------------------------------------------
+test_sigterm_reaps_entire_process_tree() {
+  local name="SIGTERM kills the wrapped command's whole process tree, including a forked grandchild"
+  # GIVEN — a wrapper running a command that itself forks and backgrounds a
+  # long-sleeping grandchild (mimics a supervisor forking a worker) and
+  # records that grandchild's pid so we can check on it independently.
+  local sandbox lock marker
+  new_sandbox
+  sandbox="$SANDBOX"
+  lock="$sandbox/agent-workflow-heavy-test.lock"
+  marker="$sandbox/grandchild.pid"
+
+  TMPDIR="$sandbox" "$LOCK_SCRIPT" bash -c "sleep 300 & echo \$! > \"$marker\"; wait" &
+  local wrapper_pid=$!
+
+  local waited=0
+  while [ ! -s "$marker" ] && [ "$waited" -lt 50 ]; do
+    sleep 0.1
+    waited=$((waited + 1))
+  done
+  local grandchild_pid
+  grandchild_pid="$(cat "$marker" 2>/dev/null || true)"
+
+  # WHEN — the wrapper is sent SIGTERM.
+  kill -TERM "$wrapper_pid" 2>/dev/null
+  wait "$wrapper_pid" 2>/dev/null
+  sleep 0.5 # generous: let the OS finish tearing down the whole tree
+
+  # THEN — the grandchild the wrapped command forked is dead (not just the
+  # direct child), and the lock dir is gone.
+  local grandchild_gone=0 lock_gone=0
+  if [ -n "$grandchild_pid" ] && ! kill -0 "$grandchild_pid" 2>/dev/null; then
+    grandchild_gone=1
+  fi
+  [ ! -d "$lock" ] && lock_gone=1
+
+  if [ "$grandchild_gone" -eq 1 ] && [ "$lock_gone" -eq 1 ]; then
+    pass "$name"
+  else
+    fail "$name (grandchild_gone=$grandchild_gone lock_gone=$lock_gone grandchild_pid=$grandchild_pid)"
   fi
 }
 
@@ -419,6 +511,7 @@ test_stale_holder_release
 test_concurrent_stale_reclaim
 test_release_on_normal_exit
 test_release_on_signal
+test_sigterm_reaps_entire_process_tree
 test_acquire_timeout_degrades
 test_propagates_nonzero_exit_code
 test_no_args_shows_usage

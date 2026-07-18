@@ -9,9 +9,13 @@
 # Lock is an atomic `mkdir` directory — macOS has no `flock`. A holder whose
 # pid is no longer alive is treated as stale and reclaimed TOCTOU-safely
 # (rename-then-delete, not rm-then-mkdir: see acquire_lock below). On
-# acquire, both the holder's pid and process-group id (pgid) are recorded so
-# a companion Stop-hook reaper (bead 2ux.3) can kill exactly a crashed
-# holder's orphaned workers without touching a live sibling's run.
+# acquire, the holder's own pid is recorded immediately for stale/dead-holder
+# detection (`kill -0`). Once the wrapped command is spawned as the leader of
+# its OWN process group (see start_command below), that child's pgid is also
+# recorded — this is the WRAPPED COMMAND's worker-tree group, not the
+# wrapper's — so both this script's own INT/TERM trap and a companion
+# Stop-hook reaper (bead 2ux.3) can kill exactly a crashed/signaled holder's
+# orphaned workers without touching a live sibling's run.
 #
 # A lock ACQUIRE timeout (HEAVY_TEST_LOCK_TIMEOUT) is contention, not
 # failure: it degrades to an unlocked run with a loud stderr warning and
@@ -47,25 +51,38 @@ TIMEOUT="${HEAVY_TEST_LOCK_TIMEOUT:-1800}"
 POLL_INTERVAL=0.2
 
 # Set before the child is spawned so that, under `set -u`, a signal arriving
-# before "child=$!" runs can still safely reference (an empty) $child in the
-# INT/TERM trap instead of aborting the trap on an unbound variable.
+# before start_command has run can still safely reference (empty) $child /
+# $child_pgid in the INT/TERM trap instead of aborting the trap on an
+# unbound variable.
 child=""
+child_pgid=""
 
 if [ "$#" -eq 0 ]; then
   echo "usage: heavy-test-lock.sh <command> [args...]" >&2
   exit 2
 fi
 
-# Acquires $LOCK, recording this process's pid + pgid on success. Returns 0
-# once acquired, or 1 if $TIMEOUT seconds elapse first (never blocks past
-# that — the caller degrades to running unlocked).
+# Acquires $LOCK, recording this process's pid on success. Returns 0 once
+# acquired, or 1 if $TIMEOUT seconds elapse first (never blocks past that —
+# the caller degrades to running unlocked).
 acquire_lock() {
   local start=$SECONDS
-  local pid pgid recorded
+  local pid recorded
 
   while true; do
     if mkdir "$LOCK" 2>/dev/null; then
-      # Acquired. Record identity immediately, then re-read it back.
+      # Acquired. Record our pid immediately (the holder identity used by
+      # stale/dead-holder detection), then re-read it back.
+      #
+      # The `{ ...; } 2>/dev/null` brace group (not a trailing `2>/dev/null`
+      # on the bare `echo`) matters: bash applies redirections left-to-right,
+      # so `echo "$$" > "$LOCK/pid" 2>/dev/null` would still leak a raw
+      # "No such file or directory" to stderr if $LOCK is deleted out from
+      # under us in the TOCTOU window below, because the failing `>` is
+      # reported before the trailing `2>/dev/null` ever applies. Wrapping
+      # the whole redirect in a brace group and attaching `2>/dev/null` to
+      # the group suppresses it regardless of which redirect inside fails
+      # (bead 2ux.2 finding A2).
       #
       # ponytail: this re-read narrows, but cannot fully close, a
       # single-statement race — a waiter could see an empty pid file (ours,
@@ -77,9 +94,7 @@ acquire_lock() {
       # exercised by this suite's real concurrency, which only ever
       # contends over genuinely dead pids. A fully airtight fix needs a
       # primitive `mkdir` doesn't have (e.g. flock, unavailable on macOS).
-      echo "$$" > "$LOCK/pid" 2>/dev/null
-      pgid=$(ps -o pgid= -p "$$" 2>/dev/null | tr -d ' ')
-      echo "$pgid" > "$LOCK/pgid" 2>/dev/null
+      { echo "$$" > "$LOCK/pid"; } 2>/dev/null
       recorded=$(cat "$LOCK/pid" 2>/dev/null || true)
       if [ "$recorded" = "$$" ]; then
         return 0
@@ -113,13 +128,47 @@ acquire_lock() {
   done
 }
 
-# Runs "$@" in the background, waits for it, and exits this script with its
-# exit code. Never `exec`s (S1): exec would replace this shell, so the
-# EXIT trap that releases the lock would never fire.
-run_command() {
+# Starts "$@" in the background as the leader of its OWN process group, and
+# records its pid ($child) and process-group id ($child_pgid). Process-group
+# isolation is what lets the INT/TERM trap below signal the wrapped
+# command's entire worker tree (pnpm/turbo/vitest fork+supervise workers)
+# without also signaling this wrapper's own group — a plain `kill "$child"`
+# only reaches the direct child pid, leaving forked workers running
+# unlocked: the lock frees for the next waiter while they keep burning CPU,
+# exactly the meltdown this lock exists to prevent (bead 2ux.2 finding A1).
+#
+# `set -m` (job control) makes a backgrounded job the leader of a new
+# process group; scoped tightly to just this line — `set +m` immediately
+# after — so nothing else in the script inherits job-control's
+# terminal/signal side effects (e.g. SIGTTOU/SIGTTIN handling). The pgid is
+# assigned synchronously as part of the fork under monitor mode, so turning
+# monitor mode back off a moment later does not change it (verified under
+# bash 3.2: the child's pgid, queried via `ps -o pgid= -p "$child"`, differs
+# from the wrapper's own `ps -o pgid= -p $$` and equals the child's own pid,
+# as expected for a new process-group leader).
+start_command() {
+  set -m
   "$@" &
   child=$!
-  wait "$child"
+  set +m
+  child_pgid=$(ps -o pgid= -p "$child" 2>/dev/null | tr -d ' ')
+}
+
+# Waits for $child and exits this script with its exit code. Never `exec`s
+# (S1): exec would replace this shell, so the EXIT trap that releases the
+# lock would never fire.
+#
+# `2>/dev/null` on the wait suppresses bash's own job-control notification
+# (monitor mode prints e.g. "[1]+ Terminated: 15  <command>" to stderr when
+# reaping a job that died from a signal) — this is noise from the shell
+# itself, emitted by the `wait` builtin at reap time, not from the wrapped
+# command: the child's real stderr was already connected directly to the
+# inherited fd back when it was spawned, so this redirect on a later,
+# separate `wait` invocation cannot touch it (verified under bash 3.2: 10/10
+# signaled runs produced zero stderr with this redirect, vs a leaked
+# "Terminated" line on every run without it).
+wait_and_exit() {
+  wait "$child" 2>/dev/null
   exit $?
 }
 
@@ -128,12 +177,29 @@ if acquire_lock; then
   # held the lock (see the timeout branch below) must never remove a lock
   # dir, since that dir could belong to someone else entirely.
   trap 'rm -rf "$LOCK"' EXIT
-  # A signal must also stop the still-running wrapped command — otherwise
-  # the lock frees for the next waiter while our own child keeps running
-  # unlocked, exactly recreating the pile-up this lock exists to prevent.
-  trap 'kill "$child" 2>/dev/null; rm -rf "$LOCK"; exit 143' INT TERM
-  run_command "$@"
+  # A signal must also stop the still-running wrapped command's entire
+  # process GROUP (not just the direct child pid — see start_command above)
+  # — otherwise the lock frees for the next waiter while forked workers keep
+  # running unlocked, exactly recreating the pile-up this lock exists to
+  # prevent (bead 2ux.2 finding A1). `${child_pgid:-$child}` falls back to
+  # the plain pid in the vanishingly narrow window between `child=$!` and
+  # `child_pgid` being queried in start_command — safe because a
+  # job-control process-group leader's pgid always equals its own pid, so
+  # `-$child` is an equally valid group target. The inner `wait` reaps the
+  # group-killed child (and suppresses the job-control "Terminated" notice,
+  # same as wait_and_exit above) before releasing the lock.
+  trap 'kill -TERM -- "-${child_pgid:-$child}" 2>/dev/null; wait "$child" 2>/dev/null; rm -rf "$LOCK"; exit 143' INT TERM
+  start_command "$@"
+  # Record the wrapped command's process group for this trap and for bead
+  # 2ux.3's reaper. Guard against an empty pgid (e.g. `ps` failed, or the
+  # child already exited before we could query it) — never write a blank
+  # that a later group-kill could misinterpret.
+  if [ -n "$child_pgid" ]; then
+    { echo "$child_pgid" > "$LOCK/pgid"; } 2>/dev/null
+  fi
+  wait_and_exit
 else
   echo "heavy-test-lock: could not acquire within ${TIMEOUT}s; running unlocked" >&2
-  run_command "$@"
+  start_command "$@"
+  wait_and_exit
 fi
