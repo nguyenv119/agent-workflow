@@ -25,6 +25,7 @@ User says: "session handoff", "wrap up session", "hand off", "handoff summary", 
    - Files created or modified this session — you know what you touched; don't grep to re-discover.
    - Tracked work you shipped — beads/issues closed, PRs opened/merged, commits (you know these from the session; don't audit).
    - Memory files written or updated (`/Users/nguyenv/.claude/projects/<project>/memory/`).
+   - Session concept graph — if `/graph` was used this session, the map at `~/.claude/graphs/<session-id>/graph.mmd` (session id = `$CLAUDE_CODE_SESSION_ID`) captures the concepts/architecture visually. Point the next agent at it.
    - Unresolved questions — things you asked the user that never got a clear answer, or things the user asked that got deflected.
    - **Decisions you deliberately did NOT act on** — anything spend-affecting, production-facing, or destructive that you held for the human. These are the easiest thing to lose and the most dangerous.
 3. **Do NOT audit the filesystem to reconstruct.** This is synthesis of what happened in THIS session. No broad `Glob`/`git log` sweeps to rediscover. (Pulling a PR number or commit hash you already produced this session is fine.)
@@ -70,6 +71,7 @@ Include the load-bearing gotchas inline (PATH, sandbox flags, which key/provider
 - `<absolute path>` — <why the next agent should read this first>
 - Plan file: `<path>` (if a plan drove the session — name it FIRST)
 - Memory files touched: `<paths>` (if any)
+- Concept graph: `~/.claude/graphs/<session-id>/graph.mmd` (if `/graph` was used — the visual map of this session's concepts; open its viewer with `graph.sh open`)
 
 ## Held for you (gated / irreversible)        (when applicable)
 <decisions deliberately NOT taken, awaiting the human: spend-affecting switches, production
