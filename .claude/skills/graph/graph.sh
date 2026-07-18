@@ -19,12 +19,23 @@ seed() { [ -s "$MMD" ] || printf 'graph TD\n' > "$MMD"; }
 
 build() {
   seed
-  cat > "$HTML" <<'HTML'
+  # Tab title + favicon come from optional comment lines in graph.mmd:
+  #   %% title: <short summary>     %% icon: <emoji>
+  local title icon
+  title=$(grep -m1 '^%%[[:space:]]*title:' "$MMD" | sed 's/^%%[[:space:]]*title:[[:space:]]*//')
+  icon=$(grep -m1 '^%%[[:space:]]*icon:' "$MMD" | sed 's/^%%[[:space:]]*icon:[[:space:]]*//')
+  [ -n "$title" ] || title="Session concept graph"
+  [ -n "$icon" ] || icon="🧠"
+  {
+    cat <<'A'
 <!doctype html>
 <html lang="en"><head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Session concept graph</title>
+A
+    printf '<link rel="icon" href="data:image/svg+xml,<svg xmlns=%%27http://www.w3.org/2000/svg%%27 viewBox=%%270 0 100 100%%27><text y=%%27.9em%%27 font-size=%%2790%%27>%s</text></svg>">\n' "$icon"
+    printf '<title>%s</title>\n' "$title"
+    cat <<'B'
 <script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"></script>
 <style>
   :root{color-scheme:dark}
@@ -37,7 +48,9 @@ build() {
   svg{max-width:none!important}
 </style>
 </head><body>
-<header><b>Concept graph</b><span>live · edit graph.mmd or say /graph …</span></header>
+B
+    printf '<header><b>%s&nbsp;%s</b><span>live · edit graph.mmd or say /graph …</span></header>\n' "$icon" "$title"
+    cat <<'C'
 <div id="g">loading…</div>
 <script>
   mermaid.initialize({startOnLoad:false,theme:'dark',securityLevel:'loose'});
@@ -55,7 +68,8 @@ build() {
   tick(); setInterval(tick,1500);
 </script>
 </body></html>
-HTML
+C
+  } > "$HTML"
   echo "$HTML"
 }
 
@@ -77,12 +91,19 @@ case "${1:-path}" in
   open)  build >/dev/null; serve || true; open "$URL" 2>/dev/null || true; echo "$URL" ;;
   test)
     T="$(mktemp -d)"
+    printf 'graph TD\n%%%% title: My Test Graph\n%%%% icon: 🚀\n  a-->b\n' \
+      > /dev/null # (doc only)
+    mkdir -p "$T/.claude/graphs/__t"
+    printf 'graph TD\n%%%% title: My Test Graph\n%%%% icon: 🚀\n  a-->b\n' \
+      > "$T/.claude/graphs/__t/graph.mmd"
     CLAUDE_CODE_SESSION_ID="__t" HOME="$T" bash "$0" build >/dev/null
     H="$T/.claude/graphs/__t/viewer.html"
     grep -q "fetch('graph.mmd'" "$H" \
       && grep -q 'mermaid@11' "$H" \
       && grep -q 'mermaid.render' "$H" \
-      && echo "ok: viewer fetches graph.mmd and re-renders on change" || { echo "FAIL"; exit 1; }
+      && grep -q '<title>My Test Graph</title>' "$H" \
+      && grep -q '🚀' "$H" \
+      && echo "ok: viewer fetches+re-renders, title+icon injected" || { echo "FAIL"; exit 1; }
     rm -rf "$T" ;;
   *) echo "usage: graph.sh {path|init|build|serve|open|test}" >&2; exit 1 ;;
 esac

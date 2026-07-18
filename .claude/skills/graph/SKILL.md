@@ -68,6 +68,11 @@ drill into exactly the part they don't get.
 
 ## Mechanics (keep it hand-editable and mergeable later)
 
+- **Title + icon (do this automatically, never ask).** Keep two comment lines
+  right under `graph TD`:
+  `%% title: <3–6 word summary of what this graph is about>` and
+  `%% icon: <one emoji that fits the topic>`. They set the browser tab name and
+  favicon. Refresh the title as the graph's subject sharpens; pick the emoji once.
 - `graph TD` top-down. Stable snake_case node ids, human labels:
   `auth_flow["Auth flow"]`. Ids stay put so edits and future cross-session merges
   are clean; only labels change wording. `<br/>` gives a second line.
