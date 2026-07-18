@@ -21,6 +21,14 @@ You will receive:
 
 **rtk gotcha (this repo):** a hook rewrites bare `pnpm`/`git`/etc. to `rtk <cmd>`. For turbo quality gates (`pnpm lint`, `pnpm typecheck`, `pnpm test`, `pnpm test:integration`) the `rtk pnpm …` filter mangles turbo's output — so run those as `rtk proxy pnpm <task>` instead, which executes them raw. Run any command you are given exactly as written if it already includes `rtk proxy`.
 
+**Heavy-run lock:** wrap every **heavy** gate command — one that actually runs the test suite (`test`, `test:integration`) — with `.claude/bin/heavy-test-lock.sh` so concurrent agents can't each spawn a heavy suite and starve the machine (bead agent-workflow-2ux.2). Lint and typecheck are light — do not wrap them. The lock wrapper is the outermost token; it composes with the rtk note above without conflict, e.g.:
+
+```
+.claude/bin/heavy-test-lock.sh rtk proxy pnpm test
+```
+
+The bare-`pnpm`→`rtk` rewrite still applies only to the inner `pnpm test`. If a command you were given already starts with `.claude/bin/heavy-test-lock.sh`, run it as-is — don't wrap it twice.
+
 ## Output Protocol
 
 **ALWAYS** respond with exactly this format and nothing else:
