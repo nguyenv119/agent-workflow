@@ -61,6 +61,10 @@ For every test file, check the following. Go into the implementation only when s
 - [ ] Factory/injection pattern exists for dependencies
 - [ ] Every mock has a justification comment
 
+**Shared Scaffolding Reuse**:
+- [ ] No scaffolding (SDK/service stubs, DB loaders, row builders) re-declared locally when the package's shared test helpers already provide it, or when 2+ sibling test files carry the same block (extract to the shared location instead)
+- [ ] Conversely, no added indirection: no shared-helper call that is *longer* than the inline mock it replaces (consolidation must delete code)
+
 **Meaningfulness**:
 - [ ] Tests verify behavior, not just that code doesn't crash
 - [ ] A wrong implementation would fail these tests

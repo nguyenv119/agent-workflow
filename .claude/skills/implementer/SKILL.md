@@ -75,8 +75,9 @@ Write tests for the behavior you are about to change or add. Do this **before** 
 - "I'll add tests later" — no, tests ship with the code, always
 
 1. Read the relevant production code to understand current behavior
-2. Write new test cases that describe the desired behavior after your change
-3. Verify the new tests fail by delegating to a test-runner sub-agent (see "Running quality gates" above)
+2. Locate the package's shared test scaffolding (DB bootstraps, service stubs, row builders — usually a `test/helpers/` or setup file wired via the test runner's `setupFiles`) and import from it rather than re-declaring it. If the scaffolding you need doesn't exist yet, create it in the shared location as part of this task — never inline a private copy of setup a sibling test file already has. Reuse must not add indirection: if importing a helper would make the call site *longer* than the inline version, keep it inline.
+3. Write new test cases that describe the desired behavior after your change
+4. Verify the new tests fail by delegating to a test-runner sub-agent (see "Running quality gates" above)
 
 ### Test Structure Requirements
 

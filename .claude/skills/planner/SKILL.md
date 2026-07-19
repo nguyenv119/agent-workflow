@@ -98,6 +98,7 @@ After the user approves the plan:
 - **Summary**: What and why in 1-2 sentences
 - **Files to modify**: Exact paths (with line numbers if relevant)
 - **Implementation steps**: Numbered, specific actions
+- **Test scaffolding pointer**: name the package's shared test-helper location the implementer must import from (and never plan a consolidation whose call sites get longer — reuse must delete code, not add indirection)
 - **Example**: Show before → after transformation when applicable
 - **Real acceptance**: a runnable pass/fail for this bead **against reality, not mocks** (bead-level R1) — a live API/model call, real corpus data, or a real dev-DB integration, naming the observable it asserts (the actual values/counts/shape). The coordinator runs this *before* the approval gate and records its output as **evidence**; mocks/unit tests are the CI gate, never the acceptance bar (see `standards/quality.md` §H). Tier by risk — standard beads may lean on reviewers + quality gates, but the acceptance bar is still a real check; **risky beads (DB schema/migrations, shared infra, prod-affecting) REQUIRE a runnable real check — for schema, "applies from-zero on real Postgres" (CI migration-check), never a local `db:verify` on already-migrated state** (see the win-condition skill's "Bead-level acceptance").
 
