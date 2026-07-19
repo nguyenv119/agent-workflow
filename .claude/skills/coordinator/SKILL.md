@@ -269,7 +269,7 @@ REFERENCE DIRS: <key directories in the existing codebase to compare against>
 - **Trivial issues** (typos, minor naming): fix directly via `git -C <worktree_path>` commands, commit, then push the fix to the same branch
 - **Non-trivial issues** (bugs, missing tests, duplication): file a beads issue, spawn an implementer subagent in the same worktree, close when fixed
 
-After all issues resolved, re-run quality gates. **Delegate to a test-runner sub-agent** so verbose output doesn't pollute the coordinator's context — do NOT run the gates directly with Bash. Use the Agent tool with `subagent_type: "claude"` and `model: "haiku"`, pulling the command list from the **Quality Gates** / Verification table in CLAUDE.md:
+After all issues resolved, re-run quality gates. **Delegate to a test-runner sub-agent** so verbose output doesn't pollute the coordinator's context — do NOT run the gates directly with Bash. Use the Agent tool with `subagent_type: "claude"`, `model: "haiku"`, and `run_in_background: false` — run the gate **once, synchronously**; never spawn a second gate run while one is pending, and if re-woken or nudged mid-run, report the pending/complete result instead of restarting it. Pull the command list from the **Quality Gates** / Verification table in CLAUDE.md, scoped to the **changed package(s) and their dependents** — never the whole monorepo (e.g. `turbo run test --filter=...[origin/main]`, replace for your stack; the full suite is CI's job on push):
 
 ```
 ROLE: Test Runner
@@ -277,7 +277,7 @@ SKILL: Read and follow .claude/skills/test-runner/SKILL.md
 
 WORKTREE: <worktree_path>
 COMMANDS:
-- <quality-gate commands matching the changed code>
+- <quality-gate commands matching the changed code, scoped to the changed package(s) and dependents>
 ```
 
 **Do NOT push if the sub-agent reports FAIL.** Fix locally first (spawn an implementer if the fix is non-trivial), then re-delegate.
@@ -475,6 +475,7 @@ information. Phase 3 is a short wrap-up only.
 - Parallelizing beads that touch the same files — analyze overlap first
 - Pushing with failing tests or quality gate failures
 - Running quality gates directly in coordinator context — always delegate to a test-runner sub-agent (`model: "haiku"`) so verbose output doesn't pollute context
+- Idling on a background gate run, or re-spawning a gate run when nudged instead of reporting the pending result
 - Treating unit tests / mocks as the acceptance bar — the **real-acceptance check** (§4c2: live dependency / real data / real from-zero DB, run before the gate) is what makes a bead "done"; mocks are only the CI gate
 - Approving a bead on "tests passed" instead of on the real-acceptance **evidence** (the actual output) in the `BEAD COMPLETE` block
 - Merging PRs (that's the human's job)

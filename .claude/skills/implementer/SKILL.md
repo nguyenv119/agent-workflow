@@ -34,7 +34,7 @@ Prevention is better than detection — knowing these patterns avoids creating t
 
 ### Running quality gates
 
-Whenever a phase says to run tests or quality gates, do **not** run them directly — spawn a test-runner sub-agent so the noisy output stays out of your context. Use the Agent tool with `subagent_type: "claude"` and `model: "haiku"`:
+Whenever a phase says to run tests or quality gates, do **not** run them directly — spawn a test-runner sub-agent so the noisy output stays out of your context. Use the Agent tool with `subagent_type: "claude"`, `model: "haiku"`, and `run_in_background: false`:
 
 ```
 ROLE: Test Runner
@@ -42,10 +42,14 @@ SKILL: Read and follow .claude/skills/test-runner/SKILL.md
 
 WORKTREE: <your worktree path>
 COMMANDS:
-- <the quality-gate commands from the Quality Gates / Verification table in CLAUDE.md that match the code you changed>
+- <the quality-gate commands from the Quality Gates / Verification table in CLAUDE.md, scoped to the changed package(s) and their dependents>
 ```
 
 The sub-agent replies `RESULT: PASS` or `RESULT: FAIL` with a trimmed error summary. On FAIL, read the summary, fix the issue, and re-delegate. Only run a gate directly in your own context if you need to debug a failure interactively.
+
+**Run-once discipline:** Run gates **once, synchronously** (`run_in_background: false`) and wait for the reply — never launch a gate run in the background and idle/sleep "waiting" for it. Never spawn a second gate run while one is still pending. If you are re-woken or nudged while a gate run is in flight, **report its pending or completed result** — do not restart it; the harness already re-wakes you when a background job finishes, so idling or re-spawning on a nudge only duplicates load.
+
+**Run scope (changed package, not the whole monorepo):** Run only the tests for the **changed package(s) and their dependents** (downstream consumers) — never the whole monorepo locally. The exact scoping command is stack-specific — put it in CLAUDE.md's Quality Gates table and **replace for your stack**; examples: `turbo run test --filter=...[origin/main]` (Turborepo), `nx affected --target=test` (Nx), `pnpm --filter "...[origin/main]" test` (pnpm workspaces), or a Bazel target-scoped query. **Recommended: cap per-run parallelism** (e.g. `--maxWorkers=<~half your cores>`) so one run can't occupy every core. This per-run core cap is the lightest backstop against pile-up — combined with scoping, it keeps concurrent runs from starving the machine *without* needing a machine-global lock, and leaves headroom for sibling worktrees. The **full / timing-sensitive suite is CI's job**, run on push on a clean machine — scoped-local can miss cross-package breaks by design; that's fine because CI is the authoritative gate.
 
 ## Phase 0: Announce Approach
 
@@ -92,7 +96,7 @@ Make the production code changes. Keep changes minimal and focused on the task.
 
 ## Phase 3: Verify
 
-Run quality gates matching the code you changed by delegating to a test-runner sub-agent (see "Running quality gates" above). Pull the command list from the **Quality Gates** / Verification table in CLAUDE.md.
+Run quality gates — scoped to the changed package(s) and their dependents, not the whole monorepo (see "Running quality gates" above) — by delegating to a test-runner sub-agent. Pull the command list from the **Quality Gates** / Verification table in CLAUDE.md.
 
 **Gate:** The sub-agent reports `RESULT: PASS`. If it reports FAIL, read the error summary, fix the issues, and re-delegate before proceeding.
 
