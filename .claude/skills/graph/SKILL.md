@@ -21,10 +21,11 @@ Source of truth: `graph.mmd` (find it with `bash SKILL_DIR/graph.sh path`).
 2. **Apply the user's request** as a *surgical* Edit to `$MMD` — add a node,
    add/relabel an edge, group under a subgraph, or restructure. Keep it valid
    Mermaid. Do not rewrite the whole file when a small edit suffices.
-3. **Rebuild + show:** `bash <skill-dir>/graph.sh open` (first time this session,
+3. **Refresh NOW / NEXT** if the graph tracks actionable work (see below).
+4. **Rebuild + show:** `bash <skill-dir>/graph.sh open` (first time this session,
    opens the browser) or `build` (later, just regenerates — the tab auto-refreshes
    every 2s). Give the user the `file://` path once.
-4. **One-line summary** of what changed. Nothing more.
+5. **One-line summary** of what changed. Nothing more.
 
 If the user gives no instruction (bare `/graph`), just build/open and report the
 path — treat it as "show me the graph."
@@ -57,6 +58,45 @@ understand this at a glance," borrowing from the `teach` skill:
   `a -.->|small overlap| b`. Not technical connectors.
 - **Optional everyday analogy** when a concept is abstract (teach's *eli5*) — a
   parallel node, only if it genuinely clarifies.
+
+## Always surface NOW / NEXT (only when there's actionable work)
+
+If the session involves *doing* things — open PRs, beads/issues, a task list, a
+next step — the graph must pin two things where the eye lands first:
+
+- **NOW** — what's actionable this very moment: the review that's green and ready
+  to merge, the piece of work in progress, the immediate next step. What the user
+  would act on if they stopped reading right here.
+- **NEXT** — what becomes actionable the instant NOW is cleared: the work that
+  unblocks once this lands, the follow-up. One hop ahead, no further — this is a
+  pointer, not a backlog.
+
+**Describe work ad hoc, by what it IS — never by ID.** No epic names, bead ids,
+issue numbers, or PR numbers on the canvas (`the opponent-numbers fix`, not
+`bead .31` or `PR #1098`). IDs are noise for understanding and go stale; a plain
+description of the work is what the user actually recognizes.
+
+Pin them in a highlighted cluster at the TOP of the graph so they pop:
+
+```
+graph TD
+  %% title: ...
+  %% icon: ...
+  subgraph todo["▶ Do now / next"]
+    now["NOW — merge the opponent-numbers fix<br/>green · unblocks the thin-corpus work"]:::now
+    nxt["NEXT — start the thin-corpus fix<br/>unblocks once the fix above lands"]:::nxt
+  end
+  classDef now fill:#1f6f3d,stroke:#3fb950,color:#fff;
+  classDef nxt fill:#3d2f00,stroke:#d29922,color:#fff;
+  %% ...the rest of the map below...
+```
+
+Keep it current: when NOW is done, drop it, promote NEXT into NOW, and pull the
+new NEXT from downstream. Hold each to a handful of items.
+
+**When it does NOT apply:** a pure understanding/explainer graph with no task to
+act on (e.g. "how CI billing works", "why the run OOM'd"). Don't invent a TODO
+cluster where there's nothing to do — leave it off entirely.
 
 ## After drawing: check understanding, then layer (the teach loop)
 
