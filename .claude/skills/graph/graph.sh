@@ -15,7 +15,7 @@ HTML="$DIR/viewer.html"
 URL="http://localhost:$PORT/$SID/viewer.html"
 mkdir -p "$DIR"
 
-seed() { [ -s "$MMD" ] || printf 'graph TD\n' > "$MMD"; }
+seed() { [ -s "$MMD" ] || printf 'graph LR\n' > "$MMD"; }  # LR: build wide, not tall
 
 build() {
   seed
@@ -91,10 +91,10 @@ case "${1:-path}" in
   open)  build >/dev/null; serve || true; open "$URL" 2>/dev/null || true; echo "$URL" ;;
   test)
     T="$(mktemp -d)"
-    printf 'graph TD\n%%%% title: My Test Graph\n%%%% icon: 🚀\n  a-->b\n' \
+    printf 'graph LR\n%%%% title: My Test Graph\n%%%% icon: 🚀\n  a-->b\n' \
       > /dev/null # (doc only)
     mkdir -p "$T/.claude/graphs/__t"
-    printf 'graph TD\n%%%% title: My Test Graph\n%%%% icon: 🚀\n  a-->b\n' \
+    printf 'graph LR\n%%%% title: My Test Graph\n%%%% icon: 🚀\n  a-->b\n' \
       > "$T/.claude/graphs/__t/graph.mmd"
     CLAUDE_CODE_SESSION_ID="__t" HOME="$T" bash "$0" build >/dev/null
     H="$T/.claude/graphs/__t/viewer.html"

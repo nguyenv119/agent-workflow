@@ -17,7 +17,7 @@ Source of truth: `graph.mmd` (find it with `bash SKILL_DIR/graph.sh path`).
 
 1. **Locate + read** the current graph:
    `MMD=$(bash <skill-dir>/graph.sh path)` then Read `$MMD`. It always exists
-   (seeded to `graph TD`). Understand what's already mapped before changing it.
+   (seeded to `graph LR`). Understand what's already mapped before changing it.
 2. **Apply the user's request** as a *surgical* Edit to `$MMD` — add a node,
    add/relabel an edge, group under a subgraph, or restructure. Keep it valid
    Mermaid. Do not rewrite the whole file when a small edit suffices.
@@ -79,7 +79,7 @@ description of the work is what the user actually recognizes.
 Pin them in a highlighted cluster at the TOP of the graph so they pop:
 
 ```
-graph TD
+graph LR
   %% title: ...
   %% icon: ...
   subgraph todo["▶ Do now / next"]
@@ -109,13 +109,18 @@ drill into exactly the part they don't get.
 ## Mechanics (keep it hand-editable and mergeable later)
 
 - **Title + icon (do this automatically, never ask).** Keep two comment lines
-  right under `graph TD`:
+  right under `graph LR`:
   `%% title: <3–6 word summary of what this graph is about>` and
   `%% icon: <one emoji that fits the topic>`. They set the browser tab name and
   favicon. Refresh the title as the graph's subject sharpens; pick the emoji once.
-- `graph TD` top-down. Stable snake_case node ids, human labels:
-  `auth_flow["Auth flow"]`. Ids stay put so edits and future cross-session merges
-  are clean; only labels change wording. `<br/>` gives a second line.
+- **Build horizontally: use `graph LR`, not `graph TD`.** Wide graphs render
+  zoomed-OUT and you can still zoom in; tall graphs render zoomed-IN and trap you
+  — `Cmd -` won't shrink a column that's already narrow, so a vertical graph is
+  stuck scrolling. Lay the flow left→right, branch downward only for short
+  offshoots. Prefer `subgraph`s side by side over stacked.
+- Stable snake_case node ids, human labels: `auth_flow["Auth flow"]`. Ids stay
+  put so edits and future cross-session merges are clean; only labels change
+  wording. `<br/>` gives a second line.
 - Group related concepts in a `subgraph` titled with the question it answers.
 - Content is the **user's** conceptual model in their words — not internal model
   state, not file-by-file detail. Summarize; don't dump.
