@@ -25,22 +25,20 @@ Any epic that may be run autonomously (`/work` in Autonomous Loop Mode) needs a 
 
 ### Phase 1 — Explore & Understand
 
-Before proposing anything, understand the landscape:
+Before proposing anything, understand the landscape.
 
-1. Read the epic/description to understand the goal
-2. Explore the codebase:
-   - Existing patterns and conventions
-   - Shared types and packages
-   - Code that will be affected
-   - Similar existing implementations to follow as reference
+1. Read the epic/description to understand the goal.
+2. **If `discover` already ran this session** for this epic/topic, skip
+   exploring — use its confidence list and verdicts directly, and only chase
+   whatever it left open. Say so explicitly ("using discover's findings from
+   above") rather than re-reading the same files.
 
-**Graph-accelerated exploration (when available):**
-If codebase graph MCP tools are available, start with:
-- `get_architecture_overview_tool` — understand the codebase structure before diving in
-- `get_impact_radius_tool` on files likely to change — see the blast radius early
-- `semantic_search_nodes_tool` — find similar existing implementations to use as reference
-
-Then use Grep/Read for detailed content. The graph tells you where to look.
+   **Otherwise, run the `discover` skill** to build and ground the confidence
+   list (its Steps 1-5) before proposing anything: existing patterns and
+   conventions, shared types and packages, code that will be affected,
+   similar existing implementations to follow as reference. Its output —
+   confirmed facts, what's still open, and any matching knowledge-base
+   entries it found — is what you use next.
 
 3. Identify:
    - Tradeoffs and design decisions that need user input
