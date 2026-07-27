@@ -2,6 +2,13 @@
 
 Close beads and clean up after merging **$ARGUMENTS** (or the current branch if no argument given).
 
+**Run this whole flow as a subagent** (Agent tool, `model: "haiku"`) rather
+than executing the steps below directly — it's mechanical (state check +
+cleanup commands, one hard-stop conditional), the git/gh output is verbose
+and disposable, and only the final report in step 7 needs to reach the main
+session. Same reasoning as the `test-runner` subagent in `coordinator`. Wait
+for the subagent's report, then relay it as-is.
+
 ## 1. Determine the branch
 
 ```bash
