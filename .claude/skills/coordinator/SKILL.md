@@ -16,6 +16,27 @@ You are the single entry point for all implementation work. You triage incoming 
 - **Interactive (default)** — process ready beads and gate on human approval after each (Phase 2 §4e). Current behavior; nothing changes.
 - **Autonomous Loop Mode** — when the epic carries a `## Win Condition`, offer to run the loop unattended: the §4e human gate is replaced by the win-condition eval, and you iterate until it passes (or a cap trips). See "Autonomous Loop Mode" below. The per-bead machinery (worktree, branch, implementer, reviewers, gates, PR) is identical in both modes.
 
+## Stay quiet during execution
+
+Nothing in Phase 2's per-bead loop — spawning the implementer, spawning the
+three reviewers, handling their findings, running quality gates, pushing,
+creating the PR — gets narrated to chat as it happens. No "first review is
+back," no "I'll batch that fix once the others report," no "N reviews still
+running." Do the work, then surface exactly one thing per bead: the
+`BEAD [n] COMPLETE` block (§4e) once everything above it is actually done.
+
+**What still interrupts silence** — genuinely blocking things only:
+- The §4e approval gate itself (interactive mode)
+- A bead going BLOCKED (§5)
+- Anything that needs the user's decision, not just their awareness
+
+Non-trivial reviewer findings still get filed as beads issues and fixed by a
+spawned implementer, exactly as described below — only the blow-by-blow
+description of that process disappears from chat. The findings themselves
+aren't hidden; they're in the bead history and the final PR, same as always.
+Autonomous Loop Mode already follows this — its per-iteration detail goes to
+the loop log file, not chat; only SUCCESS/BLOCKED surface at the end.
+
 ## Phase 1: Triage
 
 ### 1. Parse Input
@@ -70,6 +91,42 @@ EOF
 ```
 
 This ensures the implementer spawns with rich context regardless of whether work came from `/plan` or ad-hoc.
+
+### 3. Check Quick eligibility — MANDATORY, not skippable
+
+**This is a required checkpoint, not an optional judgment call.** The
+failure mode this guards against already happened once: an agent went
+straight to `/work` on an epic "reflexively, because that's the documented
+default for an epic" and never even evaluated Quick. A soft "offer it if you
+notice" step is exactly what let that happen — silence is easy to produce by
+accident, an explicit line in the triage output is not.
+
+Before entering the full per-bead loop, you MUST output one line per bead in
+this exact form, for every bead, every time — including epics with many
+beads:
+
+```
+Quick-eligible: <bead-id> — yes/no — <one-line reason>
+```
+
+The eligibility test itself, both conditions:
+
+1. **Small, OR mechanically uniform.** Either the diff is small (roughly one
+   file or a handful of lines), **or** it's a bulk-but-mechanical change —
+   near-100% deletions, a scripted rename, a generated-file regen — where
+   line count is high but there's no logic to get wrong. Line count alone is
+   a bad proxy for a `git rm -r` across many files; judge the *mechanism* of
+   the change, not just its size. If you're arguing "it's medium-sized but
+   simple" for something that ISN'T mechanically uniform, that's still a
+   signal to hand off.
+2. **Not on the risk deny-list.** Does not touch DB schema/migrations, auth,
+   payments, CI/CD config, widely-imported shared infra, or secrets/env
+   handling.
+
+Both must hold. If a bead is `yes`, offer to route it through `/quick`
+instead of the full flow — still requires the user's go-ahead to switch, but
+the offer itself is mandatory, not optional. If `no`, proceed to Phase 2
+normally, no further action needed.
 
 ---
 
@@ -341,43 +398,26 @@ Generated with Claude Code
 
 > **Autonomous Loop Mode:** skip this human gate. Instead run the win-condition eval and let the triage step decide continue/stop (see "Autonomous Loop Mode"). The rest of §4 (push, PR, beads status) is unchanged.
 
-After creating or updating the PR, build a **Review Guide** before outputting the
-completion block. The guide tells the human which tests to read first for maximum
-understanding.
-
-**Building the Review Guide:**
-
-1. Collect all test files from the implementer's "Test coverage" summary section.
-2. For each test file, briefly scan it to identify:
-   - What it tests (unit, model, helper, integration, API, UI, etc.)
-   - Whether it imports or depends on fixtures/helpers/factories created by other new test files.
-3. Sort tests into a recommended reading order using these rules:
-   - **Foundational tests first**: unit tests for models, helpers, utilities, and shared fixtures — these establish the vocabulary.
-   - **Then feature tests**: tests for services, controllers, or business logic that build on the foundational layer.
-   - **Then integration/E2E tests last**: tests that compose multiple layers — these make the most sense after you've seen the parts.
-   - Within the same tier, order by dependency: if test B imports a factory defined alongside test A, list A before B.
-4. For each test, write one line: the file path and a short phrase explaining what it validates and why it's at this position in the order.
-
-Output the following block and use AskUserQuestion to wait for explicit approval
-before proceeding to the next bead:
+**Final verdict only — this is the one thing the user actually reads.**
+Everything upstream of this point (implementer output, reviewer findings,
+gate runs) stays out of chat per the quiet-execution rule above. What
+surfaces here is a plain-language verdict, a few sentences, no structured
+field labels, no jargon:
 
 ```
 BEAD [n] COMPLETE
-Tasks completed: <bead-id>: <bead-title>
-Tests passing: <quality gate commands that passed>
-Real acceptance: <the real check that ran> → <its actual output / verdict — the evidence, not "passed">
-Branch: <branch-name>
-PR: <url>
-
-Review guide (read tests in this order):
-1. <test-file-path> — <what it tests>; foundational because <reason>
-2. <test-file-path> — <what it tests>; builds on #1 by <reason>
-3. <test-file-path> — <what it tests>; integration layer combining <what>
-...
-(Implementation files are backup reading if tests leave questions open.)
+<bead-id>: <one plain sentence — what changed and why>. Tests pass<, real
+acceptance: one plain-language line if the bead had one>. PR: <url>.
 
 Waiting for approval to proceed to bead [n+1].
 ```
+
+Do not build or print a test-reading-order guide by default — that was
+process the user didn't ask for. If they want to know which tests to read
+first for a specific PR, they'll ask, and you build it then, on demand.
+
+Use AskUserQuestion with a single option "Continue to bead [n+1]" to gate forward
+progress. **Do NOT start the next bead until the user confirms.**
 
 Counter `n` is a sequential integer local to this `/work` run, starting at 1 and
 incrementing with each bead processed (not the bead's global ID).
