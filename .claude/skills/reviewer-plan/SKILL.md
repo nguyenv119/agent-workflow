@@ -63,6 +63,20 @@ Read the code that will be affected. Understand:
 - [ ] Are tasks properly scoped? (Not too large for a single commit, not trivially small)
 - [ ] Are there missing tasks? (migrations, config, test infrastructure, shared utilities)
 - [ ] Does each task have clear acceptance criteria?
+- [ ] Is any task trivial enough to route through `quick` instead of the full
+      `coordinator`/`work` flow? (small diff, OR a mechanically-uniform bulk
+      change like a scripted deletion/rename — AND doesn't touch DB
+      schema/migrations, auth, payments, CI/CD config, or widely-imported
+      shared infra) — flag it as a Quick candidate in your report.
+
+**This checklist item must be re-read from this file, not copied from a
+prior review brief.** A past miss happened exactly this way: whoever built
+the reviewer's specific brief for a run wrote it from their own 5 priorities
+and this item wasn't among them, because it predated this line being added
+here. This is the same failure the standing rule "coordinator reviewer
+spawns must inline the checklist" already exists to prevent — apply that
+rule here too: pull this section fresh from the live file every time, never
+reuse an old brief template.
 
 #### Task Quality
 - [ ] Is each task self-contained? (Readable without external context)
