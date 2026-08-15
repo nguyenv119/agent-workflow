@@ -458,7 +458,7 @@ Entered when the epic carries a `## Win Condition` **and** the user confirms an 
 ```bash
 bd show <epic-id> --json        # read the ## Win Condition block
 ```
-Then load `.claude/skills/triage/SKILL.md` and `.claude/skills/win-condition/SKILL.md`.
+Then load `.claude/skills/win-condition/SKILL.md`.
 
 **The eval lives out-of-tree** at the outer (un-versioned) `.claude/loop-evals/<epic-id>/` — never in the repo. If it doesn't exist yet, authoring it is the loop's first action (per win-condition R2). It runs locally as you (Claude Code), so it may reach the dev system directly — Neon Dev, Vercel, dev Trigger — to fetch / parse / seed / insert / update / delete.
 
@@ -466,9 +466,9 @@ Then load `.claude/skills/triage/SKILL.md` and `.claude/skills/win-condition/SKI
 
 **Each iteration:**
 
-1. **Triage** — follow the triage skill. Run the win-condition's verification; if it passes **and** its output ends with the success sentinel → exit **SUCCESS** (triage must cite the evidence). Otherwise get exactly one action: `RUN_BEAD <id>` / `NEW_BEAD <desc>` / `QUICK_FIX <desc>` / `STOP <reason>`.
+1. **Triage** — run the win-condition's verification; if it passes **and** its output ends with the success sentinel → exit **SUCCESS** (cite the evidence). Otherwise pick exactly one action: `RUN_BEAD <id>` / `NEW_BEAD <desc>` / `QUICK_FIX <desc>` / `STOP <reason>`.
 2. **Execute (bounded per-bead fix-loop)** — carry out the action via the existing Phase 2 machinery: its own worktree + branch, implementer subagent, all three reviewers, quality gates, **and the bead's acceptance check** (the integration check for risky beads, per the win-condition skill — not just unit gates). One action = one PR (drift containment). **No human approval gate** in this mode.
-   - If reviewers / gates / acceptance fail: have **triage diagnose** the failure (see triage's "Per-bead failure diagnosis"), then re-spawn the implementer with that diagnosis as context. Repeat up to **per-bead max attempts (default 3)**.
+   - If reviewers / gates / acceptance fail: **diagnose the failure yourself** (read the failing gate/reviewer output, identify the root cause — don't just retry), then re-spawn the implementer with that diagnosis as context. Repeat up to **per-bead max attempts (default 3)**.
    - **Carry state across attempts**: append each attempt's failure + diagnosis to the loop log (and the bead notes) so attempt N+1 sees what N tried — this is what stops it repeating the same mistake or drifting on stale context.
    - Still failing after the cap → mark the bead **BLOCKED**, log it, and let the outer triage decide: try a different ready bead, or stop the run.
 3. **Verify** — re-run the win-condition's runnable check. Dual-condition: it must exit 0 **and** its output must end with the success sentinel `<promise>WIN</promise>` (printed by the eval, not the implementer). Absence of errors alone is never success.
