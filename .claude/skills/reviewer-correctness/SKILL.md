@@ -63,7 +63,19 @@ Answer these three questions before proceeding to the line-by-line review:
 
 ### 2. Run Quality Gates
 
-Run quality gates per the **Quality Gates** table in CLAUDE.md. If any fail, note the specific failures.
+**Delegate to a test-runner sub-agent - do NOT run the gates directly with Bash.** Verbose test output would eat your review context. Use the Agent tool with `subagent_type: "claude"` and `model: "haiku"`:
+
+```
+SKILL: Read and follow .claude/skills/test-runner/SKILL.md
+
+WORKTREE: <the worktree path you were given>
+COMMANDS:
+<one per line, from the Quality Gates / Verification table in this project's CLAUDE.md>
+```
+
+**Scope - run-once - don't set your own worker count.** Scope every gate to the changed package(s) + their dependents, never the whole repo - the full suite is CI's job on push. Run the gate **once**, synchronously (`run_in_background: false`); if nudged while a run is pending, report its result rather than starting a second. Do **not** add a per-command parallelism flag: other agents may be running their own gates on the same machine concurrently, so the worker cap belongs in a machine-wide setting (for vitest, the `VITEST_MAX_WORKERS` environment variable), not in a flag each agent has to remember - command-rewriting hooks can silently drop appended flags.
+
+If any gate fails, note the specific failures.
 
 ### 3. Review Every Changed File
 
