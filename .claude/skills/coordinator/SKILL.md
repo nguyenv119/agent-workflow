@@ -339,6 +339,8 @@ COMMANDS:
 
 **Do NOT push if the sub-agent reports FAIL.** Fix locally first (spawn an implementer if the fix is non-trivial), then re-delegate.
 
+**A gate verdict is only as good as the commit it ran against.** Capture `git -C <worktree> rev-parse HEAD` when you spawn the test-runner and require it in the reply (`Commit:` line); if the branch tip has moved since, the verdict is stale — rerun. A `PASS` with no test-file/test counts is **unverified**, not passed: the test-runner must report counts for every test command, and a cache-replay marker (`FULL TURBO` / `cache hit`) in place of counts is a replay, not a run — rerun with the cache bypassed.
+
 #### c2. Run the Real Acceptance — against reality, NOT mocks
 
 Reviewers + unit tests prove the code is *shaped* right; they do **not** prove it *works against reality*. A green mock suite passes even when the real model id, API auth, data shape, or DB behavior is wrong (lived example: a local `db:verify` reported "no drift" and all unit tests were green, while CI's from-zero migrate — the real check — failed on the same change). So **before pushing**, run the bead's **real-acceptance check** — the runnable check in its `## Real acceptance` section — and capture its actual output.
@@ -440,6 +442,9 @@ bd update <id> --set-labels in-review --json
 
 ### 5. Handle Failures
 
+**Stop dev servers yourself.** Background dev servers started by implementers die at turn boundaries, and the implementer restarts them when it wakes. When a bead is done or an agent is reaped, the coordinator kills the server (scoped to that worktree's path) **and tells the implementer to stand down in the same message** — otherwise it comes back.
+
+
 **On SUCCESS:**
 Check the "Concerns" section in the implementer summary — file follow-up issues if needed.
 
@@ -462,7 +467,7 @@ Then load `.claude/skills/win-condition/SKILL.md`.
 
 **The eval lives out-of-tree** at the outer (un-versioned) `.claude/loop-evals/<epic-id>/` — never in the repo. If it doesn't exist yet, authoring it is the loop's first action (per win-condition R2). It runs locally as you (Claude Code), so it may reach the dev system directly — Neon Dev, Vercel, dev Trigger — to fetch / parse / seed / insert / update / delete.
 
-**Confirm guardrails once** before starting: max-iterations N, **per-bead max attempts (default 3)**, the stagnation thresholds (from the win-condition), and that merges stay manual. Initialize a loop log (e.g. `.claude/loop-<epic-id>.log`), one line per iteration.
+**Confirm guardrails once** before starting: max-iterations N, **per-bead max attempts (default 3)**, the stagnation thresholds (from the win-condition), and that merges stay manual. Then run the **chain-base preflight** (win-condition skill): `git fetch origin && git merge-base --is-ancestor origin/main <chain-base>` must be true — if not, merge main into the base first (per the repo CLAUDE.md "Branch Hygiene") and confirm the base's own PR is green before bead 1. Early warning: a schema-diff tool offering an *unrelated* drop means the branch is behind production — stop and reconcile the base, never strip it and continue. Initialize a loop log (e.g. `.claude/loop-<epic-id>.log`), one line per iteration.
 
 **Each iteration:**
 
@@ -471,12 +476,20 @@ Then load `.claude/skills/win-condition/SKILL.md`.
    - If reviewers / gates / acceptance fail: **diagnose the failure yourself** (read the failing gate/reviewer output, identify the root cause — don't just retry), then re-spawn the implementer with that diagnosis as context. Repeat up to **per-bead max attempts (default 3)**.
    - **Carry state across attempts**: append each attempt's failure + diagnosis to the loop log (and the bead notes) so attempt N+1 sees what N tried — this is what stops it repeating the same mistake or drifting on stale context.
    - Still failing after the cap → mark the bead **BLOCKED**, log it, and let the outer triage decide: try a different ready bead, or stop the run.
-3. **Verify** — re-run the win-condition's runnable check. Dual-condition: it must exit 0 **and** its output must end with the success sentinel `<promise>WIN</promise>` (printed by the eval, not the implementer). Absence of errors alone is never success.
-4. **Record** — append to the loop log: action, result, verification output (exit code + key line), files touched, and approximate token cost (track cost-per-accepted-change; if the accept rate craters, stop and re-tune rather than burning tokens).
-5. **Stop checks** — exit the loop if:
+3. **CI-green gate — do NOT start the next bead until this PR is green.** Local reviewers and gates prove the branch is shaped right; only GitHub's checks prove it against a production-forked clone (CI and the preview deploy both fork the database from prod). Lived failure: a one-migration-stale base propagated through nine stacked branches because nobody looked at CI until the end.
+   - **Required set** (block on these): the repo's required checks (list them in the project CLAUDE.md; typically unit tests, lint/typecheck, migration checks, and the preview deploy). **Advisory** (never block): bot reviewers and comment-only integrations.
+   - **Poll in the background, every 60 s, cap ~40 min.** `gh pr checks <n> --repo $REPO --watch --interval 60` as a Bash `run_in_background` command — a foreground sleep loop that ends the turn dies with the session (lived failure). Or poll `gh pr view <n> --repo $REPO --json mergeStateStatus,statusCheckRollup`. Checks take 8–15 min and can take a couple of minutes to *appear*: nothing after 5 min → re-read the PR; **"no checks" is never "green"**. GitHub's API budget is 5,000 req/h — never poll every 5 s across many PRs. Past the cap, treat it as failure-to-conclude.
+   - **Green =** every required check has `bucket: pass` (`gh pr checks <n> --repo $REPO --json name,bucket,state,link`) **and** `mergeStateStatus: CLEAN`. `UNSTABLE` = a check failed or is still running; `BLOCKED` = a required check pending or a review outstanding; `DIRTY` = conflicts. Only CLEAN counts; `gh pr merge --auto` is disabled in this repo (repo CLAUDE.md "Branch Hygiene").
+   - **Red →** diagnose the root cause *before touching the next bead* (see "CI failure triage" below); fix on this branch — or at the chain base if the cause is upstream — push, and wait again. Cap **3 attempts per bead**, then mark the bead BLOCKED and **stop the loop**. Never stack more branches on a red base.
+   - **Two acceptable shapes**: fully serial (simplest; ~10–15 min wall time per bead), or overlapped — bead N+1's implementer may start in its own worktree, but its branch is **not pushed and its PR not opened** until bead N is green, so a base fix can be merged forward before the child exists.
+4. **Verify** — re-run the win-condition's runnable check. Dual-condition: it must exit 0 **and** its output must end with the success sentinel `<promise>WIN</promise>` (printed by the eval, not the implementer). Absence of errors alone is never success.
+5. **Record** — append to the loop log: action, result, verification output (exit code + key line), files touched, and approximate token cost (track cost-per-accepted-change; if the accept rate craters, stop and re-tune rather than burning tokens).
+6. **Stop checks** — exit the loop if:
    - win-condition met → **SUCCESS**
    - max-iterations reached → **BLOCKED**
    - stagnation: no progress in 3 iterations, or the same error 5 times → **BLOCKED**
+
+**CI failure triage:** keep a list of failure signatures → root cause → fix in the project CLAUDE.md (or right here), and grow it every time the gate goes red. The classic one: every stacked PR fails the migration check for a reason that predates bead 1 — the chain base is behind main. Fix at the base, then merge (never rebase) each parent forward into its child.
 
 **On SUCCESS:** output the run summary and the open PRs. Merging is still the human's job.
 
@@ -519,7 +532,8 @@ information. Phase 3 is a short wrap-up only.
 - Treating unit tests / mocks as the acceptance bar — the **real-acceptance check** (§4c2: live dependency / real data / real from-zero DB, run before the gate) is what makes a bead "done"; mocks are only the CI gate
 - Approving a bead on "tests passed" instead of on the real-acceptance **evidence** (the actual output) in the `BEAD COMPLETE` block
 - Merging PRs (that's the human's job)
-- Watching CI (that's the human's job)
+- Watching CI for the *merge* decision (that's the human's job) — but in Autonomous Loop Mode, watching CI **before starting the next bead** is the loop's job: opening bead N+1's PR while bead N is red is the anti-pattern (CI-green gate)
+- Trusting a gate verdict without the commit it ran against, or a `PASS` with no test counts, or a Turbo `FULL TURBO`/`cache hit` replay as a run (§4c)
 - Cleaning up worktrees before merge (that's the human's job — `/merged` handles it)
 - Sharing a worktree across multiple beads — each bead gets its own named worktree
 - Running dependency installs concurrently across multiple worktrees
