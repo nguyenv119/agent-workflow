@@ -16,8 +16,9 @@ You will receive:
 
 ## Execution
 
-1. `cd <WORKTREE>` — all commands run in that directory. Do not create or switch branches.
+1. `cd <WORKTREE>` — all commands run in that directory. Do not create or switch branches. **First, record the commit you are testing:** `git rev-parse HEAD` — it goes in the `Commit:` line of every reply, so the caller can tell a stale verdict (branch tip moved since) from a current one.
 2. Run each command sequentially. **Stop at the first failure.**
+3. **Test commands must produce counts.** A test run prints test-file and test counts (e.g. `Test Files 12 passed (12) · Tests 143 passed (143)`). If a test command instead prints `FULL TURBO` / `cache hit` / `>>> cached`, Turbo replayed a cached result and nothing executed — rerun that one command with the cache bypassed (`--force` for turbo tasks) and report the real counts. **Never report PASS for a test command without counts.**
 
 **rtk gotcha (this repo):** a hook rewrites bare `pnpm`/`git`/etc. to `rtk <cmd>`. For turbo quality gates (`pnpm lint`, `pnpm typecheck`, `pnpm test`, `pnpm test:integration`) the `rtk pnpm …` filter mangles turbo's output — so run those as `rtk proxy pnpm <task>` instead, which executes them raw. Run any command you are given exactly as written if it already includes `rtk proxy`.
 
@@ -29,22 +30,27 @@ You will receive:
 
 ```
 RESULT: PASS
+Commit: <output of git rev-parse HEAD>
 Commands run:
-- <command 1>
-- <command 2>
+- <command 1> — <N files, M tests passed>   (test commands: counts are mandatory)
+- <command 2> — <lint/typecheck: "clean">
 ```
+
+A PASS line for a test command with no counts is malformed — the caller treats it as unverified and reruns.
 
 ### On failure:
 
 ```
 RESULT: FAIL
+Commit: <output of git rev-parse HEAD>
 Failed command: <the command that failed>
 Exit code: <exit code>
 
 Error summary:
 <extract ONLY the meaningful failure information — assertion errors, compiler errors,
 lint violations, type errors. Skip passing tests, progress bars, and boilerplate.
-Max 50 lines.>
+Max 50 lines. NEVER leave this empty or garbled: a bare `RESULT: FAIL` with no summary is
+unusable — if you cannot extract the failure, paste the last 30 raw lines instead.>
 ```
 
 ## Failure Summarization

@@ -50,6 +50,11 @@ after every positive assertion passes. Both required.
 **Stop conditions**:
 - max-iterations: <N>            # hard cap, always set
 - stagnation: no progress in 3 iterations, or the same error in 5 → BLOCKED
+- preflight (chain base, when beads will stack): `git fetch origin && git merge-base --is-ancestor origin/main <chain-base>`
+  must be true before bead 1; if not, merge main into the base first (the usual only
+  conflict is the migration order file — resolve per the repo CLAUDE.md "Branch Hygiene")
+  and confirm the base's own PR is green. A stale base fails every stacked PR's CI and
+  preview for one upstream reason (lived: nine branches · added 2026-09-03)
 ```
 
 ## How to derive it (the process you run)
@@ -57,7 +62,7 @@ after every positive assertion passes. Both required.
 1. **Restate the goal as a positive end state.** Push back on negative phrasings ("no errors") until you have something observable.
 2. **Locate the verification.** Is there a script/command that runs the real thing end-to-end and inspects the result? If yes, that's your check. If no → R2: author it under `.claude/loop-evals/<epic-id>/` (local scaffolding, never a bead).
 3. **Write the runnable assert.** Run the actual flow in dev, then check state. Make failure loud (non-zero exit) and success specific (counts/shape/idempotency), per R1.
-4. **Set the caps** (max-iterations + stagnation) per R4 and the dual-condition done signal per R3/R5 (eval exits 0 AND prints the success sentinel on its last line).
+4. **Set the caps** (max-iterations + stagnation) per R4 and the dual-condition done signal per R3/R5 (eval exits 0 AND prints the success sentinel on its last line). When the epic will run as a chain of stacked beads, add the chain-base preflight too: the base must be an ancestor of `origin/main` before bead 1, and bead N+1 never opens its PR while bead N's checks are red (the coordinator's CI-green gate).
 5. **Write the block onto the epic** and confirm the outcome wording with the user.
 
 ## Worked example — source ingestion
