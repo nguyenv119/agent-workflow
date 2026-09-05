@@ -100,9 +100,9 @@ Run quality gates — scoped to the changed package(s) and their dependents, not
 
 **Gate:** The sub-agent reports `RESULT: PASS`. If it reports FAIL, read the error summary, fix the issues, and re-delegate before proceeding.
 
-### Real-acceptance artifact (not just mocks)
+### Real-acceptance check (not just mocks)
 
-The unit/quality gates above are the **CI gate** — they prove the code is shaped right. They are **not** the acceptance bar (see `standards/quality.md` §H). The bead's `## Real acceptance` names a check **against reality**: a live API/model call, real corpus data, or a real dev-DB integration. If that runnable artifact doesn't exist yet, **build it** — a small `*.live-check.ts` script or a real integration test — so the coordinator can run it for real. Do **not** run a live check needing credentials you weren't given; leave it runnable and record its path + exact command in your Phase 5 summary.
+The unit/quality gates above are the **CI gate** — they prove the code is shaped right. They are **not** the acceptance bar (see `standards/quality.md` §H). The bead's `## Real acceptance` names a check **against reality**: a live API/model call, real corpus data, or a real dev-DB integration. If that check doesn't exist yet, **run it** — write a throwaway `*.live-check.ts` script (or exercise a real integration test), run it against reality, and paste its actual output into the PR as the acceptance evidence. The script itself is scratch work, not a deliverable: do **not** commit it, and do **not** park it in `.claude/loop-evals/` either — out-of-tree evals cause reviewer agents to falsely block on "no acceptance evidence" since they can't see them. The evidence belongs in the PR body. If a check is genuinely worth keeping permanently, promote it into `test/integration/` where CI actually runs it. Do **not** run a live check needing credentials you weren't given; leave it runnable and record the exact command in your Phase 5 summary.
 
 ## Phase 4: Test Coverage Review
 
