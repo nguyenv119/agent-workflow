@@ -63,7 +63,8 @@ after every positive assertion passes. Both required.
 2. **Locate the verification.** Is there a script/command that runs the real thing end-to-end and inspects the result? If yes, that's your check. If no → R2: author it under `.claude/loop-evals/<epic-id>/` (local scaffolding, never a bead).
 3. **Write the runnable assert.** Run the actual flow in dev, then check state. Make failure loud (non-zero exit) and success specific (counts/shape/idempotency), per R1.
 4. **Set the caps** (max-iterations + stagnation) per R4 and the dual-condition done signal per R3/R5 (eval exits 0 AND prints the success sentinel on its last line). When the epic will run as a chain of stacked beads, add the chain-base preflight too: the base must be an ancestor of `origin/main` before bead 1, and bead N+1 never opens its PR while bead N's checks are red (the coordinator's CI-green gate).
-5. **Write the block onto the epic** and confirm the outcome wording with the user.
+5. **Try to defeat the eval before trusting it.** For each assertion, write the cheapest way a run could make it print WIN without the outcome holding — widening an ignore/allow list, mocking the boundary, counting a proxy instead of the thing, a config knob the worker can turn. Each such path either gets its own assertion (the allow-list must equal the approved one; the count must come from the live system) or goes into **Does NOT count**. Then name the pass AND fail controls — something concrete the eval must accept and something it must reject — so the first run proves the eval discriminates. An eval with no fail control has not been tested.
+6. **Write the block onto the epic** and confirm the outcome wording with the user.
 
 ## Worked example — source ingestion
 

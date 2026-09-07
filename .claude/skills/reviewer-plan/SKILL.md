@@ -83,6 +83,21 @@ reuse an old brief template.
 - [ ] Are file paths specific? (Not "somewhere in the handlers directory")
 - [ ] Are implementation steps concrete? (Not "implement the feature")
 
+### 4. Adversarial pass — try to kill the plan (mandatory)
+
+The checklist asks "is this plan well-formed?" This pass asks "is this plan wrong?" Run it after the checklist, never instead of it. Spend it where a wrong assumption is cheapest to fix now and most expensive later — the epic's shape, the beads, the win condition, the acceptance criteria — not code style.
+
+Argue each attack as if you wanted the plan to fail; drop it only when the codebase or the beads text defeats it:
+
+- **Wrong problem.** What in the repo (file, log, query) shows this is the real pain? If the plan only asserts it, say so.
+- **Simpler alternative.** What is the smallest change that gets most of the outcome? If a one-bead version exists, the epic must say why it isn't enough.
+- **The missing bead.** What must already be true for bead 1 to start (config, data, credentials, a migration, a running service) that no bead creates?
+- **Acceptance that passes while the user is still unhappy.** For every acceptance criterion and the win condition, describe a concrete world where the check prints PASS/WIN and the user still says "that's not done." Gameable checks live here: widening an ignore/allow list, mocking the boundary, counting a proxy, a knob the worker can turn.
+- **What breaks if this ships.** For deletions, renames, and contract changes: name the surface that breaks (a route, a task, a runbook, a script named in a UI string) and whether any bead checks it.
+- **Ordering.** Is there a merge order that leaves the app broken between PRs?
+
+Report one line per attack: `SURVIVED` (the plan already defeats it — cite where) or `HIT` (becomes a numbered Issue below, with the concrete fix). Any HIT on acceptance or the win condition is CHANGES NEEDED regardless of the checklist. Cap at these six plus at most two you invent for this plan — a scoping tool, not a filibuster.
+
 ## Report Your Outcome
 
 ### On Approval
