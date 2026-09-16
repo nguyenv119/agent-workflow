@@ -40,10 +40,26 @@ User says: "session handoff", "wrap up session", "hand off", "handoff summary", 
 3. **Do NOT audit the filesystem to reconstruct.** This is synthesis of what happened in THIS session. No broad `Glob`/`git log` sweeps to rediscover. (Pulling a PR number or commit hash you already produced this session is fine.)
 4. **Write the handoff to a file, then post a pointer in chat.**
    - Path: `/Users/nguyenv/.claude/handoffs/YYYY-MM-DD-<short-slug>.md` (flat dir, always the same location — NOT the repo and NOT a worktree, which `/merged` deletes).
-   - In chat, post ONLY: the absolute path, plus a two-line gist (what this session did / what is next). Never paste the full handoff into chat.
+   - In chat, post ONLY the **TLDR block** below. Never paste the full handoff into chat.
    - Do not update memory from this skill.
 
    Why a file and not chat: the file survives `/clear` and context compaction, and the next agent can re-read the detail at the moment it needs it instead of paying for the whole briefing up front.
+
+5. **Produce the TLDR block** — the one thing that goes in chat. This is not a summary for the user to read; it is a **paste-able kickoff message for a fresh agent**, written so the user can copy it straight into a new session. It must stand alone: an agent given only this block knows what it is picking up, where the detail lives, and what not to redo.
+
+   ```
+   Read `<absolute path to the handoff file>` before doing anything — it is the full handoff for this work.
+
+   TLDR: <2-4 lines. What exists now, what state it is in, and what is blocking. Plain language,
+   concrete nouns — real paths, real IDs, real branch names. No "we made progress on the thing".>
+
+   Next: <the single next action, phrased as an instruction the agent can execute.>
+
+   Do not re-verify anything under "Verified this session" in that file, and do not retry anything
+   under "Ruled out" — both were settled this session and the reasons are recorded.
+   ```
+
+   That last line is load-bearing: it is what makes the file's two most expensive sections actually pay off. Never drop it. Adapt the wording to the session, but keep the instruction.
 
 ## Output template — use these sections, in this order; skip the *(when applicable)* ones that don't fit
 
@@ -131,7 +147,7 @@ This step runs **after** the handoff summary has been produced and shown, never 
 
 ## Hard rules
 
-1. **File output, chat pointer.** The summary goes to `/Users/nguyenv/.claude/handoffs/YYYY-MM-DD-<slug>.md`. Chat gets the absolute path and a two-line gist, nothing more. Never update memory from this skill. *Carve-out:* the concept-capture step may invoke `anki.sh`, which writes to `.learning/queue.jsonl` when Anki is unreachable (see learned.md §4) — that is the capture flow's own persistence and is unrelated to where the handoff itself is written.
+1. **File output, TLDR block in chat.** The summary goes to `/Users/nguyenv/.claude/handoffs/YYYY-MM-DD-<slug>.md`. Chat gets the TLDR block (step 5) and nothing else — it is written to be pasted into a fresh session, not read as a status update. Never update memory from this skill. *Carve-out:* the concept-capture step may invoke `anki.sh`, which writes to `.learning/queue.jsonl` when Anki is unreachable (see learned.md §4) — that is the capture flow's own persistence and is unrelated to where the handoff itself is written.
 2. **Never invent state.** If a *core* section (Where it started, Ruled out, Running state, Key files, Verified this session, Verification, Deferred + open, Pick up here) has nothing to report, write "none" — don't omit it. The *(when applicable)* sections are the opposite: omit them entirely when they don't fit, rather than writing an empty heading.
 3. **Absolute paths always.** The next agent may have a different working directory.
 4. **If a plan file drove the session, name it first** in "Key files".
@@ -147,7 +163,9 @@ This step runs **after** the handoff summary has been produced and shown, never 
 - Compressing an epic-sized session into the thin template — when the session built a multi-component system, the architecture + work→artifact + traps sections are not optional.
 - Skipping a *core* section because "nothing is running" — write "none".
 - Leaving an open item with no next action attached.
-- Pasting the full handoff into chat instead of the file path plus a two-line gist.
+- Pasting the full handoff into chat instead of the TLDR block.
+- Writing the TLDR as a status update addressed to the user ("we made good progress on…") instead of as an instruction addressed to the next agent.
+- Dropping the "do not re-verify / do not retry" line from the TLDR — without it the next agent re-does the expensive work anyway.
 - Writing the handoff into the repo or a worktree — `/merged` deletes worktrees and the handoff goes with them.
 - Stating a verified fact with no method attached — the next agent cannot tell it from a guess, so it gets re-checked.
 - Omitting the dead ends because "nothing shipped from them" — the failed attempts are the expensive knowledge.
