@@ -13,6 +13,7 @@ for resolving larger issues in follow-on work.
 | All implementation work | `/work <id-or-description>` |
 | Regenerate/update a PR summary | `/pr [branch-name]` |
 | Close bead and clean up after merge | `/merged [branch-name]` |
+| End a session before `/clear` | `/handoff` |
 
 `/plan` explores the codebase, discusses tradeoffs with you, files beads issues, and runs an architectural plan review. Use it before `/work` for new epics.
 
@@ -21,6 +22,8 @@ for resolving larger issues in follow-on work.
 `/pr` regenerates or updates the PR summary for a branch. Since the coordinator auto-creates PRs, use this when you want to refresh the summary after additional commits. It is idempotent — safe to run multiple times.
 
 `/merged` runs after you merge a PR on GitHub. It verifies the merge, closes the associated bead(s), removes the worktree, and deletes the branch. This is the gate that unblocks dependent beads.
+
+`/handoff` writes an end-of-session briefing to `/Users/nguyenv/.claude/handoffs/YYYY-MM-DD-<slug>.md` and posts only the path plus a two-line gist in chat. It is written so the next agent starts where this session ended: facts verified and how, approaches that failed and why, exact paths/IDs/commands, and every open item with its single next action. Run it before `/clear` — the file survives compaction, a chat summary does not.
 
 ## Issue Tracking with bd (beads)
 
