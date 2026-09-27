@@ -54,6 +54,8 @@ Qualifies for Quick only if **both** hold:
    - Secrets, env handling, anything prod-facing in a way that isn't purely
      additive
 
+**Standing exception — prune deletion beads (Long, 2026-09-07):** a bead filed by the `prune` skill (its epic body says "Routing: QUICK") skips this gate entirely, even when it would fail it on paper (an unused auth helper, a manifest edit, a deploy-bundled dependency). A deletion carries no new code; the "does anything still use this?" question was answered before filing by prune's six-surface verifier with evidence, and the deny-list labels describe new-code risk. For these beads Step 4's reviewer is replaced by the deterministic diff-shape check in the bead (only the listed `D` files, named manifests/lockfile, listed comment trims; a deleted `*.test.*` without its deleted sibling fails), and Steps 5–6 run as one composite gate (build + typecheck + tests invoked directly per workspace + the bead's real acceptance). Step 3's implementer is also skipped — the parent makes the listed deletions and manifest edits directly (`git rm`, one manifest line, `pnpm install`), since there is no code to write. Do not hand off a prune bead to `coordinator`.
+
 **If either fails, stop and hand off to `coordinator`/`work` instead** — say
 so plainly ("this touches migrations, routing to the full flow") rather than
 attempting a lighter review on something that needed the full stack. Quick
@@ -95,6 +97,8 @@ CONSTRAINTS:
 ```
 
 ## Step 4 — One reviewer, not three
+
+> Prune deletion beads: skip the reviewer spawn; run the bead's diff-shape check instead (see the Step 1 exception).
 
 Read `quality.md` and `correctness-patterns.md` fresh from the worktree
 (same rule coordinator follows — don't rely on memory, they may have
