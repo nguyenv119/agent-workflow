@@ -21,12 +21,6 @@ This repo is that system: specialized agent teams, structured issue tracking, an
 | `/merged [branch]` | After you merge a PR: close the task, clean up, unblock dependents |
 | `/setup-remote` | Connect beads to DoltHub for multi-machine collaboration |
 
-**Understanding & learning**
-
-| Command | What it does |
-|---------|-------------|
-| `/learned <concept>` | Capture a concept into the Anki-backed learning loop |
-
 **Utility**
 
 | Command | What it does |

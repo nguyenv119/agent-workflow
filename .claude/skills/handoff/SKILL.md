@@ -129,23 +129,9 @@ method does not belong here.>
 <the single most likely next action for a fresh agent. A one-line recommendation is allowed.>
 ```
 
-## Concept capture (after the summary, before final output)
-
-Scan the **whole session** (not just recent turns) for concepts worth capturing into the Anki-backed learning loop. Propose **at most 3** candidates, each meeting ALL of:
-
-- **Novel to the user** — not something they clearly already knew going in.
-- **Non-trivial** — not a one-line syntax fact.
-- **Decision-relevant** — knowing it would change a design choice.
-
-**Zero qualifying candidates → skip this step silently.** Do not mention it, do not ask the user "nothing to capture, right?" — just omit it.
-
-For each candidate, follow **§§1–4 of `.claude/commands/learned.md`** (draft the note's Summary/Context/Source per §1's field conventions → haiku dedupe subagent → AskUserQuestion confirm → `anki.sh` capture) with `<concept>` bound to that candidate — §1's ask-if-empty clause doesn't apply, since the candidate is already bound. Do not restate those steps here — always defer to learned.md so the capture UX has one source of truth. Present multiple candidates as separate approve/reject decisions (a single multi-select AskUserQuestion across candidates is fine).
-
-This step runs **after** the handoff summary has been produced and shown, never before — the summary is the priority; capture is a coda.
-
 ## Hard rules
 
-1. **File output, TLDR block in chat.** The summary goes to `/Users/nguyenv/.claude/handoffs/YYYY-MM-DD-<slug>.md`. Chat gets the TLDR block (step 5) and nothing else — it is written to be pasted into a fresh session, not read as a status update. Never update memory from this skill. *Carve-out:* the concept-capture step may invoke `anki.sh`, which writes to `.learning/queue.jsonl` when Anki is unreachable (see learned.md §4) — that is the capture flow's own persistence and is unrelated to where the handoff itself is written.
+1. **File output, TLDR block in chat.** The summary goes to `/Users/nguyenv/.claude/handoffs/YYYY-MM-DD-<slug>.md`. Chat gets the TLDR block (step 5) and nothing else — it is written to be pasted into a fresh session, not read as a status update. Never update memory from this skill.
 2. **Never invent state.** If a *core* section (Where it started, Ruled out, Running state, Key files, Verified this session, Verification, Deferred + open, Pick up here) has nothing to report, write "none" — don't omit it. The *(when applicable)* sections are the opposite: omit them entirely when they don't fit, rather than writing an empty heading.
 3. **Absolute paths always.** The next agent may have a different working directory.
 4. **If a plan file drove the session, name it first** in "Key files".
