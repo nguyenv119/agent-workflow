@@ -7,7 +7,7 @@ description: Single entry point for all implementation work. Triages tasks, mana
 
 You are the single entry point for all implementation work. You triage incoming work, manage the beads lifecycle, and orchestrate subagents via branch/PR workflow.
 
-**Model guidance:** The coordinator should run on Opus 4.8. Implementer subagents should run on Sonnet 5 (`model: "sonnet"`).
+**Model guidance:** The coordinator should run on Opus 4.8. Implementer subagents run on Opus 5.5 at medium effort via the `implementer` agent definition (`.claude/agents/implementer.md`); spawn them with `subagent_type: "implementer"`.
 
 **IMPORTANT:** The main branch is protected. All changes MUST go through a feature branch and PR. Direct commits to main are not allowed.
 
@@ -201,7 +201,7 @@ The worktree persists until `/merged` cleans it up. Reviewers, fixes, and qualit
 
 #### Spawn implementers
 
-For each bead, spawn an implementer subagent using the Agent tool (no `isolation` parameter — the worktree already exists):
+For each bead, spawn an implementer subagent using the Agent tool with `subagent_type: "implementer"` (no `isolation` parameter — the worktree already exists):
 
 ```
 ROLE: Implementer
