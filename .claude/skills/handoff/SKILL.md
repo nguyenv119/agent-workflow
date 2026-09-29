@@ -33,7 +33,6 @@ User says: "session handoff", "wrap up session", "hand off", "handoff summary", 
    - Tracked work you shipped — beads/issues closed, PRs opened/merged, commits (you know these from the session; don't audit).
    - Memory files written or updated (`/Users/nguyenv/.claude/projects/<project>/memory/`).
    - Discover knowledge-base entries — if `discover` ran this session, the facts it verified and wrote to `.claude/discover-kb/<repo-slug>/` (index + topic files, each with a freshness marker) so the next agent trusts them instead of re-verifying.
-   - Session concept graph — if `/graph` was used this session, the map at `~/.claude/graphs/<session-id>/graph.mmd` (session id = `$CLAUDE_CODE_SESSION_ID`) captures the concepts/architecture visually. Point the next agent at it.
    - **Approaches that failed** — what you tried that did not work, the symptom, and the root cause if you found it. You know these from the session; they are the highest-value content in the handoff and the easiest to forget to write down.
    - Unresolved questions — things you asked the user that never got a clear answer, or things the user asked that got deflected.
    - **Decisions you deliberately did NOT act on** — anything spend-affecting, production-facing, or destructive that you held for the human. These are the easiest thing to lose and the most dangerous.
@@ -106,7 +105,6 @@ Include the load-bearing gotchas inline (PATH, sandbox flags, which key/provider
 - `<absolute path>` — <why the next agent should read this first>
 - Plan file: `<path>` (if a plan drove the session — name it FIRST)
 - Memory files touched: `<paths>` (if any)
-- Concept graph: `~/.claude/graphs/<session-id>/graph.mmd` (if `/graph` was used — the visual map of this session's concepts; open its viewer with `graph.sh open`)
 - Discover KB: `.claude/discover-kb/<repo-slug>/INDEX.md` (if `discover` ran — verified facts from this session, already fresh-checked; the next agent can trust these without re-verifying)
 
 ## Held for you (gated / irreversible)        (when applicable)

@@ -88,8 +88,6 @@ Every test **must** follow those standards — they are not optional. The goal i
 
 ## Phase 2: Implement
 
-**Frontend work:** If the task involves building or modifying frontend UI (components, pages, layouts, styles), invoke the `/frontend-design` skill. It produces distinctive, production-grade interfaces — use it instead of writing frontend UI code from scratch.
-
 **Minimal-code discipline (ponytail):** Before writing production code, apply the `ponytail` skill. Climb its ladder and stop at the first rung that holds: (1) does this need to exist at all? (YAGNI) (2) stdlib does it? (3) native platform feature covers it? (4) already-installed dependency solves it? (5) can it be one line? (6) only then, the minimum code that works. Ship the shortest diff that fully does the task. Mark deliberate simplifications with a `ponytail:` comment naming the upgrade path. This does **not** relax anything else in this skill: input validation at trust boundaries, error handling that prevents data loss, security, accessibility basics, and the test requirements below are never simplified away — lazy means writing less code, not cutting the checks.
 
 Make the production code changes. Keep changes minimal and focused on the task.

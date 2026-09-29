@@ -25,10 +25,7 @@ This repo is that system: specialized agent teams, structured issue tracking, an
 
 | Command | What it does |
 |---------|-------------|
-| `/graph [change]` | Maintain a live per-session concept/architecture map, rendered in a local viewer |
-| `/teach <topic>` | Teach a topic to mastery — why-first, quizzed, one layer at a time |
 | `/learned <concept>` | Capture a concept into the Anki-backed learning loop |
-| `/drill` | Quiz the concepts that are due (Anki FSRS) |
 
 **Utility**
 
