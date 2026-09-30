@@ -58,10 +58,36 @@ enters a repo or a PR). `<repo-slug>` is the basename of
 `git remote get-url origin` for the repo being discussed, or the directory
 name if there's no remote.
 
-- Read `INDEX.md` — keep it a real index: one line per topic, genuinely
+- **Ask Jev which notes to read first.** One command, about a second, a
+  fraction of a cent:
+
+  ```bash
+  python3 .claude/skills/discover/kb_topics.py route .claude/discover-kb/<repo-slug> \
+    "<the user's question, plus your not-confident claims in a sentence>"
+  ```
+
+  It prints the topics that fit and the notes worth opening, best first.
+  Open those, then run the freshness check below on each. Jev ranks the
+  whole note list while it fits in one Jev question (255 notes); past that
+  it ranks only the notes tagged with the matching topics. If it prints
+  "read INDEX.md directly" (no `topics.json` yet, or no `TYPESAFE_API_KEY`),
+  fall back to reading `INDEX.md` yourself.
+- `INDEX.md` is grouped by topic (the slugs in `topics.json`). Each note
+  is listed once, under its first topic; its other topics live on the
+  note's own `Topics:` line, and `route` finds it under all of them. Read a
+  topic's section when you want to browse rather than ask.
+- Keep `INDEX.md` a real index: one line per note, genuinely
   short (a hook + a link, not a summary of the finding). Detail belongs in
   the topic file, never inlined into the index — a bloated index defeats
   the point of having one.
+
+  **The cap is measured in characters, not lines.** An index entry is at
+  most **130 characters total**: an optional status marker, a label of
+  ≤110 chars, and the link. The label is the topic file's own H1, truncated
+  — never a second, longer abstract written into the index. This wording
+  used to say "~150 lines"; the file reached 130 KB while obeying it,
+  because 204 entries each carrying a full paragraph is still 204 lines.
+  Lines are not the unit that costs tokens.
 - For any not-confident claim that has a matching entry: check freshness.
   Each entry records the files it depends on and the commit SHA they were
   last changed at, at verification time. Re-check with
@@ -130,11 +156,45 @@ resolved this round:
 - Create or update `.claude/discover-kb/<repo-slug>/<topic-slug>.md` with the
   claim, verdict, evidence, and the dependent file(s) + their current commit
   SHA (`git log -1 --format=%H -- <file>`) as the freshness marker.
-- Add or update its one-line pointer in `INDEX.md` — genuinely one line.
-- If `INDEX.md` grows past ~150 lines OR any single entry stops being a true
-  one-liner, move resolved/superseded detail into `ARCHIVE.md` (same
-  directory) and trim the index line back down — the detail files aren't
-  deleted, just unlisted from the top-level index.
+  One file per finding: when a finding spans topics, it still gets one
+  file, and tagging (next bullet) lists it under every topic it touches.
+  Put any status marker (🔴 ✅ ⭐) at the start of the H1.
+- **Tag it with Jev, which also files it in the index:**
+
+  ```bash
+  python3 .claude/skills/discover/kb_topics.py tag .claude/discover-kb/<repo-slug> <topic-slug>.md [more.md ...]
+  ```
+
+  Jev reads each note and writes a `Topics: <first>, <others>` line under
+  its H1 (the topics come from `topics.json`), then the script rebuilds
+  `INDEX.md` grouped by first topic. A new note's index label is its H1,
+  truncated to 110 chars. Don't hand-edit `INDEX.md`; re-run `tag` or
+  `kb_topics.py index <kb>` instead. Note text is sent to TypeSafe's API, so
+  notes never hold tokens or secrets (they shouldn't anyway).
+
+  If the KB has no `topics.json`: under ~40 notes, skip tagging and add the
+  index line by hand as `- [<H1 truncated to 110 chars>](<topic-slug>.md)`.
+  At ~40 or more, draft 8–15 topics as `{"slug": "one sentence on what it
+  covers"}`, save it as `topics.json` in the KB folder, and run
+  `kb_topics.py tag <kb> --all` once.
+- **Before finishing, run the index guard.** It is one command, it is cheap,
+  and it is the only thing standing between this index and the 130 KB it
+  reached once already:
+
+  ```bash
+  KB=.claude/discover-kb/<repo-slug>
+  awk 'length>220{n++; print "  OVERLONG: "substr($0,1,90)"…"} END{exit n>0}' \
+    "$KB/INDEX.md" && echo "index OK ($(wc -c < "$KB/INDEX.md") bytes)"
+  ```
+
+  220 is the whole line — a ≤110-char label plus the link — with headroom
+  over today's longest entry (184). It is not a style nit: it is the tripwire
+  for someone pasting a paragraph into a label again.
+
+  If it reports overlong entries, shorten them before you stop — do not
+  leave them for the next run. If `INDEX.md` passes the per-entry check but
+  still exceeds **40 KB**, move resolved/superseded topics into `ARCHIVE.md`
+  (same directory); the detail files aren't deleted, just unlisted.
 
 ## Step 5 — The Report (the only output)
 
