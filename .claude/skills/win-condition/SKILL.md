@@ -118,6 +118,18 @@ The epic win-condition gates the whole loop. Each **bead** also needs an accepta
 
 Backward compatibility is the load-bearing assertion — it's what proves the change won't break prod mid-rollout, which no unit test can. This local check is the loop's *gate*; if you also want a durable migration regression test in CI, that's a normal bead with normal tests, separate from the loop.
 
+<!-- few-shot: win-condition-schema-acceptance-output -->
+```text
+migration-replay run 34349407183 (replays order.txt into an empty database)
+  run conclusion:  success     <- NOT the signal: replay/verify are continue-on-error
+  REPLAY_OUTCOME=success   replay log: "Applied successfully."
+  VERIFY_OUTCOME=failure   "Schema drift detected:" 4 pending statements on the
+                           core.order_status enum (billing.orders), issue #1866
+Verdict: "my migration replays from empty" PASS. "repo from-zero verify is clean"
+FAIL, pre-existing for weeks and unrelated (grep the migration for the named
+objects before claiming either).
+```
+
 ## What you do NOT do
 
 - ❌ Accept "no errors" / "it runs" / "tests pass (unit)" as the win-condition

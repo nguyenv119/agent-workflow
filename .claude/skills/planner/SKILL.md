@@ -99,6 +99,21 @@ After the user approves the plan:
 - **Example**: Show before → after transformation when applicable
 - **Real acceptance**: a runnable pass/fail for this bead **against reality, not mocks** (bead-level R1) — a live API/model call, real corpus data, or a real dev-DB integration, naming the observable it asserts (the actual values/counts/shape). The coordinator runs this *before* the approval gate and records its output as **evidence**; mocks/unit tests are the CI gate, never the acceptance bar (see `standards/quality.md` §H). Tier by risk — standard beads may lean on reviewers + quality gates, but the acceptance bar is still a real check; **risky beads (DB schema/migrations, shared infra, prod-affecting) REQUIRE a runnable real check — for schema, "applies from-zero on real Postgres" (CI migration-check), never a local `db:verify` on already-migrated state** (see the win-condition skill's "Bead-level acceptance").
 
+<!-- few-shot: planner-bead-example-filled -->
+```markdown
+## Example   (svc-42.3, merged in PR #1286)
+Before, invoice-7 (no prior balance), summary line:
+  { "no_data": true, "missing_label": "Prior balance + trend" }
+After: the line is absent from `lines`. Account with a seeded history:
+  { "text": "Prior balance: $41.00 paid, $52.00 due (net −11) ..." }
+
+## Real acceptance   (dev DB branch, never prod)
+1. Build invoice-7; read projection->'summary'. Assert 0 lines
+   carry no_data and the summary still has at least 1 line.
+2. Control: invoice-2 (has payments) keeps a totals line matching /\$\d+\.\d{2}/.
+3. Seed one payment_seed row, assert a line carries its exact net; delete, assert gone.
+```
+
 A future implementer session must understand the task completely from its description alone — no external context.
 
 ### Phase 4 — Plan Review

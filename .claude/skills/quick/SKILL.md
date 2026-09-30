@@ -61,6 +61,14 @@ so plainly ("this touches migrations, routing to the full flow") rather than
 attempting a lighter review on something that needed the full stack. Quick
 existing at all depends on it refusing the cases it isn't built for.
 
+<!-- few-shot: quick-gate-accept-vs-refuse -->
+```
+ACCEPT  svc-70: 2 files (scripts/export/continue.ts + test), +124/-8, no deny-list path. Proceeding with Quick.
+REFUSE  svc-61.1: only 2 files, but .github/workflows/test.yml is CI config. Routing to the full flow.
+REFUSE  svc-58.9: src/db/schema/orders.ts is a schema file, migration or not. Routing to the full flow.
+BAD     "svc-61.1 is tiny, so Quick with extra care" (why: a small diff never overrides the deny-list)
+```
+
 ## Step 2 — Worktree, same as always
 
 Create the worktree and branch exactly like `coordinator` does — no
@@ -164,6 +172,15 @@ construction, no field-by-field dump:
 QUICK FIX COMPLETE
 <bead-id>: <one plain sentence — what changed and why>. Tests pass<, real
 acceptance: one plain-language line if it ran>. PR: <url>.
+```
+
+<!-- few-shot: quick-fix-complete -->
+```
+QUICK FIX COMPLETE
+svc-88.1: removed the dead fetchLiveModel read from the /reports index. It
+returned null for all 35 landing slugs, so each request made 35 wasted DB
+round-trips. Tests pass, including the integration suite.
+PR: https://github.com/acme/app/pull/1526.
 ```
 
 ## Constraints

@@ -109,6 +109,19 @@ Tasks reviewed: <count>
 Notes: <any observations, or "None">
 ```
 
+<!-- few-shot: plan-approved-filled -->
+Filled example:
+```
+PLAN REVIEW RESULT: APPROVED
+Epic: svc-42
+Tasks reviewed: 10
+Adversarial: Wrong problem SURVIVED (audit note lists outputs with no example) ·
+Simpler alternative SURVIVED · Missing bead SURVIVED (Step 0 baseline) ·
+Acceptance passes, user unhappy SURVIVED (eval bans reading the example back) ·
+What breaks SURVIVED (25% size cap) · Ordering SURVIVED (.10 sync runs last)
+Notes: .5 fits Quick (one skill file, docs only).
+```
+
 ### On Changes Needed
 
 ```
@@ -122,6 +135,25 @@ Missing tasks:
 - <task that should be added, or "None">
 Dependency fixes:
 - <dependency that should be added/removed, or "None">
+```
+
+<!-- few-shot: plan-changes-needed-filled -->
+Filled example:
+```
+PLAN REVIEW RESULT: CHANGES NEEDED
+Epic: svc-42
+Tasks reviewed: 10
+Adversarial: Wrong problem SURVIVED · Simpler alternative SURVIVED · Missing bead
+SURVIVED · Acceptance passes, user unhappy HIT (issue 1) · What breaks SURVIVED ·
+Ordering HIT (issue 2)
+Issues:
+1. W2: if the checker is handed the example text as the case, it passes by
+   copying. Add "reading the example back does not count" to the epic.
+2. .10 syncs to the shared copy but has no dependency on .1-.9.
+Missing tasks:
+- None
+Dependency fixes:
+- .10 depends on .1 through .9
 ```
 
 Be specific. "Task 3 creates a new RequestBody type but src/types/api.ts already has ExecuteRequest that serves the same purpose" is useful. "Watch out for duplication" is not.

@@ -145,6 +145,18 @@ Before including a finding in your report, ask:
 
 If the answer to question 3 is "just looks slightly off," remove the finding.
 
+<!-- few-shot: quality-false-positive-dropped -->
+Two drafted findings that were deleted before the report:
+```
+Draft: src/billing/invoice.ts:174 — delete may run with an empty id list.
+Q1 re-read: line 168 returns 0 when ids.length === 0. Handled in the same
+function. DROPPED (G1 already-handled).
+Draft: "tool output is fabricated": invoice.ts shows `const ids = allIds;`
+and a TEMP MUTATION comment (svc-51). A parallel reviewer was
+mutation-testing that file. DROPPED: when disk contradicts the diff, suspect a
+concurrent agent and re-read, don't blame the tool.
+```
+
 ### G3. Output Prioritization
 
 - **Most important findings first.** A reviewer who buries the critical bug under five style nits gets ignored.
@@ -161,3 +173,14 @@ Why this is its own rule: a mock returns whatever you told it to. A mock-injecte
 2. **Mocks gate CI; reality gates "done."** Keep both — never let a green mock suite stand in for the real check.
 3. **Migrations/schema:** "verified" means **applied from a blank / from-zero DB on real Postgres** (CI `migration-check` + the preview deploy migrate), NOT a local `db:verify` on a branch that already has the migration applied — a self-check on already-migrated state cannot see a duplicate/ordering bug.
 4. If reality genuinely cannot be exercised for a change, **say so explicitly** and name the closest real proxy — don't silently fall back to "unit tests pass."
+
+<!-- few-shot: quality-evidence-present-out-of-tree -->
+Evidence out of tree is still evidence (reviewers checking rule 1, svc-42.4):
+```
+Bead: "Real acceptance output: /home/dev/app/.claude/loop-evals/svc-42/"
+WRONG  BLOCKING — no .claude/loop-evals/ or scripts/acceptance/*.live-check.ts in
+       the worktree. (All three reviewers said this; the run had passed.)
+RIGHT  Opened the absolute path the bead names: parts (a)-(e) PASS, real model
+       calls. Evidence present, not a finding.
+STILL BLOCK when the named path is missing, empty, or only says "tests pass".
+```

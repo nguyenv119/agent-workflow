@@ -30,6 +30,11 @@ the-rest-of-the-codebase scanning, test-quality deep dives. There isn't
 enough surface area in a diff this size for those checks to mean anything —
 running them anyway is process for its own sake, not real scrutiny.
 
+<!-- few-shot: quick-reviewer-finding-keep-vs-drop -->
+KEEP: `handler/user.go:47` discards the db.Get error; a DB outage returns 200
+with an empty body. DROP: "no acceptance evidence" when the bead names an
+out-of-tree `.claude/loop-evals/` path. Open that path first; it counts.
+
 ## Your Constraints
 
 - **MAY** read beads issues (`bd show`, `bd list`) for context

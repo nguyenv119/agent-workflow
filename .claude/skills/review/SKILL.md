@@ -67,6 +67,18 @@ Disagree (<n>):
 Proceeding to fix <n> actionable items.
 ```
 
+<!-- few-shot: review-triage-filled -->
+```
+REVIEW TRIAGE: docs(history): layer 3, mining if-then rules (#2823)
+Source: coderabbitai (5 comments, 2 shown)
+
+Actionable (2):
+1. scripts/history/build.py:30 — a field in snapshot A, gone in B, back in C is merged into one A-to-C interval; extend only if the path was in the previous snapshot
+2. scripts/history/rules.json:24 — marks rule R2.3-05 as met, but rules-v2.json records no matching event; grade it partial
+
+BAD: "build.py:30 — style nit (Ruff E701)" (why: the lint tag hid the real bug, a false unbroken interval)
+```
+
 ## Phase 2: Fix
 
 For each actionable item:
@@ -129,6 +141,14 @@ HARNESS RETROSPECTIVE
 | 3 | <desc> | reviewer-architecture | check too vague | Expand "Z" section with specific pattern |
 
 Apply harness changes? (Will edit skill files in .claude/skills/)
+```
+
+<!-- few-shot: review-retrospective-filled -->
+```
+| # | Finding | Should catch | Miss type | Proposed fix |
+|---|---------|-------------|-----------|-------------|
+| 1 | #2823 build.py:30 joins a version across a snapshot where the field was missing | reviewer-correctness | missing check | Add "a gap in a time series breaks the interval" to reviewer-correctness/SKILL.md |
+| 2 | #2823 build.py:30 Ruff E701, caught only by CodeRabbit | implementer | tooling gap | Check whether the project lints scripts/**/*.py; TS already has noUnusedLocals (tsconfig.base.json:17), so don't propose that |
 ```
 
 Wait for user approval before editing skill files. If approved, make the edits.

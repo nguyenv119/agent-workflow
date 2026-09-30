@@ -118,10 +118,19 @@ The eligibility test itself, both conditions:
    a bad proxy for a `git rm -r` across many files; judge the *mechanism* of
    the change, not just its size. If you're arguing "it's medium-sized but
    simple" for something that ISN'T mechanically uniform, that's still a
-   signal to hand off.
+   signal to hand off. A SIZE call (condition 1 only, not a risk answer):
+   ```
+   Quick-eligible: svc-77.2 — no — not risky; too large: PR #2577 is 26 files, +2857/-1962 in src/lib/ledger/, real logic split into nine stages, not a mechanical rename
+   ```
 2. **Not on the risk deny-list.** Does not touch DB schema/migrations, auth,
    payments, CI/CD config, widely-imported shared infra, or secrets/env
    handling.
+   <!-- few-shot: coordinator-quick-eligible-yes-vs-no -->
+   ```
+   Quick-eligible: svc-61.1 — no — risky: PR #1460 edits .github/workflows/test.yml (CI config); only 2 files, but a small diff never overrides the deny-list
+   Quick-eligible: svc-58.9 — no — risky: PR #1602 edits src/db/schema/orders.ts; a schema .ts file counts even with no migration in the diff
+   Quick-eligible: svc-70 — yes — safe: PR #1665 touches only scripts/export/continue.ts and its test; nothing under src/db/migrations/, src/db/schema/ or .github/workflows/
+   ```
 
 Both must hold. If a bead is `yes`, offer to route it through `/quick`
 instead of the full flow — still requires the user's go-ahead to switch, but
@@ -350,6 +359,19 @@ Reviewers + unit tests prove the code is *shaped* right; they do **not** prove i
 - Capture the check's key output **verbatim** — it goes into the `BEAD COMPLETE` block so the human approves on *evidence* ("dim 1024; cosine 0.83 vs 0.11"), not on "tests passed."
 - **Migration/schema beads** (reality can't be fully exercised pre-merge): the real acceptance is the **from-zero apply on a real Postgres** — CI's `migration-check` plus the Vercel preview migrate — NOT a local `db:verify` on an already-migrated branch.
 
+<!-- few-shot: coordinator-evidence-good-vs-bad -->
+```text
+GOOD  Real acceptance (svc-42.3, dev DB branch): 19 of 29 sampled accounts resolve
+      to a numeric balance (matched /\$\d+\.\d{2}/); invoice-7 no_data lines = 0
+  why: live run, observed counts, and the regex matches the rendered text.
+BAD   Real acceptance: 14 passed, incl. "no line contains 'Legacy total'"
+  why: that string only lived in missing_label, which the bead stopped writing.
+       The check passes unconditionally; it verifies nothing.
+BAD   Real acceptance FAIL: "planted sibling field lost" (svc-39.3, real DB)
+  why: harness compared jsonb with JSON.stringify; jsonb reorders keys. Faithful
+       repros passed. Re-verify the check before commissioning another fix.
+```
+
 #### d. Push Branch and Create PR
 
 Push the reviewed, quality-gate-passing branch:
@@ -411,6 +433,16 @@ BEAD [n] COMPLETE
 acceptance: one plain-language line if the bead had one>. PR: <url>.
 
 Waiting for approval to proceed to bead [n+1].
+```
+
+<!-- few-shot: coordinator-bead-complete -->
+```
+BEAD 2 COMPLETE
+svc-42.12: a reconcile now re-projects the account summary and rebuilds each
+affected report once, so neither keeps text from the old pricing model.
+Tests pass (16 new in reproject-after-reconcile.test.ts). PR: https://github.com/acme/app/pull/1500.
+
+Waiting for approval to proceed to bead 3.
 ```
 
 Do not build or print a test-reading-order guide by default — that was

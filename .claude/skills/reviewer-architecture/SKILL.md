@@ -113,6 +113,19 @@ Before reporting, verify each finding:
 
 > See `standards/quality.md` § G (Review Discipline) for what not to flag, false-positive discipline, and output prioritization rules.
 
+<!-- few-shot: architecture-finding-keep-vs-drop -->
+One finding kept, two dropped:
+```
+KEEP [non-trivial] src/components/admin/team-create-form.tsx:48 redeclares
+  SLUG_REGEX, already exported at src/lib/slugify.ts:12 (also copied in
+  tag-form.tsx:32, tag-group-form.tsx:35, group-tags-section.tsx:23).
+  Why keep: five copies of one rule will drift; import the shared one.
+DROP "packages/api/src/tags/slug.ts:7 TAG_SLUG_REGEX duplicates SLUG_REGEX".
+  Why drop: separate package, and the diff did not touch it (G1 out of scope).
+DROP "No acceptance evidence" (svc-42.4): the eval lived out of tree at the
+  absolute path the bead names. Why drop: open that path first.
+```
+
 ### 5. Assess Severity
 
 **Trivial**: minor naming inconsistency, slightly different log format.
@@ -140,6 +153,8 @@ For each item in your prompt's checklist, respond with one of:
 
 ### On Approval
 
+<!-- few-shot: architecture-approved-filled -->
+Filled example (Notes cite file:line):
 ```
 ## Checklist Results
 
@@ -148,7 +163,8 @@ For each item in your prompt's checklist, respond with one of:
 3. **Refactor Cleanup Audit**: PASS — no dead variables, stale comments, or unused imports
 
 ARCHITECTURE REVIEW: APPROVED
-Notes: <observations, or "None">
+Notes: new helper at src/lib/slugify.ts:20 follows the existing export
+pattern at :12; no duplicate found under src/components/admin/.
 ```
 
 ### On Changes Needed

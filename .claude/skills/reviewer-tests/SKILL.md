@@ -92,6 +92,18 @@ Before reporting, verify each finding:
 
 > See `standards/quality.md` § G (Review Discipline) for what not to flag, false-positive discipline, and output prioritization rules.
 
+<!-- few-shot: tests-finding-keep-vs-drop -->
+One finding kept, two dropped:
+```
+KEEP [non-trivial] src/orders/store.test.ts:34 — WHEN calls the mocked
+  deleteOrders, not production code. Deleting the guard at store.ts:168 still
+  passes. Why keep: false confidence, shown by a mutation that survives.
+DROP "store.ts:168 empty-list guard has no test" when the integration suite
+  already covers it. Why drop: G1 already-handled; grep test/integration first.
+DROP "No acceptance evidence" (svc-42.4): the eval sat out of tree at the absolute
+  path the bead names (.claude/loop-evals/svc-42/). Why drop: open that path first.
+```
+
 ### 4. Assess Severity
 
 **Trivial**: misleading test name, minor missing edge case, docstring that describes behavior but omits the "what breaks" clause.
@@ -127,15 +139,17 @@ For each item in your prompt's checklist, respond with one of:
 
 ### On Approval
 
+<!-- few-shot: tests-approved-filled -->
+Filled example (each PASS cites the test file:line it checked):
 ```
 ## Checklist Results
 
-1. **GIVEN/WHEN/THEN Structure**: PASS — all test bodies have visually distinct sections
-2. **Docstrings**: PASS — every test has a docstring answering what/why/what-breaks
+1. **GIVEN/WHEN/THEN Structure**: PASS — store_test.go:20-61, all 4 tests have distinct sections
+2. **Docstrings**: PASS — store_test.go:18,31,44,57 each answer what/why/what-breaks
 3. **Mock Discipline**: N/A — no mocks used; real in-memory dependencies throughout
 
 TEST QUALITY REVIEW: APPROVED
-Notes: <observations, or "None">
+Notes: trivial only, store_test.go:44 name says "rejects" but asserts a skip.
 ```
 
 ### On Changes Needed

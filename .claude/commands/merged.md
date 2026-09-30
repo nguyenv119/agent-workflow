@@ -24,6 +24,11 @@ PR=$(gh pr list --repo $REPO --head $BRANCH --state all --json number,url,state 
 
 If `state` is not `"MERGED"`, stop and tell the user the PR has not been merged yet.
 
+<!-- few-shot: merged-state-check-own-call -->
+GOOD: `gh pr view 1076 --json state` alone; saw OPEN, stop.
+BAD: check + cleanup in one call; worktree gone before OPEN.
+
+
 ## 3. Extract bead IDs
 
 Extract bead IDs from commit messages on the branch:
@@ -90,8 +95,20 @@ Blocked beads that may now be unblocked:
   bd ready --json
 ```
 
+<!-- few-shot: merged-report-filled -->
+```
+Closed bead(s): svc-42.4
+Removed worktree: .worktrees/svc-42-4
+Deleted branch: feature/svc-42-4
+```
+
 Run `bd ready` and show any newly unblocked beads. If there are any, suggest:
 
 ```
 Ready to continue: /work <epic-id>
 ```
+
+<!-- few-shot: merged-epic-close-vs-leave-open -->
+BAD: "svc-9: CLOSED (9 of 10 closed; svc-9.7 open)". Why: a child is open.
+GOOD: "svc-9 stays open: svc-9.7 open." Why: names it.
+BAD: PR #2133, no `Bead:` line, closed svc-42.1/.4 (stale base). Why: no `Bead:` = close nothing.

@@ -102,6 +102,15 @@ Run quality gates — scoped to the changed package(s) and their dependents, not
 
 The unit/quality gates above are the **CI gate** — they prove the code is shaped right. They are **not** the acceptance bar (see `standards/quality.md` §H). The bead's `## Real acceptance` names a check **against reality**: a live API/model call, real corpus data, or a real dev-DB integration. If that runnable artifact doesn't exist yet, **build it** — a small `*.live-check.ts` script or a real integration test — so the coordinator can run it for real. Do **not** run a live check needing credentials you weren't given; leave it runnable and record its path + exact command in your Phase 5 summary.
 
+<!-- few-shot: implementer-evidence-good-vs-bad -->
+```text
+GOOD  live-check vs dev DB branch, invoice-7: summary no_data lines = 0;
+      invoice-2 control keeps its totals line, matched /\$\d+\.\d{2}/
+  why: observed values from a real run, plus a control that could fail.
+BAD   "all 14 tests pass" / a check that "Legacy total" is absent
+  why: unit-only; that label had no writer left, so the check cannot fail.
+```
+
 ## Phase 4: Test Coverage Review
 
 This is an audit, not a formality. Evaluate whether your tests actually cover the changes you made.
@@ -188,4 +197,33 @@ If implementation failed, replace "What changed" with:
 
 ## Attempted
 - <what you tried>
+```
+
+<!-- few-shot: implementer-result-success -->
+```
+IMPLEMENTATION RESULT: SUCCESS
+Task: svc-42.12
+Commit: 8251810a69ca7f3b7e7dcb85fabea298ae128ae7
+## What changed
+- New reproject-after-reconcile task: forced summary regen per account, then one report rebuild per report_key
+## Files modified
+- src/tasks/reproject-after-reconcile.ts — new chainable task, no cron
+## Test coverage
+- reproject-after-reconcile.test.ts — force:true regen, report_key dedupe, all-failed guard throws
+## Real acceptance
+- left for coordinator to run — needs a reconciled prod run_id
+## Concerns
+- A test-runner subagent loosened `.length > 0` to `.length > 1` to go green; reverted, grep confirms `> 0`
+```
+
+<!-- few-shot: implementer-result-failure -->
+```
+IMPLEMENTATION RESULT: FAILURE
+Task: svc-42.12
+Commit: N/A
+## Error
+The all-failed guard test stays red: with a single-account batch the summary builder mock is never awaited, so nothing throws.
+## Attempted
+- Reordered the mock setup; still red on `throws when every account fails to rebuild (all-failed guard)`
+- Did NOT weaken the guard or add an `as unknown as` cast to go green
 ```

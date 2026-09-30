@@ -204,6 +204,23 @@ resolved this round:
   still exceeds **40 KB**, move resolved/superseded topics into `ARCHIVE.md`
   (same directory); the detail files aren't deleted, just unlisted.
 
+A finished note, condensed from a real one:
+
+<!-- few-shot: discover-kb-note-filled -->
+```markdown
+# 🔎 Few-shot audit: which harness skills show worked examples of good output
+Topics: ci-and-dev-workflow
+Verified 2026-10-01 by 4 read-only verifiers over every SKILL.md in .claude/skills/.
+Freshness: .claude/ is not in git; re-verify if a listed skill changed after 2026-10-01.
+
+## Verdict
+Few skills show a finished good output; judgment outputs (pass/fail, risky/not) most
+often lack one. Already good: win-condition (filled block :69-101). Missing, with a
+recorded miss in the notes: reviewers (no dropped-false-positive sample;
+notes/reviewers-miss-out-of-tree-evals.md), test-runner (false PASS;
+notes/gate-false-pass.md), discover (Report body is a placeholder).
+```
+
 ## Step 5 — The Report (the only output)
 
 One message, after everything above is finished. **The final verdict only —
@@ -219,6 +236,18 @@ evidence (file:line / log line / query result / API response) inline as
 part of the sentence rather than as a separate labeled field. If the user's
 correction turned out right, say so in passing — don't give it its own
 section.>
+```
+
+<!-- few-shot: discover-report-filled -->
+```
+## Discover: which harness skills show a worked example
+
+Only a handful do: win-condition shows a filled Win Condition block
+(win-condition/SKILL.md:69-101). The judgment outputs are the gap: reviewers
+never show a false positive being dropped, and test-runner only has a template
+even though the notes record a false PASS on a failing suite
+(notes/gate-false-pass.md). You were right that discover itself has no sample;
+its Report body is a placeholder.
 ```
 
 If this ran ahead of `/plan`, note that in the Bottom line so the plan skill

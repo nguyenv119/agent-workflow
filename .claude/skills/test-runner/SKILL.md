@@ -53,6 +53,15 @@ Max 50 lines. NEVER leave this empty or garbled: a bare `RESULT: FAIL` with no s
 unusable — if you cannot extract the failure, paste the last 30 raw lines instead.>
 ```
 
+<!-- few-shot: test-runner-pass-filled -->
+`RESULT: PASS` / `Commit: 4b7f7f90` / `- pnpm --filter api test -- --run — 212 files, 2698 tests passed`
+
+<!-- few-shot: test-runner-fail-filled -->
+`RESULT: FAIL` / `Failed command: pnpm --filter api test -- --run` / `Exit code: 1` / summary: `invoice.test.ts > trimHeadline > strips a trailing comma: expected 'Paid,' to be 'Paid'`
+
+<!-- few-shot: test-runner-bad-pass -->
+BAD: `RESULT: PASS` on output showing `1 failed | 2697 passed`, or green after loosening `.length > 0` to `.length > 1`. Why: any failure is FAIL; a gate that edits source measured nothing.
+
 ## Failure Summarization
 
 Test output is noisy. Extract the signal:

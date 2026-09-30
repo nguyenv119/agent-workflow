@@ -96,4 +96,17 @@ Generated with Claude Code
 
 **Summary quality bar:** The summary should be written from reading the actual diff — not generic. If the diff adds a caching layer, say what it caches, why, and what the TTL is. If it fixes a bug, name the bug.
 
+**Test plan evidence:** name a real run and what it observed, not "tests pass".
+<!-- few-shot: pr-evidence-good-vs-bad -->
+```text
+BAD   ## Test plan
+      All unit tests pass. Eval: 14 passed.
+  why: unit-only; and one of the 14 asserted "Legacy total" is absent, a
+       string nothing writes any more, so it could never fail.
+GOOD  ## Test plan
+      live-check vs dev DB branch (svc-42): 19 of 29 sampled accounts resolve
+      to /\$\d+\.\d{2}/; invoice-7 summary: no_data lines = 0
+  why: a real run naming observed values, matched on what the code emits.
+```
+
 **Idempotent:** Running `/pr` multiple times on the same branch always regenerates the summary from the latest diff. Safe to re-run after the agent pushes fixes.

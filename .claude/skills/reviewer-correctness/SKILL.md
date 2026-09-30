@@ -136,6 +136,21 @@ Before reporting, verify each finding:
 
 → See `standards/quality.md` § G (Review Discipline) for what not to flag, false-positive discipline, and output prioritization rules.
 
+<!-- few-shot: correctness-finding-keep-vs-drop -->
+One finding kept, two dropped:
+```
+KEEP [non-trivial] handler/user.go:47 — error from db.Get is discarded (`_ = err`);
+  with the DB down the handler returns 200 and an empty body. No caller checks it.
+  Why keep: real production bug, file:line, evidence on the line itself.
+DROP "No real-acceptance evidence in the worktree" (svc-42.4). The bead named an
+  absolute path outside the worktree (.claude/loop-evals/svc-42/); all parts passed.
+  Why drop: open the absolute path the bead gives before calling evidence missing.
+DROP "tool output is fabricated: src/billing/invoice.ts:88 reads `const ids = allIds;`"
+  (svc-51). A parallel reviewer was mutation-testing that file.
+  Why drop: disk contradicts the diff, so suspect a concurrent agent and re-read
+  with `git show HEAD:src/billing/invoice.ts`.
+```
+
 ### 5. Assess Severity
 
 **Trivial** (coordinator can fix inline): typos, minor style, simple error message improvements.
@@ -163,6 +178,8 @@ For each item in your prompt's checklist, respond with one of:
 
 ### On Approval
 
+<!-- few-shot: correctness-approved-filled -->
+Filled example (every PASS names what was checked, with file:line):
 ```
 ## Checklist Results
 
@@ -171,7 +188,8 @@ For each item in your prompt's checklist, respond with one of:
 3. **Refactor Cleanup Audit**: PASS — no dead variables or stale comments found
 
 CORRECTNESS REVIEW: APPROVED
-Notes: <observations, or "None">
+Notes: trivial only, handler.go:52 log says "items" but counts batches. Acceptance
+output read at the absolute out-of-tree path the bead names; 3/3 parts passed.
 ```
 
 ### On Changes Needed
