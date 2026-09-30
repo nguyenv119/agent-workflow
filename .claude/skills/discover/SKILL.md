@@ -66,10 +66,18 @@ name if there's no remote.
     "<the user's question, plus your not-confident claims in a sentence>"
   ```
 
-  It prints the topics that fit and the notes worth opening, best first.
-  Open those, then run the freshness check below on each. Jev ranks the
-  whole note list while it fits in one Jev question (255 notes); past that
-  it ranks only the notes tagged with the matching topics. If it prints
+  It prints up to 15 notes, best first (about two seconds, ~600 tokens).
+  `pick` lines are Jev's confident choices; `yes` lines are the rest,
+  ordered by a per-note yes/no score. Read the titles, open the ones that
+  fit, then run the freshness check below on each. On a held-out test the
+  right note was in the first 8 lines 86% of the time, so scan the whole
+  list rather than stopping at the first line. If none of the 15 titles
+  clearly fits a not-confident claim, read `INDEX.md` too before spawning
+  verifiers: Opus reading the full index found the right note in its first
+  8 picks 90% of the time on the same test, and either one found it 93% of
+  the time, so the fallback is worth its ~9k tokens. Jev ranks every note while
+  there are at most 255; past that it first keeps only the notes tagged
+  with the topics that match the question. If it prints
   "read INDEX.md directly" (no `topics.json` yet, or no `TYPESAFE_API_KEY`),
   fall back to reading `INDEX.md` yourself.
 - `INDEX.md` is grouped by topic (the slugs in `topics.json`). Each note

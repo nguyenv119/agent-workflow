@@ -119,36 +119,61 @@ def rebuild_index(kb, topics):
     return sum(map(len, groups.values()))
 
 
-def route(kb, key, topics, question, top=8):
+def summary(path, n=160):
+    """The note's opening prose, minus its title, Topics and provenance lines."""
+    lines = [x.strip() for x in path.read_text(errors="ignore").splitlines()[1:] if x.strip()]
+    lines = [x for x in lines if not re.match(r'^(Verified|Topics:|Round|Depends|Freshness|Sources?:)', x)]
+    return re.sub(r'\s+', ' ', " ".join(lines))[:n]
+
+
+def route(kb, key, topics, question, top=15):
+    """Two Jev passes run together: a Choice over every note (confident picks first), and one yes/no
+    per note to order the rest. The Choice alone rounds all but its top few to 0.00, so its tail is
+    arbitrary; the yes/no pass gives every note its own score. 10-01 held-out set (42 questions):
+    right note within 8 lines 86% vs 71% for Choice-over-titles; see loop-evals/jev-harness-2026-09-30."""
     kb = Path(kb)
-    qs = {t: {"type": "noul", "instructions": {"topic": d,
-          "question": "Would research notes about `topic` likely help answer the question in `question`?"}}
-          for t, d in topics.items()}
-    a = ask(key, {"question": question}, qs)
-    p = sorted(((a[t]["noul"], t) for t in topics), reverse=True)
-    picked = [t for s, t in p if s >= 0.25][:4] or [p[0][1]]
-    print("topics: " + ", ".join(f"{t} {s:.2f}" for s, t in p if t in picked))
     alln = [(link, label) for link, label in notes(kb).items() if (kb / link).exists()]
-    # A topic filter drops the right note whenever the topic guess is wrong (27/44 vs 37/44 on the
-    # 09-30 gold set), so rank the whole list while it fits in one Choice; filter only past that.
-    cand = alln if len(alln) <= FILTER_ABOVE else [(l, t) for l, t in alln if set(tags_of(kb / l)) & set(picked)]
-    if not cand:
-        print("no tagged notes in those topics; read INDEX.md")
-        return
-    scores = {}
-    for c in range(0, len(cand), MAX_CHOICE):
-        chunk = cand[c:c + MAX_CHOICE]
-        ids = {f"N{i:03d}": link for i, (link, _) in enumerate(chunk)}
-        listing = "\n".join(f"N{i:03d}| {label}" for i, (_, label) in enumerate(chunk))
-        r = ask(key, {"notes": listing, "question": question}, {"pick": {"type": "choice",
-                "instructions": "Each line of `notes` is a research note: an ID, then its title. Which note would be most useful to read first to answer `question`?",
-                "criteria": {i: None for i in ids}}})
-        for i, pr in r["pick"]["probabilities"].items():
-            scores[ids[i]] = pr
+    cand = alln
+    if len(alln) > FILTER_ABOVE:  # too many for one Choice: keep only notes in the matching topics
+        qs = {t: {"type": "noul", "instructions": {"topic": d,
+              "question": "Would research notes about `topic` likely help answer the question in `question`?"}}
+              for t, d in topics.items()}
+        a = ask(key, {"question": question}, qs)
+        p = sorted(((a[t]["noul"], t) for t in topics), reverse=True)
+        picked = [t for s, t in p if s >= 0.25][:4] or [p[0][1]]
+        print("topics: " + ", ".join(f"{t} {s:.2f}" for s, t in p if t in picked))
+        cand = [(l, t) for l, t in alln if set(tags_of(kb / l)) & set(picked)] or alln
+    line = {l: f"{t} [{', '.join(tags_of(kb / l))}] — {summary(kb / l)}" for l, t in cand}
+    links = [l for l, _ in cand]
+
+    def pick(chunk):
+        ids = {f"N{i:03d}": l for i, l in enumerate(chunk)}
+        r = ask(key, {"notes": "\n".join(f"{i}| {line[l]}" for i, l in ids.items()), "question": question},
+                {"pick": {"type": "choice", "criteria": {i: None for i in ids}, "instructions":
+                 "Each line of `notes` is a research note: an ID, its title, its topics, and its opening. "
+                 "Which note contains the facts someone working on `question` most needs?"}})
+        return {ids[i]: pr for i, pr in r["pick"]["probabilities"].items()}
+
+    def each(chunk):
+        r = ask(key, {"request": question}, {f"n{j}": {"type": "noul", "instructions": {"note": line[l],
+                "question": "Would someone working on the request in `request` need to read this research note: `note`?"}}
+                for j, l in enumerate(chunk)})
+        return {l: r[f"n{j}"]["noul"] for j, l in enumerate(chunk)}
+
+    jobs = [(pick, links[c:c + MAX_CHOICE]) for c in range(0, len(links), MAX_CHOICE)]
+    jobs += [(each, links[c:c + 130]) for c in range(0, len(links), 130)]  # 130 per request fits the 64k budget
+    with ThreadPoolExecutor(len(jobs)) as ex:
+        parts = list(ex.map(lambda j: (j[0], j[0](j[1])), jobs))
+    chosen, yes = {}, {}
+    for fn, res in parts:
+        (chosen if fn is pick else yes).update(res)
+    head = sorted((l for l in chosen if chosen[l] >= 0.01), key=lambda l: -chosen[l])
+    ranked = head + sorted((l for l in links if l not in head), key=lambda l: -yes.get(l, 0))
     label = dict(cand)
-    print(f"notes (ranked {len(cand)} of {len(alln)}), best first:")
-    for link in sorted(scores, key=lambda k: -scores[k])[:top]:
-        print(f"  {scores[link]:.2f}  {kb / link}  {label[link][:90]}")
+    print(f"notes (ranked {len(cand)} of {len(alln)}), best first; open the ones that fit:")
+    for l in ranked[:top]:
+        tag = f"pick {chosen[l]:.2f}" if l in head else f"yes {yes.get(l, 0):.2f}"
+        print(f"  {tag}  {kb / l}  {label[l][:90]}")
 
 
 def main():
