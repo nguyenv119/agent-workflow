@@ -12,10 +12,12 @@ A single HTML page that grows through a session. Two readers use it:
 
 ## 1. Find or create the page
 
+`<skill-dir>` below is this skill's folder: the "Base directory for this skill" shown when it loads (usually `.claude/skills/document` in the repo, or `~/.claude/skills/document`).
+
 - If Long names a page or one exists for this topic in `~/Downloads/`, update that file. Never start a second page for the same topic.
 - Otherwise copy the template and fill in the title, date and standfirst:
   ```bash
-  cp ~/.claude/skills/document/template.html ~/Downloads/<topic-slug>-<YYYY-MM-DD>.html
+  cp <skill-dir>/template.html ~/Downloads/<topic-slug>-<YYYY-MM-DD>.html
   ```
   The date is the creation date and stays in the filename across updates.
 - The template is the shared page shell: Inter, the Conspectus tokens, dither background, Edit/Save buttons (Save rewrites the file via the file picker; Cmd+S works). Keep all of that as is.
@@ -27,7 +29,7 @@ A single HTML page that grows through a session. Two readers use it:
 The template is a blanked copy of `example-firehose.html` (in this skill's folder), a finished page frozen as the reference for this shape. The example is about 35,000 tokens: never Read it whole. When unsure how a section should look, pull just that section by its heading:
 
 ```bash
-awk '/<h2>Backlog/,/<\/section>/' ~/.claude/skills/document/example-firehose.html | head -60
+awk '/<h2>Backlog/,/<\/section>/' <skill-dir>/example-firehose.html | head -60
 ```
 
 Swap `Backlog` for `Why`, `How it works` or `For agents` as needed. Start the page on day one of a project, even with little known: keep every section and mark the empty ones `To do`.
@@ -48,7 +50,7 @@ Main sections, in this order:
    - **Verified facts** with `path/file.ts:line`, commit hash or query, and the date checked.
    - **Files and locations**: absolute paths for every input file, script, output.
    - **Knowledge base and memory**: link every relevant discover-KB file. Find them with
-     `grep -ril "<keyword>" /Users/nguyenv/conspectus/.claude/discover-kb/*/` and each repo's `INDEX.md`. Also link the memory file for this work.
+     `grep -ril "<keyword>" <repo-root>/.claude/discover-kb/*/` and each repo's `INDEX.md`. Also link the memory file for this work.
    - **Research sources**: URLs with the sentence that mattered.
    - Detail tables, schemas, numbers, and a **Reproduce** block of commands.
 
