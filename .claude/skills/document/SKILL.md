@@ -34,14 +34,14 @@ awk '/<h2>Backlog/,/<\/section>/' <skill-dir>/example-firehose.html | head -60
 
 Swap `Backlog` for `Why`, `How it works` or `For agents` as needed. Start the page on day one of a project, even with little known: keep every section and mark the empty ones `To do`.
 
-Every new finding goes in exactly one place: **Why / How it works** if it rarely changes, **Backlog** if it is a piece of work or its status, **For agents** for everything else. When unsure, For agents.
+Every new finding goes in exactly one place: **Why / How it works** if it rarely changes, **Open questions** if it waits on Long, **Backlog** if it is a piece of work or its status, **For agents** (or its linked notes file) for everything else. When unsure, For agents.
 
 Main sections, in this order:
 
 1. **Hero**: kicker (`Draft N · date · owner · internal working document`), title, one-sentence standfirst, legend (status tags plus one swatch per update color).
 2. **Why**: the problem from first principles, at most two short paragraphs.
 3. **How it works**: one layer at a time, why before how, plain words. Diagrams go here (section 4).
-4. **Topic sections** only when Long asks a question that fits nowhere else. Lead with the answer in bold, then a few short bullets.
+4. **Open questions** (optional), just before the Backlog: only the questions waiting on Long right now, each with its answer or recommendation in bold, then a few short bullets. Once a question is answered, take it off the main page: the decision goes in the Decisions table, and any lasting explanation moves into Why / How it works. Topic sections for one-off answers follow the same rule. They don't stay on the main page after the question is settled.
 5. **Backlog**, in this order: the plan (one bold "Done means" sentence a script can check, then build order); Progress, DATE (state in one bold sentence, then a PR table: item, PR, merge after, what merging turns on); Waiting on an answer (by person); What we're not sure of yet; then the work items grouped by the layer they change, each with **What it is / Why we need it / Without it / Done when** and a status tag.
 6. **For agents** (`<details class="agents">`, closed by default), holding everything thorough:
    - **Build state** table: bead, branch tip, PR and base, evidence; plus worktree and log paths.
@@ -57,6 +57,13 @@ Main sections, in this order:
 No worklog section. What happened lives in the decisions and facts, and in git.
 
 Noise goes down, not out: when Long says a main section is too long, move the detail into "For agents" instead of deleting it.
+
+**Keep the main page current.** Colors show what changed, but they don't make old text true. On every update, reread the main sections and prune them:
+- **Keep** what still explains the problem and how the system works (the Why, and the first-principles parts of How it works), updated to match what was built.
+- **Move down** anything that has served its purpose: discovery findings, corrections, a one-off test plan, answered questions, superseded plans. Put it in "For agents" (Background or Verified facts), or, when it is long, in a markdown notes file beside the page (`<page-name>.notes.md` in `~/Downloads/`) that "For agents" links to. That keeps the HTML small enough for an agent to read.
+- **Fix or delete** text that is no longer true, such as "nothing is built yet" or a status tag that changed. Don't leave a stale claim on the page next to a newer color that contradicts it.
+
+The main page reads top to bottom as: what the problem is and why it exists (with diagrams), how it works in first principles, the open questions for Long (if any), the Backlog, then the collapsed "For agents". Nothing else sits between those.
 
 A filled topic section (update 2), then one "For agents" decision row and fact:
 
