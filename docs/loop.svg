@@ -1,0 +1,86 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1560 520" width="1560" height="520" role="img" aria-labelledby="t d">
+  <title id="t">The agent-workflow loop</title>
+  <desc id="d">Your problem, existing code and the knowledge base flow into the loop. Inside, a Plan stage (brainstorm and discover, plan and plan review, then a backlog of tasks with a dependency graph, acceptance checks and a win condition) feeds each task, which runs in parallel as soon as it unblocks: implement, review, real acceptance check, PR. Output is merged or stacked PRs. A cycle returns from the tasks to the plan until the win condition passes.</desc>
+  <defs>
+    <marker id="ah" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M0,0 L8,4 L0,8 z" fill="#7a7a7a"/>
+    </marker>
+  </defs>
+  <style>
+    text { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "DejaVu Sans Mono", monospace; font-size: 14px; fill: #a0a0a0; }
+    .ink { fill: #e6e6e6; }
+    .coral { fill: #e8664d; }
+    .caps { letter-spacing: 2px; }
+    .box { fill: none; stroke: #4a4a4a; stroke-width: 1; }
+    .outer { stroke: #5c5c5c; }
+    .m { fill: #0f1012; }
+    .arr { stroke: #7a7a7a; stroke-width: 1; fill: none; }
+    .dim { fill: #6b6b6b; }
+  </style>
+  <rect width="1560" height="520" rx="10" class="m" stroke="#1c1d20"/>
+
+  <!-- boxes -->
+  <rect class="box outer" x="340" y="90" width="1000" height="340"/>
+  <rect class="box" x="370" y="140" width="390" height="250"/>
+  <rect class="box" x="394" y="240" width="342" height="130"/>
+  <rect class="box" x="810" y="140" width="500" height="250"/>
+  <rect class="box" x="1060" y="190" width="225" height="130"/>
+
+  <!-- legends -->
+  <rect class="m" x="755" y="80" width="170" height="20"/>
+  <text class="caps" x="840" y="95" text-anchor="middle">AGENT-WORKFLOW</text>
+  <rect class="m" x="418" y="130" width="58" height="20"/>
+  <text class="ink" x="430" y="145">Plan</text>
+  <rect class="m" x="408" y="230" width="83" height="20"/>
+  <text class="coral" x="420" y="245">Backlog</text>
+  <rect class="m" x="828" y="130" width="301" height="20"/>
+  <text class="ink" x="840" y="145">Each task, once it unblocks</text>
+  <rect class="m" x="1088" y="180" width="116" height="20"/>
+  <text class="ink" x="1100" y="195">In parallel</text>
+
+  <!-- inputs -->
+  <text x="290" y="276" text-anchor="end">The problem</text>
+  <text x="290" y="300" text-anchor="end">Existing code</text>
+  <text x="290" y="324" text-anchor="end">Knowledge base</text>
+
+  <!-- plan text -->
+  <text x="400" y="190">Brainstorm + discover</text>
+  <text x="400" y="214">Plan + plan review</text>
+  <text x="424" y="285">Tasks + dependency graph</text>
+  <text x="424" y="309">Acceptance check per task</text>
+  <text x="424" y="333">Win condition for the epic</text>
+
+  <!-- task text -->
+  <text x="840" y="195">Implement, tests first</text>
+  <text x="840" y="219">Three reviewers</text>
+  <text x="840" y="243">Real acceptance check</text>
+  <text x="840" y="267">PR: merged, or stacked</text>
+  <text class="dim" x="1080" y="240">task .2  ░▒<tspan class="ink">▓</tspan>█▓▒</text>
+  <text class="dim" x="1080" y="268">task .3  ▒▓█<tspan class="ink">▓</tspan>▒░</text>
+  <text class="dim" x="1080" y="296">task .4  waits on .2</text>
+
+  <!-- output -->
+  <text x="1405" y="290">Merged or</text>
+  <text x="1405" y="314">stacked PRs</text>
+
+  <!-- gap masks where arrows cross borders -->
+  <rect class="m" x="337" y="282" width="6" height="26"/>
+  <rect class="m" x="367" y="282" width="6" height="26"/>
+  <rect class="m" x="733" y="282" width="6" height="26"/>
+  <rect class="m" x="757" y="282" width="6" height="26"/>
+  <rect class="m" x="807" y="282" width="6" height="26"/>
+  <rect class="m" x="1307" y="282" width="6" height="26"/>
+  <rect class="m" x="1337" y="282" width="6" height="26"/>
+  <rect class="m" x="1184" y="426" width="12" height="8"/>
+  <rect class="m" x="559" y="426" width="12" height="8"/>
+
+  <!-- arrows -->
+  <line class="arr" x1="300" y1="295" x2="388" y2="295" marker-start="url(#ah)" marker-end="url(#ah)"/>
+  <line class="arr" x1="722" y1="295" x2="830" y2="295" marker-start="url(#ah)" marker-end="url(#ah)"/>
+  <line class="arr" x1="1296" y1="295" x2="1395" y2="295" marker-end="url(#ah)"/>
+
+  <!-- the cycle -->
+  <path class="arr" d="M1190 390 V470 H565 V396" marker-end="url(#ah)"/>
+  <rect class="m" x="709" y="460" width="335" height="20"/>
+  <text class="coral" x="877" y="475" text-anchor="middle">Repeat until the win condition passes</text>
+</svg>
