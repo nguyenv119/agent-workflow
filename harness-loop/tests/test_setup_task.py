@@ -55,16 +55,22 @@ class TaskRepoCase(unittest.TestCase):
                 run(["bd", "dolt", "stop"], repo, check=False)
         shutil.rmtree(self.tmp, ignore_errors=True)
 
-    def setup_task(self, repo, test_command="python3 -m unittest", check=True):
-        self.repos.append(Path(repo))
-        cmd = ["bash", str(SETUP), str(repo), str(self.tarball), "Fix counter off-by-one",
-               str(self.instruction), test_command, "exam-run-1", str(self.logs)]
+    def phase(self, *args, check=True):
         env = {"EXAM_ORIGIN": str(self.origin), "PATH": os.environ["PATH"],
                "HOME": os.environ["HOME"]}
-        r = subprocess.run(cmd, cwd=self.tmp, env=env, text=True, capture_output=True)
+        r = subprocess.run(["bash", str(SETUP), *map(str, args)], cwd=self.tmp, env=env,
+                           text=True, capture_output=True)
         if check:
             self.assertEqual(r.returncode, 0, r.stderr)
         return r
+
+    def setup_task(self, repo, test_command="python3 -m unittest"):
+        """The three phases in WorkflowAgent's order; returns the bead phase's result."""
+        self.repos.append(Path(repo))
+        self.phase("tools")
+        self.phase("repo", repo, self.tarball, test_command, self.logs)
+        return self.phase("bead", repo, "Fix counter off-by-one", self.instruction,
+                          "exam-run-1", self.logs)
 
     def task_repo(self, files=None):
         path, _ = make_repo(self.tmp / "app", files or {"counter.py": "def count(n):\n    return n - 1\n"})
@@ -298,21 +304,79 @@ class SetupTaskTest(TaskRepoCase):
         # THEN the pipe is escaped
         self.assertIn("`make test \\| tee out.txt`", (repo / "CLAUDE.md").read_text())
 
-    def test_logs_and_identity(self):
+    def test_export_files_name_base_start_and_bead(self):
         """
-        base.sha / start.sha / bead.txt feed the try-folder export, and the
-        exam commits must use a fixed neutral identity, never a real email.
+        base.sha / start.sha / bead.txt feed the try-folder export: start.sha
+        is the diff base, so a wrong one would put the whole harness in
+        diff.patch.
         """
         # GIVEN a task repo
         repo = self.task_repo()
         # WHEN setup runs
         bead = self.bead_id(self.setup_task(repo))
-        # THEN the logs name the base, harness commit and bead, authored by the exam bot
+        # THEN start is the harness commit, base its parent, bead the printed id
         start = (self.logs / "start.sha").read_text().strip()
         self.assertEqual(start, self.git(repo, "rev-parse", "HEAD"))
+        self.assertEqual((self.logs / "base.sha").read_text().strip(), self.git(repo, "rev-parse", "HEAD~1"))
         self.assertEqual((self.logs / "bead.txt").read_text().strip(), bead)
-        self.assertTrue((self.logs / "base.sha").is_file())
-        self.assertEqual(self.git(repo, "log", "-1", "--format=%an <%ae>"), EXAM_AUTHOR)
+
+    def test_exam_commits_use_a_neutral_identity(self):
+        """
+        Exam commits land in exported diffs and try folders; they must carry a
+        fixed neutral identity, never a real person's name or email.
+        """
+        # GIVEN a task repo with uncommitted task state, so setup makes both commits
+        repo = self.task_repo()
+        (repo / "counter.py").write_text("def count(n):\n    return n - 2\n")
+        # WHEN setup runs
+        self.setup_task(repo)
+        # THEN both exam commits are authored by the exam bot
+        self.assertEqual(self.git(repo, "log", "-2", "--format=%an <%ae>").splitlines(), [EXAM_AUTHOR] * 2)
+
+    def test_workdir_root_is_refused(self):
+        """
+        A task whose workdir is `/` would make setup git-init and commit the
+        whole filesystem. It must stop before touching anything.
+        """
+        # GIVEN the workdir /
+        # WHEN the repo phase runs
+        r = self.phase("repo", "/", self.tarball, "", self.logs, check=False)
+        # THEN it fails naming the reason, and / has no repo
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("refusing", r.stderr)
+        self.assertFalse(Path("/.git").exists())
+
+    def test_unwritable_parent_dir_fails_at_setup(self):
+        """
+        The coordinator makes sibling worktrees next to the repo (for /app,
+        /app-bd-...). If the agent user cannot write the parent, /work would
+        fail deep into the paid run; setup must fail first, naming the dir.
+        """
+        # GIVEN a repo whose parent dir is read-only
+        parent = self.tmp / "ro"
+        repo, _ = make_repo(parent / "app", {"x.py": "1\n"})
+        parent.chmod(0o555)
+        self.addCleanup(parent.chmod, 0o755)
+        # WHEN the repo phase runs
+        r = self.phase("repo", repo, self.tarball, "", self.logs, check=False)
+        # THEN it fails naming the parent dir, before any exam commit
+        self.assertEqual(r.returncode, 1)
+        self.assertIn(f"{parent.resolve()} is not writable", r.stderr)
+        self.assertNotEqual(self.git(repo, "log", "-1", "--format=%s"), "exam: harness")
+
+    def test_bead_phase_before_repo_phase_fails(self):
+        """
+        The bead phase relies on bd init and the harness commit from the repo
+        phase; run alone it must fail, not make a bead in an unprepared repo.
+        """
+        # GIVEN a task repo the repo phase never touched
+        repo = self.task_repo()
+        # WHEN only the bead phase runs
+        r = self.phase("bead", repo, "t", self.instruction, "run", self.logs, check=False)
+        # THEN it fails and no bead id is printed
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("repo phase has not run", r.stderr)
+        self.assertEqual(r.stdout, "")
 
     def test_setup_is_fast_with_tools_present(self):
         """
@@ -330,15 +394,17 @@ class SetupTaskTest(TaskRepoCase):
 
     def test_bad_arguments_exit_2(self):
         """
-        A missing argument must fail loudly before touching the repo, not
-        half-set-up a task.
+        A wrong phase or argument count must fail loudly before touching the
+        repo, not half-set-up a task.
         """
-        # GIVEN only two arguments
-        # WHEN setup runs
-        r = subprocess.run(["bash", str(SETUP), str(self.tmp), "x"], text=True, capture_output=True)
-        # THEN it exits 2 with usage
-        self.assertEqual(r.returncode, 2)
-        self.assertIn("usage", r.stderr)
+        for args in ([], ["nope"], ["tools", "x"], ["repo", str(self.tmp), "x"], ["bead", "a", "b", "c", "d"]):
+            with self.subTest(args=args):
+                # GIVEN a bad argument list
+                # WHEN setup runs
+                r = subprocess.run(["bash", str(SETUP), *args], text=True, capture_output=True)
+                # THEN it exits 2 with usage
+                self.assertEqual(r.returncode, 2)
+                self.assertIn("usage", r.stderr)
 
 
 class FinishTaskTest(TaskRepoCase):
@@ -372,8 +438,65 @@ class FinishTaskTest(TaskRepoCase):
         self.assertEqual(end, self.git(repo, "rev-parse", "HEAD"))
         self.assertIn("+    return n\n", (self.logs / "diff.patch").read_text())
         self.assertEqual((self.logs / "branch.txt").read_text().strip(), f"feature/bd-{bead}-fix-counter")
+        self.assertEqual((self.logs / "origin_url.txt").read_text().strip(), f"file://{self.origin}")
 
-    def test_without_a_bead_branch_stays_at_base(self):
+    def test_dirty_main_root_without_branch_is_reset(self):
+        """
+        If /work edited the main root instead of a worktree and pushed nothing,
+        those stray edits would be graded and could score 1 with an empty
+        diff. The workdir must go back to start, untracked files removed,
+        while bd's data and EXAM_MODE (git-excluded) survive.
+        """
+        # GIVEN a set-up repo with an edited tracked file and a new file, nothing pushed
+        repo = self.task_repo()
+        self.setup_task(repo)
+        (repo / "counter.py").write_text("def count(n):\n    return n\n")
+        (repo / "stray.py").write_text("x = 1\n")
+        # WHEN the finish step runs
+        self.finish(repo)
+        # THEN both edits are gone and the excluded exam state is kept
+        self.assertEqual((repo / "counter.py").read_text(), "def count(n):\n    return n - 1\n")
+        self.assertFalse((repo / "stray.py").exists())
+        self.assertTrue((repo / ".claude/EXAM_MODE").is_file())
+        self.assertTrue((repo / ".beads").is_dir())
+
+    def test_untracked_files_do_not_survive_the_branch_checkout(self):
+        """
+        A checkout keeps untracked files, so a stray file in the main root
+        (say a test fixture the hidden tests read) would be graded alongside
+        the bead branch.
+        """
+        # GIVEN a pushed bead branch and a stray untracked file in the main root
+        repo = self.task_repo()
+        bead = self.bead_id(self.setup_task(repo))
+        self.push_bead_branch(repo, bead, "def count(n):\n    return n\n")
+        (repo / "stray.py").write_text("x = 1\n")
+        # WHEN the finish step runs
+        self.finish(repo)
+        # THEN the stray file is gone
+        self.assertFalse((repo / "stray.py").exists())
+
+    def test_binary_changes_survive_in_diff_patch(self):
+        """
+        diff.patch is the try's record of what /work built; without --binary
+        a changed binary file shows as "Binary files differ" and cannot be
+        re-applied.
+        """
+        # GIVEN a bead branch that adds a binary file
+        repo = self.task_repo()
+        bead = self.bead_id(self.setup_task(repo))
+        wt = self.tmp / "wtb"
+        run(["git", "worktree", "add", "-q", "-b", f"feature/bd-{bead}-bin", str(wt), "origin/main"], repo)
+        (wt / "blob.bin").write_bytes(bytes(range(256)))
+        run(["git", "add", "blob.bin"], wt)
+        run(["git", "commit", "-qm", "bin"], wt)
+        run(["git", "push", "-q", "origin", "HEAD"], wt)
+        # WHEN the finish step runs
+        self.finish(repo)
+        # THEN the patch carries the bytes
+        self.assertIn("GIT binary patch", (self.logs / "diff.patch").read_text())
+
+    def test_without_a_bead_branch_stays_at_start(self):
         """
         If /work never pushed a branch the workdir stays at the harness commit
         (it will score 0) and the export says end == start with an empty diff.

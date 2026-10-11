@@ -4,11 +4,13 @@
     trial_export.py finalize <trial_dir>
 
 sandbox_env()   the exact env a WorkflowAgent run passes into the sandbox
-stream_result() total_cost_usd + subtype from claude's stream-json result line
+stream_result() cost, subtype, session id and the no-PR line from claude's stream-json
+write_result()  after the run, exam/result.json + transcript.jsonl (bead .7's input)
 finalize()      after Harbor's verifier ran, write <trial>/agent/exam/gates.txt
                 so <trial>/agent/exam is a `save_try.py --from-files` dir
 """
 import json
+import shutil
 import sys
 from pathlib import Path
 
@@ -62,12 +64,21 @@ def sandbox_env(host, model_access, tries_dir, model=None):
     return env
 
 
-def stream_result(path):
-    """{'total_cost_usd', 'subtype'} from the last `result` line, Nones if absent.
+NO_PR_LINE = "EXAM_MODE: no PR"
+STATUS_BY_SUBTYPE = {"success": "ok", "error_max_budget_usd": "budget_cut"}
 
-    total_cost_usd includes subagents; the result's `usage` does not.
+
+def stream_result(path):
+    """What the bead .7 export needs from claude's stream-json (Nones if absent).
+
+    total_cost_usd and subtype come from the last `result` line;
+    total_cost_usd includes subagents, the result's `usage` does not.
+    session_id is the parent session's, from the first `init` line.
+    exam_no_pr_line: the parent's final message has `EXAM_MODE: no PR` on a
+    line of its own (only the final message counts: the skill text itself,
+    read during the run, also contains that line).
     """
-    out = {"total_cost_usd": None, "subtype": None}
+    out = {"total_cost_usd": None, "subtype": None, "session_id": None, "exam_no_pr_line": False}
     try:
         lines = Path(path).read_text(encoding="utf-8", errors="replace").splitlines()
     except OSError:
@@ -77,9 +88,53 @@ def stream_result(path):
             event = json.loads(line)
         except json.JSONDecodeError:
             continue
-        if isinstance(event, dict) and event.get("type") == "result":
-            out = {"total_cost_usd": event.get("total_cost_usd"), "subtype": event.get("subtype")}
+        if not isinstance(event, dict):
+            continue
+        if event.get("type") == "system" and event.get("subtype") == "init" and not out["session_id"]:
+            out["session_id"] = event.get("session_id")
+        if event.get("type") == "result":
+            text = event.get("result") if isinstance(event.get("result"), str) else ""
+            out.update(total_cost_usd=event.get("total_cost_usd"), subtype=event.get("subtype"),
+                       exam_no_pr_line=NO_PR_LINE in (l.strip() for l in text.splitlines()))
     return out
+
+
+def _read(path):
+    return path.read_text().strip() if path.is_file() else None
+
+
+def write_result(agent_logs, bead, harness_commit):
+    """Write <agent_logs>/exam/result.json (+ transcript.jsonl) after the run.
+
+    agent_logs is Harbor's downloaded agent dir: claude-code.txt (stream-json),
+    sessions/projects/<slug>/<session_id>.jsonl (transcripts) and exam/ (what
+    setup_task.sh and finish_task.sh wrote). status: ok on a normal finish,
+    budget_cut when --max-budget-usd stopped it, else error.
+    """
+    agent_logs = Path(agent_logs)
+    exam = agent_logs / "exam"
+    exam.mkdir(parents=True, exist_ok=True)
+    stream = stream_result(agent_logs / "claude-code.txt")
+    transcript = None
+    if stream["session_id"]:
+        hits = sorted((agent_logs / "sessions" / "projects").glob(f"*/{stream['session_id']}.jsonl"))
+        if hits:
+            shutil.copyfile(hits[0], exam / "transcript.jsonl")
+            transcript = "transcript.jsonl"
+    result = {
+        "bead": bead,
+        "branch": _read(exam / "branch.txt") or None,
+        "origin_url": _read(exam / "origin_url.txt"),
+        "harness_commit": harness_commit,
+        "status": STATUS_BY_SUBTYPE.get(stream["subtype"], "error"),
+        "subtype": stream["subtype"],
+        "total_cost_usd": stream["total_cost_usd"],
+        "exam_no_pr_line": stream["exam_no_pr_line"],
+        "session_id": stream["session_id"],
+        "transcript": transcript,
+    }
+    (exam / "result.json").write_text(json.dumps(result, indent=2) + "\n")
+    return result
 
 
 def finalize(trial_dir):

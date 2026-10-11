@@ -23,6 +23,11 @@ an Apple-silicon Mac. Model access goes through Bedrock by default; export the B
 Only those, the region and the `global.anthropic.claude-*-5-5` model ids enter the sandbox
 (`trial_export.sandbox_env`). `model_access=api` sends `ANTHROPIC_API_KEY` instead and nothing else.
 
+Harbor redacts secrets from the trial dir only when they are agent env, which is what
+`--ae KEY=VALUE` sets. Because the keys come from the host env instead, `WorkflowAgent.__init__`
+adds them to its agent env itself, so the scrubber covers them without `--ae`. Passing them with
+`--ae` as well is harmless but puts the values on the command line.
+
 ```bash
 PYTHONPATH=harness-loop/exam harness-loop/.venv/bin/harbor run \
   --agent workflow_agent:WorkflowAgent \
@@ -33,22 +38,27 @@ harness-loop/exam/trial_export.py finalize <trial dir>   # after verify: writes 
 ```
 
 Other kwargs: `harness_addon=<dir>` (passed to install_harness.py), `model=<id>` (overrides
-`ANTHROPIC_MODEL`), `run_name=<name>` (written to `.claude/EXAM_MODE`; default the trial name),
-`repo_dir=<path>` (default: the container's workdir).
+`ANTHROPIC_MODEL`), `run_name=<name>` (written to `.claude/EXAM_MODE`; default the trial name).
+The task repo is always the container's workdir, because Harbor starts `claude` there. Harbor
+JSON-parses kwarg values, so the agent turns numbers and booleans back into text; pass
+`harness_commit` as a full 40-character sha, since a short all-digit one with an `e` in it would
+arrive as a float. The sha is resolved when the agent is built and recorded in `result.json`.
 
 ## What happens in the sandbox
 
 | Step | Where | What |
 |------|-------|------|
 | install | `WorkflowAgent.install` | Claude Code install; harness packed on the host by `install_harness.py --commit`, uploaded with the two scripts |
-| setup | `setup_task.sh` | jq/git/python3 and pinned dolt 1.83.4 + bd 0.59.0 if missing; task state committed on `main` as `exam: base`; `bd init`; harness committed as `exam: harness` (a tracked `.claude/` moves to `.claude-repo/`, `AGENTS.md` to `AGENTS.repo.md`, CLAUDE.md gets a Quality Gates row); `main` pushed to the bare `/tmp/origin.git`; one bead; `.claude/EXAM_MODE` |
+| tools (install, root) | `setup_task.sh tools` | jq/git/python3/curl/tar and pinned dolt 1.83.4 + bd 0.59.0 if missing |
+| repo (install, agent user) | `setup_task.sh repo` | fails on workdir `/` or an unwritable parent dir (sibling worktrees go there); task state committed on `main` as `exam: base`; `bd init`; harness committed as `exam: harness` (a tracked `.claude/` moves to `.claude-repo/`, `AGENTS.md` to `AGENTS.repo.md`, CLAUDE.md gets a Quality Gates row); `main` pushed to the bare `/tmp/origin.git` |
+| bead (run) | `setup_task.sh bead` | one bead from the task text; `.claude/EXAM_MODE` |
 | run | `claude -p "/work <bead>"` | env adds `CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=0` and `HARNESS_TRIES_DIR=/logs/agent/tries`; `--max-budget-usd` from the kwarg |
-| finish | `finish_task.sh` | fetches origin and checks the bead branch out detached, so the hidden tests grade it; with no branch the workdir stays at `exam: harness` |
+| finish (always) | `finish_task.sh` | fetches origin and checks the bead branch out detached, so the hidden tests grade it; with no branch it resets to `exam: harness`; then `git clean -fd`, so stray edits in the main root are never graded |
 
 The harness has to be committed rather than git-excluded: the coordinator makes each worktree off
 `origin/main`, and implementers read the skills and the Quality Gates table inside that worktree.
-`setup_task.sh` runs in `run()`, not `install()`, because only `run()` receives the task text the
-bead is made from.
+Only the bead step runs in `run()`, because only `run()` receives the task text the bead is made
+from; everything else runs during Harbor's setup.
 
 ## Trial outputs
 
@@ -57,9 +67,14 @@ bead is made from.
 - `agent/sessions/projects/**`: parent and subagent transcripts (Harbor points `CLAUDE_CONFIG_DIR`
   into the logs dir, so nothing is copied).
 - `agent/tries/`: the coordinator's own try folders.
-- `agent/exam/`: `base.sha`, `start.sha` (`exam: harness`), `end.sha`, `diff.patch`, `bead.txt`,
-  `branch.txt`, `result.json` (bead, branch, `total_cost_usd`, result `subtype`). After
-  `finalize` it also holds `gates.txt`, so the folder is a `save_try.py --from-files` input.
+- `agent/exam/`: `base.sha`, `start.sha` (`exam: harness`), `end.sha`, `diff.patch` (`--binary`),
+  `bead.txt`, `branch.txt`, `origin_url.txt`, `transcript.jsonl` (the parent session, found by the
+  stream's init `session_id`) and `result.json`: bead, branch, `origin_url`, the resolved
+  `harness_commit` sha, `status` (`ok`, `budget_cut` when the result subtype is
+  `error_max_budget_usd`, else `error`), `subtype`, `total_cost_usd` (null with no result line),
+  `exam_no_pr_line` (the final message has `EXAM_MODE: no PR` on its own line), `session_id`,
+  `transcript`. After `finalize` it also holds `gates.txt`, so the folder is a
+  `save_try.py --from-files` input.
 
 ## Network
 

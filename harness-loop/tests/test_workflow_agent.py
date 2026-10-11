@@ -1,7 +1,8 @@
 """Tests for harness-loop/exam/trial_export.py and the WorkflowAgent wiring.
 
-trial_export is stdlib-only and runs everywhere. The WorkflowAgent checks need
-Harbor, so they run in harness-loop/.venv and skip when that venv is absent.
+trial_export is stdlib-only and runs everywhere. The WorkflowAgent cases need
+Harbor, so they live in agent_cases.py, run in harness-loop/.venv, and skip
+when that venv is absent.
 """
 import json
 import os
@@ -11,7 +12,6 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from helpers import run
 
 HERE = Path(__file__).resolve().parent
 EXAM = HERE.parent / "exam"
@@ -20,6 +20,12 @@ import trial_export  # noqa: E402
 
 VENV_PY = HERE.parent / ".venv" / "bin" / "python"
 SAVE_TRY = HERE.parent.parent / ".claude/skills/coordinator/save_try.py"
+
+def tmpdir(case):
+    d = tempfile.TemporaryDirectory()
+    case.addCleanup(d.cleanup)
+    return Path(d.name)
+
 
 HOST = {
     "AWS_ACCESS_KEY_ID": "AKIA-bedrock", "AWS_SECRET_ACCESS_KEY": "bedrock-secret",
@@ -71,10 +77,11 @@ class SandboxEnvTest(unittest.TestCase):
         # GIVEN the same host env
         # WHEN the api sandbox env is built
         env = trial_export.sandbox_env(HOST, "api", tries_dir="/t", model="claude-sonnet-5-5")
-        # THEN only the API key and model travel
+        # THEN only the API key, model and exam switches travel
+        self.assertEqual(set(env), {"ANTHROPIC_API_KEY", "ANTHROPIC_MODEL",
+                                    "CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS", "IS_SANDBOX", "HARNESS_TRIES_DIR"})
         self.assertEqual(env["ANTHROPIC_API_KEY"], "sk-ant-x")
         self.assertEqual(env["ANTHROPIC_MODEL"], "claude-sonnet-5-5")
-        self.assertFalse([k for k in env if k.startswith("AWS_") or "OAUTH" in k or "BEDROCK" in k])
 
     def test_unknown_access_mode_is_rejected(self):
         """A typo in model_access must not silently pick a route."""
@@ -91,32 +98,35 @@ class StreamResultTest(unittest.TestCase):
         tells a budget cut from a normal finish.
         """
         # GIVEN a stream with assistant noise and a result line
-        stream = Path(tempfile.mkdtemp()) / "claude-code.txt"
+        stream = tmpdir(self) / "claude-code.txt"
         stream.write_text("\n".join([
+            json.dumps({"type": "system", "subtype": "init", "session_id": "parent"}),
+            json.dumps({"type": "system", "subtype": "init", "session_id": "later"}),
             json.dumps({"type": "assistant", "total_cost_usd": 99}),
             "not json",
             json.dumps({"type": "result", "subtype": "error_max_budget_usd", "total_cost_usd": 11.84}),
         ]) + "\n")
         # WHEN it is parsed
         result = trial_export.stream_result(stream)
-        # THEN cost and subtype come from the result line
-        self.assertEqual(result, {"total_cost_usd": 11.84, "subtype": "error_max_budget_usd"})
+        # THEN cost and subtype come from the result line, the session from the first init
+        self.assertEqual(result, {"total_cost_usd": 11.84, "subtype": "error_max_budget_usd",
+                                  "session_id": "parent", "exam_no_pr_line": False})
 
     def test_missing_result_gives_nones(self):
         """A run killed before its result line has no cost; say so, never 0."""
         # GIVEN a stream without a result line, and no file at all
-        d = Path(tempfile.mkdtemp())
+        d = tmpdir(self)
         (d / "s.txt").write_text(json.dumps({"type": "assistant"}) + "\n")
         # WHEN parsed
-        # THEN both fields are None
-        none = {"total_cost_usd": None, "subtype": None}
+        # THEN every field is empty
+        none = {"total_cost_usd": None, "subtype": None, "session_id": None, "exam_no_pr_line": False}
         self.assertEqual(trial_export.stream_result(d / "s.txt"), none)
         self.assertEqual(trial_export.stream_result(d / "missing.txt"), none)
 
 
 class FinalizeTest(unittest.TestCase):
     def make_trial(self):
-        trial = Path(tempfile.mkdtemp())
+        trial = tmpdir(self)
         exam = trial / "agent" / "exam"
         exam.mkdir(parents=True)
         (exam / "start.sha").write_text("a" * 40 + "\n")
@@ -149,7 +159,7 @@ class FinalizeTest(unittest.TestCase):
         # GIVEN a finalized trial
         trial, exam = self.make_trial()
         trial_export.finalize(trial)
-        tries = Path(tempfile.mkdtemp())
+        tries = tmpdir(self)
         # WHEN save_try reads it
         out = subprocess.run(
             [sys.executable, str(SAVE_TRY), "--bead", "exam-1", "--from-files", str(exam),
@@ -173,36 +183,67 @@ class FinalizeTest(unittest.TestCase):
         self.assertIn("no verifier output", (exam / "gates.txt").read_text())
 
 
-@unittest.skipUnless(VENV_PY.exists(), "needs harness-loop/.venv with harbor installed")
-class WorkflowAgentWiringTest(unittest.TestCase):
-    def agent_probe(self, code, env=None):
-        prog = (f"import sys; sys.path.insert(0, {str(EXAM)!r})\n"
-                "from pathlib import Path; import json, tempfile\n"
-                "from workflow_agent import WorkflowAgent\n" + code)
-        return run([str(VENV_PY), "-c", prog], HERE).stdout if env is None else subprocess.run(
-            [str(VENV_PY), "-c", prog], cwd=HERE, env=env, text=True, capture_output=True, check=True).stdout
+class WriteResultTest(unittest.TestCase):
+    def agent_logs(self, events):
+        logs = tmpdir(self)
+        (logs / "claude-code.txt").write_text("\n".join(json.dumps(e) for e in events) + "\n")
+        (logs / "exam").mkdir()
+        return logs
 
-    def test_agent_env_and_flags(self):
+    def test_status_follows_the_result_subtype(self):
         """
-        Harbor's ClaudeCode picks credentials from the whole host env; the
-        override must hand the sandbox exactly sandbox_env's vars, and the
-        run-config budget must reach `claude` as --max-budget-usd. The agent's
-        own kwargs must not reach Harbor's option validator (it rejects them).
+        Bead .7 counts rewards only for `ok` tries and costs `budget_cut` ones
+        at the cap; a crashed run (no result line) must be `error`, not ok.
         """
-        # GIVEN a host env with admin keys and an API key
+        for subtype, status in (("success", "ok"), ("error_max_budget_usd", "budget_cut"),
+                                ("error_during_execution", "error"), (None, "error")):
+            with self.subTest(subtype=subtype):
+                # GIVEN a stream ending with that subtype (or no result line)
+                events = [{"type": "result", "subtype": subtype, "total_cost_usd": 1}] if subtype else []
+                # WHEN the result is written
+                result = trial_export.write_result(self.agent_logs(events), "b", "a" * 40)
+                # THEN the status matches
+                self.assertEqual(result["status"], status)
+
+    def test_no_pr_line_counts_only_in_the_final_message(self):
+        """
+        The coordinator skill text contains `EXAM_MODE: no PR`, and it enters
+        the stream when the skill is read. Only the parent's final message
+        proves the exam-mode finish happened.
+        """
+        # GIVEN the line inside a tool result but a final message without it
+        logs = self.agent_logs([
+            {"type": "user", "message": {"content": "...\nEXAM_MODE: no PR\n..."}},
+            {"type": "result", "subtype": "success", "result": "BEAD COMPLETE\nPR: none"}])
+        # WHEN / THEN it is not counted
+        self.assertFalse(trial_export.write_result(logs, "b", "c")["exam_no_pr_line"])
+
+    def test_missing_session_file_leaves_transcript_null(self):
+        """A trial whose session file was not downloaded must say so, not crash."""
+        # GIVEN an init line naming a session with no file
+        logs = self.agent_logs([{"type": "system", "subtype": "init", "session_id": "gone"}])
+        # WHEN written / THEN transcript is null and no file was made
+        self.assertIsNone(trial_export.write_result(logs, "b", "c")["transcript"])
+        self.assertFalse((logs / "exam" / "transcript.jsonl").exists())
+
+
+@unittest.skipUnless(VENV_PY.exists(), "needs harness-loop/.venv with harbor installed")
+class HarborCasesTest(unittest.TestCase):
+    def test_agent_cases_pass_in_the_harbor_venv(self):
+        """
+        agent_cases.py exercises WorkflowAgent against real Harbor classes
+        (construction, install/run with a fake sandbox, post-run export). It
+        runs in the venv with a host env holding only fake keys, so a real
+        developer key can never reach a test and a failure there fails here.
+        """
+        # GIVEN a host env with fake Bedrock, admin, API and OAuth credentials
         env = {"PATH": os.environ["PATH"], "HOME": os.environ["HOME"], **HOST}
-        # WHEN the agent is built with its kwargs and asked for its env and flags
-        out = json.loads(self.agent_probe(
-            "a = WorkflowAgent(logs_dir=Path(tempfile.mkdtemp()), harness_commit='HEAD',\n"
-            "    max_budget_usd='12', title='T', test_command='make test', repo_dir='/app')\n"
-            "print(json.dumps({'env': a._resolve_auth_env(), 'flags': a.build_cli_flags(),\n"
-            "    'model': a._resolved_model_name()}))", env=env))
-        # THEN only the Bedrock vars travel and the budget flag is set
-        self.assertEqual(out["env"]["AWS_ACCESS_KEY_ID"], "AKIA-bedrock")
-        self.assertFalse({"ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN", "AWS_PROFILE",
-                          "AWS_SESSION_TOKEN", "AWS_ADMIN_ACCESS_KEY_ID"} & set(out["env"]))
-        self.assertIn("--max-budget-usd 12", out["flags"])
-        self.assertEqual(out["model"], "global.anthropic.claude-opus-5-5")
+        # WHEN the cases run under the venv's python
+        r = subprocess.run([str(VENV_PY), "-m", "unittest", "agent_cases"], cwd=HERE, env=env,
+                           text=True, capture_output=True)
+        # THEN all pass
+        self.assertEqual(r.returncode, 0, r.stderr[-4000:])
+        self.assertIn("OK", r.stderr)
 
 
 if __name__ == "__main__":
