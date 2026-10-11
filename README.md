@@ -57,8 +57,8 @@ The harness gets agents to both with a loop.
 
 ## Quick start
 
-1. Copy `.claude/` and `AGENTS.md` into your project (or run the `copy-harness` skill from a checkout of this repo).
-2. Replace `CLAUDE.md` with your project's build, test and lint commands, and the dev environment an agent can safely break.
+1. From a checkout of this repo, install a pinned version into your project: `python3 harness-loop/install_harness.py --commit <ref> --target <your project>`. It copies the committed `.claude/` and `AGENTS.md` at that commit and records the commit in `.claude/HARNESS_VERSION`.
+2. Start your project's CLAUDE.md from `templates/CLAUDE.md` (the installer does not copy it). Fill in your build, test and lint commands, and the dev environment an agent can safely break.
 3. `/plan "your feature"`, then `/work <epic-id>`.
 
 ## How it works

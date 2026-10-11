@@ -1,48 +1,26 @@
 # CLAUDE.md
 
-This is a reference implementation of an agent-friendly development workflow for Claude Code. Copy the `.claude/` directory and `AGENTS.md` into your project, then customize this file for your project.
+agent-workflow is a Claude Code harness: skills, slash commands, hooks and agents that run a plan, build, review and PR loop. `.claude/` and `AGENTS.md` are the product that gets installed into target projects. `harness-loop/` is this repo's self-improvement loop (installer, exam, improver) and is never installed into targets. `templates/CLAUDE.md` is the starting CLAUDE.md for a target project.
 
-## Customizing for Your Project
-
-Replace this file with your project's CLAUDE.md. It should include:
-
-### Project Overview
-
-Describe your project in 2-3 sentences. What does it do? What's the tech stack?
-
-### Commands
-
-Document your build, test, and lint commands:
+Install a pinned harness version into a project:
 
 ```bash
-# Examples — replace with your actual commands
-make build           # Build the project
-make test            # Run all tests
-make lint            # Lint all code
+python3 harness-loop/install_harness.py --commit <ref> --target <project dir> [--addon <dir>] [--force]
 ```
 
-### Quality Gates
+Python is stdlib only; tests use `unittest`.
 
-The skills reference a **Quality Gates** table in CLAUDE.md. Define what commands to run for each area of your codebase:
+## Quality Gates
 
-| Area | Tests | Lint | Typecheck |
-|------|-------|------|-----------|
-| Backend | `make test-api` | `make lint-api` | — |
-| Frontend | `npm test` | `npm run lint` | `npx tsc --noEmit` |
-| Integration | `make test-integration` | — | — |
-
-**Local vs. CI scope:** Locally, agents run only the **changed package(s) and their dependents** — never the whole monorepo. The full / timing-sensitive suite is **CI's job**, run on push on a clean machine; scoped-local is allowed to miss cross-package breaks by design because CI is the authoritative gate. If your build tool supports affected-scope test selection, put that command in the table above (e.g. `turbo run test --filter=...[origin/main]` — replace for your stack).
-
-### Development Guidelines
-
-Document your project's conventions:
-- Testing requirements
-- Code style preferences
-- Architecture patterns
+| Area | Tests | Lint |
+|------|-------|------|
+| harness-loop | `python3 -m unittest discover -s harness-loop/tests` (no `-t .`: without it unittest puts the start dir on `sys.path`, so `from helpers import ...` resolves; with it, it fails on Python 3.14 because the dir has no `__init__.py`) | `python3 -m py_compile $(git ls-files 'harness-loop/*.py' '.claude/*.py')` |
+| hooks | — | `for f in .claude/hooks/*.sh; do bash -n "$f"; done` |
+| settings | — | `python3 -m json.tool .claude/settings.json >/dev/null` |
 
 ## Workflow
 
-This project uses an agent-friendly development workflow. Use `/plan` to decompose features into issues and `/work` to implement them. See `AGENTS.md` for full documentation and `.claude/skills/` for agent instructions.
+Use `/plan` to decompose features into issues and `/work` to implement them. See `AGENTS.md` and `.claude/skills/`.
 
 <!-- compact-instructions:start -->
 ## Compact Instructions
