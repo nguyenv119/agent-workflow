@@ -1,5 +1,7 @@
 # Close Bead After Merge
 
+If `.claude/project-rules.md` exists and has a section for this skill, follow it; it overrides the generic defaults here.
+
 Close beads and clean up after merging **$ARGUMENTS** (or the current branch if no argument given).
 
 **Run this whole flow as a subagent** (Agent tool, `model: "haiku"`) rather
@@ -97,9 +99,9 @@ Blocked beads that may now be unblocked:
 
 <!-- few-shot: merged-report-filled -->
 ```
-Closed bead(s): svc-42.4
-Removed worktree: .worktrees/svc-42-4
-Deleted branch: feature/svc-42-4
+Closed bead(s): app-42.4
+Removed worktree: .worktrees/app-42-4
+Deleted branch: feature/app-42-4
 ```
 
 Run `bd ready` and show any newly unblocked beads. If there are any, suggest:
@@ -109,6 +111,6 @@ Ready to continue: /work <epic-id>
 ```
 
 <!-- few-shot: merged-epic-close-vs-leave-open -->
-BAD: "svc-9: CLOSED (9 of 10 closed; svc-9.7 open)". Why: a child is open.
-GOOD: "svc-9 stays open: svc-9.7 open." Why: names it.
-BAD: PR #2133, no `Bead:` line, closed svc-42.1/.4 (stale base). Why: no `Bead:` = close nothing.
+BAD: "app-9: CLOSED (9 of 10 closed; app-9.7 open)". Why: a child is open.
+GOOD: "app-9 stays open: app-9.7 open." Why: names it.
+BAD: PR #2133, no `Bead:` line, closed app-42.1/.4 (stale base). Why: no `Bead:` = close nothing.

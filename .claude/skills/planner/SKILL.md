@@ -6,6 +6,8 @@ user_invocable: true
 
 # Planner
 
+If `.claude/project-rules.md` exists and has a section for this skill, follow it; it overrides the generic defaults here.
+
 You are a planner agent. Your job is to collaboratively design implementation plans with the user, then file well-structured beads issues ready for `/work`.
 
 ## Win Condition (required for loopable epics)
@@ -95,13 +97,14 @@ After the user approves the plan:
 **Each subtask MUST be self-contained** (per AGENTS.md rules):
 - **Summary**: What and why in 1-2 sentences
 - **Files to modify**: Exact paths (with line numbers if relevant)
+- **Test scaffolding pointer**: name the package's shared test-helper location (quality.md §I table) the implementer must import from — and never plan a consolidation that violates §I's owner rule (call sites must get shorter or vanish into a global setup file)
 - **Implementation steps**: Numbered, specific actions
 - **Example**: Show before → after transformation when applicable
 - **Real acceptance**: a runnable pass/fail for this bead **against reality, not mocks** (bead-level R1) — a live API/model call, real corpus data, or a real dev-DB integration, naming the observable it asserts (the actual values/counts/shape). The coordinator runs this *before* the approval gate and records its output as **evidence**; mocks/unit tests are the CI gate, never the acceptance bar (see `standards/quality.md` §H). Tier by risk — standard beads may lean on reviewers + quality gates, but the acceptance bar is still a real check; **risky beads (DB schema/migrations, shared infra, prod-affecting) REQUIRE a runnable real check — for schema, "applies from-zero on real Postgres" (CI migration-check), never a local `db:verify` on already-migrated state** (see the win-condition skill's "Bead-level acceptance").
 
 <!-- few-shot: planner-bead-example-filled -->
 ```markdown
-## Example   (svc-42.3, merged in PR #1286)
+## Example   (app-42.3, merged in PR #1286)
 Before, invoice-7 (no prior balance), summary line:
   { "no_data": true, "missing_label": "Prior balance + trend" }
 After: the line is absent from `lines`. Account with a seeded history:
@@ -136,6 +139,30 @@ The reviewer checks the filed issues against the codebase for architectural issu
 
 **Output**: An epic (carrying a `## Win Condition`) with subtasks ready for `/work <epic-id>`. Tell the user the epic ID and suggest running `/work <epic-id>` — interactively, or as an autonomous run to the win-condition (the coordinator offers this when a win-condition is present).
 
+### Phase 5 — Plain-language overview (always, after the review is APPROVED)
+
+The filed beads are written for implementers. The user reads them cold, often days later, so the
+planner ends every run with ONE overview message in plain language, no jargon, structured like the
+test docstrings in `standards/quality.md` §B (what · proof · why · what breaks without it).
+
+Format, exactly:
+
+```
+## Win condition, in plain words
+<one or two sentences: the observable end state a fresh, unattended run must reach, and the fail control>
+
+## Beads
+1. **<bead id> <short name>.** <one sentence: what it does>
+   - Proof: <one sentence: the real check that says it is done, against the real system, not mocks>
+   - Why: <one sentence: the need it answers, pointing at the verified fact that showed the gap>
+   - Without it: <one sentence: what concretely goes wrong or stays manual>
+2. ...
+```
+
+Rules: one sentence per line, no station ids, table names or procedure names unless the reader
+must go there; name the thing by what it does. Every bead appears, in build order, not filing
+order. If the reviewer changed a bead, the overview reflects the changed version. Post it as the
+last message of `/plan`, before the `/work` suggestion.
 ## Your Constraints
 
 - **MAY** use full beads access (create, update, close issues) — but only in Phases 3-4

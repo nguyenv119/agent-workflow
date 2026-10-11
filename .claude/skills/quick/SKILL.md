@@ -5,6 +5,8 @@ description: Lightweight PR flow for small, low-risk fixes — one reviewer inst
 
 # Quick
 
+If `.claude/project-rules.md` exists and has a section for this skill, follow it; it overrides the generic defaults here.
+
 A smaller sibling of `coordinator`, for changes that don't need the full
 machinery: single-file or few-line fixes, typo/copy corrections, small
 config tweaks, one-off bug fixes with an obvious cause. The point isn't to
@@ -47,7 +49,7 @@ Qualifies for Quick only if **both** hold:
    that ISN'T mechanically uniform (real logic, just not much of it), that's
    still a signal to hand off — this exception is narrow on purpose.
 2. **Not on the risk deny-list.** Does not touch:
-   - DB schema / migrations (`packages/db/drizzle/`, schema files)
+   - DB schema / migrations (migration directories, schema files)
    - Auth / permissions code
    - Payment / billing code
    - CI/CD config (`.github/workflows/`, deploy configs)
@@ -56,7 +58,7 @@ Qualifies for Quick only if **both** hold:
    - Secrets, env handling, anything prod-facing in a way that isn't purely
      additive
 
-**Standing exception — prune deletion beads (Long, 2026-09-07):** a bead filed by the `prune` skill (its epic body says "Routing: QUICK") skips this gate entirely, even when it would fail it on paper (an unused auth helper, a manifest edit, a deploy-bundled dependency). A deletion carries no new code; the "does anything still use this?" question was answered before filing by prune's six-surface verifier with evidence, and the deny-list labels describe new-code risk. For these beads Step 4's reviewer is replaced by the deterministic diff-shape check in the bead (only the listed `D` files, named manifests/lockfile, listed comment trims; a deleted `*.test.*` without its deleted sibling fails), and Steps 5–6 run as one composite gate (build + typecheck + tests invoked directly per workspace + the bead's real acceptance). Step 3's implementer is also skipped — the parent makes the listed deletions and manifest edits directly (`git rm`, one manifest line, `pnpm install`), since there is no code to write. Do not hand off a prune bead to `coordinator`.
+**Standing exception — prune deletion beads (Long, 2026-09-07):** a bead filed by the `prune` skill (its epic body says "Routing: QUICK") skips this gate entirely, even when it would fail it on paper (an unused auth helper, a manifest edit, a deploy-bundled dependency). A deletion carries no new code; the "does anything still use this?" question was answered before filing by prune's six-surface verifier with evidence, and the deny-list labels describe new-code risk. For these beads Step 4's reviewer is replaced by the deterministic diff-shape check in the bead (only the listed `D` files, named manifests/lockfile, listed comment trims; a deleted `*.test.*` without its deleted sibling fails), and Steps 5–6 run as one composite gate (build + typecheck + tests invoked directly per workspace + the bead's real acceptance). Step 3's implementer is also skipped — the parent makes the listed deletions and manifest edits directly (`git rm`, one manifest line, the package manager's install), since there is no code to write. Do not hand off a prune bead to `coordinator`.
 
 **If either fails, stop and hand off to `coordinator`/`work` instead** — say
 so plainly ("this touches migrations, routing to the full flow") rather than
@@ -65,10 +67,10 @@ existing at all depends on it refusing the cases it isn't built for.
 
 <!-- few-shot: quick-gate-accept-vs-refuse -->
 ```
-ACCEPT  svc-70: 2 files (scripts/export/continue.ts + test), +124/-8, no deny-list path. Proceeding with Quick.
-REFUSE  svc-61.1: only 2 files, but .github/workflows/test.yml is CI config. Routing to the full flow.
-REFUSE  svc-58.9: src/db/schema/orders.ts is a schema file, migration or not. Routing to the full flow.
-BAD     "svc-61.1 is tiny, so Quick with extra care" (why: a small diff never overrides the deny-list)
+ACCEPT  app-70: 2 files (scripts/export/continue.ts + test), +124/-8, no deny-list path. Proceeding with Quick.
+REFUSE  app-61.1: only 2 files, but .github/workflows/test.yml is CI config. Routing to the full flow.
+REFUSE  app-58.9: src/db/schema/orders.ts is a schema file, migration or not. Routing to the full flow.
+BAD     "app-61.1 is tiny, so Quick with extra care" (why: a small diff never overrides the deny-list)
 ```
 
 ## Step 2 — Worktree, same as always
@@ -179,7 +181,7 @@ acceptance: one plain-language line if it ran>. PR: <url>.
 <!-- few-shot: quick-fix-complete -->
 ```
 QUICK FIX COMPLETE
-svc-88.1: removed the dead fetchLiveModel read from the /reports index. It
+app-88.1: removed the dead fetchLiveModel read from the /reports index. It
 returned null for all 35 landing slugs, so each request made 35 wasted DB
 round-trips. Tests pass, including the integration suite.
 PR: https://github.com/acme/app/pull/1526.

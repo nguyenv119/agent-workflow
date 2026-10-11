@@ -5,6 +5,8 @@ description: Process external review feedback (Devin, human), fix issues, run in
 
 # Review Feedback Loop
 
+If `.claude/project-rules.md` exists and has a section for this skill, follow it; it overrides the generic defaults here.
+
 You process external review feedback on a PR, fix every issue, analyze why internal reviewers missed each one, and update the harness to prevent recurrence.
 
 **This is NOT the same as /work.** `/work` implements features. `/review` iterates on review feedback after implementation. The two can alternate: `/work` → push → Devin review → `/review` → push → Devin review → `/review` → merge.

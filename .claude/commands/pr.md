@@ -1,5 +1,7 @@
 # Open or Update Pull Request
 
+If `.claude/project-rules.md` exists and has a section for this skill, follow it; it overrides the generic defaults here.
+
 Create or update the PR for **$ARGUMENTS** (or the current branch if no argument given) with an AI-generated summary.
 
 The coordinator auto-creates a PR when it pushes a branch. Use this command to regenerate or update the PR summary after additional commits, or to manually create a PR for a branch the coordinator didn't push. This command is idempotent — running it multiple times on the same branch always regenerates from the latest diff.
@@ -85,6 +87,11 @@ this change does about it, before any implementation detail.>
 - [ ] Tests pass
 - [ ] <any manual verification steps specific to this change>
 
+## Evidence
+<paste output of a real run proving the change works — command output, eval
+result, or screenshot. Unit-test pass alone does not qualify. For diffs that
+change no runtime behavior, write "N/A (docs-only)".>
+
 Beads: <comma-separated bead IDs, or omit if none>
 
 Closes #<github-issue-number>  ← include only if applicable
@@ -96,17 +103,30 @@ Generated with Claude Code
 
 **Summary quality bar:** The summary should be written from reading the actual diff — not generic. If the diff adds a caching layer, say what it caches, why, and what the TTL is. If it fixes a bug, name the bug.
 
-**Test plan evidence:** name a real run and what it observed, not "tests pass".
+**Evidence:** name a real run and what it observed, not "tests pass".
 <!-- few-shot: pr-evidence-good-vs-bad -->
 ```text
-BAD   ## Test plan
+BAD   ## Evidence
       All unit tests pass. Eval: 14 passed.
   why: unit-only; and one of the 14 asserted "Legacy total" is absent, a
        string nothing writes any more, so it could never fail.
-GOOD  ## Test plan
-      live-check vs dev DB branch (svc-42): 19 of 29 sampled accounts resolve
+GOOD  ## Evidence
+      live-check vs dev DB branch (app-42): 19 of 29 sampled accounts resolve
       to /\$\d+\.\d{2}/; invoice-7 summary: no_data lines = 0
   why: a real run naming observed values, matched on what the code emits.
 ```
 
 **Idempotent:** Running `/pr` multiple times on the same branch always regenerates the summary from the latest diff. Safe to re-run after the agent pushes fixes.
+
+## 8. Verify the Evidence gate (mechanical)
+
+After creating or updating, confirm the PR body carries a real-run Evidence section:
+
+```bash
+gh pr view $BRANCH --repo $REPO --json body --jq .body | grep -q '^## Evidence' \
+  && echo "evidence-gate: OK" \
+  || echo "BLOCKED: PR body has no '## Evidence' section — add real-run output (or 'N/A (docs-only)') and re-run /pr"
+```
+
+Run it unfiltered: if a command-rewriting hook or output filter wraps `gh`, bypass it here, since a compressed body can elide the marker line. Do not hand the
+PR to review while this prints BLOCKED.

@@ -23,7 +23,7 @@ for resolving larger issues in follow-on work.
 
 `/merged` runs after you merge a PR on GitHub. It verifies the merge, closes the associated bead(s), removes the worktree, and deletes the branch. This is the gate that unblocks dependent beads.
 
-`/handoff` writes an end-of-session briefing to `/Users/nguyenv/.claude/handoffs/YYYY-MM-DD-<slug>.md` and posts only the path plus a two-line gist in chat. It is written so the next agent starts where this session ended: facts verified and how, approaches that failed and why, exact paths/IDs/commands, and every open item with its single next action. Run it before `/clear` — the file survives compaction, a chat summary does not.
+`/handoff` writes an end-of-session briefing to `~/.claude/handoffs/YYYY-MM-DD-<slug>.md` and posts only the path plus a two-line gist in chat. It is written so the next agent starts where this session ended: facts verified and how, approaches that failed and why, exact paths/IDs/commands, and every open item with its single next action. Run it before `/clear` — the file survives compaction, a chat summary does not.
 
 ## Issue Tracking with bd (beads)
 
@@ -32,7 +32,7 @@ for resolving larger issues in follow-on work.
 ### Why bd?
 
 - Dependency-aware: Track blockers and relationships between issues
-- Git-friendly: Auto-syncs to JSONL for version control
+- Git-friendly: Dolt-powered version control with native sync (see Multi-Machine Collaboration)
 - Agent-optimized: JSON output, ready work detection, discovered-from links
 - Prevents duplicate tracking systems and confusion
 
@@ -59,7 +59,7 @@ EOF
 
 **Claim and update:**
 ```bash
-bd update bd-42 --status in_progress --json
+bd update <id> --claim --json      # atomic claim (sets in_progress)
 bd update bd-42 --priority 1 --json
 ```
 
@@ -87,7 +87,7 @@ bd close bd-42 --reason "Completed" --json
 ### Workflow for AI Agents
 
 1. **Check ready work**: `bd ready` shows unblocked issues (open + no blocking deps)
-2. **Claim your task**: `bd update <id> --status in_progress`
+2. **Claim your task atomically**: `bd update <id> --claim`
 3. **Work on it**: Implement, test, document
 4. **Discover new work?** Create linked issue:
    - `bd create "Found bug" -p 1 --deps discovered-from:<parent-id>`
@@ -116,10 +116,9 @@ RIGHT: "Phase 2 needs Phase 1" -> bd dep add phase2 phase1
 
 ### Auto-Sync
 
-bd automatically syncs with git:
-- Exports to `.beads/issues.jsonl` after changes (5s debounce)
-- Imports from JSONL when newer (e.g., after `git pull`)
-- No manual export/import needed!
+bd writes auto-commit to Dolt history — there is no JSONL export step. Remote
+sync is automatic via the `.claude/hooks/` pull/push hooks (see Multi-Machine
+Collaboration). Manual sync when needed: `bd dolt push` / `bd dolt pull`.
 
 ### Managing AI-Generated Planning Documents
 

@@ -5,6 +5,8 @@ description: Review PR test quality — meaningful coverage, edge cases, integra
 
 # Test Quality Reviewer
 
+If `.claude/project-rules.md` exists and has a section for this skill, follow it; it overrides the generic defaults here.
+
 You evaluate whether the tests in a PR are meaningful. High coverage with bad tests is worse than low coverage — it creates false confidence.
 
 ## Step 0: Review Checklist
@@ -76,6 +78,8 @@ For every test file, check the following. Go into the implementation only when s
 **Test Helpers**:
 - [ ] Same assertion pattern (3+ lines) repeated across 3+ tests is extracted into a named helper
 - [ ] Type casts and assertion helpers are consistent across test cases
+- [ ] No scaffolding (SDK/service stubs, DB loaders, row builders, injection seams) re-declared locally when the package's shared helpers (quality.md §I) already provide it — or when 2+ sibling test files carry the same block (extract to the shared location instead)
+- [ ] Conversely, no §I-violating indirection: a shared-helper call that is *longer* than the inline mock it replaces (owner rule — consolidation must delete code)
 
 **Edge Cases**:
 - [ ] Error paths tested (not just happy path)
@@ -100,8 +104,8 @@ KEEP [non-trivial] src/orders/store.test.ts:34 — WHEN calls the mocked
   passes. Why keep: false confidence, shown by a mutation that survives.
 DROP "store.ts:168 empty-list guard has no test" when the integration suite
   already covers it. Why drop: G1 already-handled; grep test/integration first.
-DROP "No acceptance evidence" (svc-42.4): the eval sat out of tree at the absolute
-  path the bead names (.claude/loop-evals/svc-42/). Why drop: open that path first.
+DROP "No acceptance evidence" (app-42.4): the eval sat out of tree at the absolute
+  path the bead names (.claude/loop-evals/app-42/). Why drop: open that path first.
 ```
 
 ### 4. Assess Severity
@@ -112,6 +116,7 @@ DROP "No acceptance evidence" (svc-42.4): the eval sat out of tree at the absolu
 - Production file with no tests
 - Tests that provide false confidence (all mocks, no real logic)
 - Missing error path coverage
+- Scaffolding re-declared instead of imported from the package's shared helpers (quality.md §I)
 - No integration tests for database/store code
 - Missing docstrings on core behavior tests
 - Core dependency mock without review comment flag

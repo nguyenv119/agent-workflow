@@ -1,5 +1,7 @@
 # Shared Quality Standards
 
+If `.claude/project-rules.md` exists and has a section for this skill, follow it; it overrides the generic defaults here.
+
 These standards are the single source of truth for test and code quality across the harness. Both implementers and reviewers reference this file — update here, not in individual skills.
 
 > Examples use Python syntax for illustration; apply the same structure in your project's language.
@@ -152,7 +154,7 @@ Draft: src/billing/invoice.ts:174 — delete may run with an empty id list.
 Q1 re-read: line 168 returns 0 when ids.length === 0. Handled in the same
 function. DROPPED (G1 already-handled).
 Draft: "tool output is fabricated": invoice.ts shows `const ids = allIds;`
-and a TEMP MUTATION comment (svc-51). A parallel reviewer was
+and a TEMP MUTATION comment (app-51). A parallel reviewer was
 mutation-testing that file. DROPPED: when disk contradicts the diff, suspect a
 concurrent agent and re-read, don't blame the tool.
 ```
@@ -162,6 +164,10 @@ concurrent agent and re-read, don't blame the tool.
 - **Most important findings first.** A reviewer who buries the critical bug under five style nits gets ignored.
 - **Maximum 5 non-trivial findings per review.** If you have more, you've miscategorized — re-audit your list and promote only the real problems.
 - **Every finding must include a file path and line number.** "There's a potential issue with error handling" is not a finding. "`handler/user.go:47` — error from `db.Get` is discarded; if the DB is down, the handler returns 200 with an empty response" is a finding.
+
+### G4. Evidence Presence (all reviewers)
+
+Behavior-changing diffs must arrive with real-run evidence — the bead's `## Real acceptance` output (doctrine and definitions in §H) or the PR body's `## Evidence` section. If it is missing or vacuous ("tests pass"), file that as a **blocking** finding; do not approve on code-reading alone.
 
 ## H. Acceptance vs. CI gate — real over mock, at the door
 
@@ -173,14 +179,27 @@ Why this is its own rule: a mock returns whatever you told it to. A mock-injecte
 2. **Mocks gate CI; reality gates "done."** Keep both — never let a green mock suite stand in for the real check.
 3. **Migrations/schema:** "verified" means **applied from a blank / from-zero DB on real Postgres** (CI `migration-check` + the preview deploy migrate), NOT a local `db:verify` on a branch that already has the migration applied — a self-check on already-migrated state cannot see a duplicate/ordering bug.
 4. If reality genuinely cannot be exercised for a change, **say so explicitly** and name the closest real proxy — don't silently fall back to "unit tests pass."
+5. **The check is required; the script is not.** A live-check script (e.g. `*.live-check.ts`, `live_check.py`) is throwaway: write it, run it against reality, paste its actual output into the PR as the acceptance evidence, then discard it — do not commit it, and do not redirect it into `.claude/loop-evals/` (out-of-tree evals are invisible to reviewer agents, which then falsely block on "no acceptance evidence"). If a check earns its keep as permanent coverage, promote it into the integration suite (e.g. `test/integration/`), where CI actually runs it, instead of leaving it as a loose script.
 
 <!-- few-shot: quality-evidence-present-out-of-tree -->
-Evidence out of tree is still evidence (reviewers checking rule 1, svc-42.4):
+Evidence out of tree is still evidence (reviewers checking rule 1, app-42.4):
 ```
-Bead: "Real acceptance output: /home/dev/app/.claude/loop-evals/svc-42/"
+Bead: "Real acceptance output: /home/dev/app/.claude/loop-evals/app-42/"
 WRONG  BLOCKING — no .claude/loop-evals/ or scripts/acceptance/*.live-check.ts in
        the worktree. (All three reviewers said this; the run had passed.)
 RIGHT  Opened the absolute path the bead names: parts (a)-(e) PASS, real model
        calls. Evidence present, not a finding.
 STILL BLOCK when the named path is missing, empty, or only says "tests pass".
 ```
+
+## I. Shared Test Scaffolding
+
+Before writing any test scaffolding — a DB bootstrap, a service/SDK stub, a row builder, an injection seam — locate the target package's shared test helpers and import from them. Re-declaring scaffolding that the package's shared helpers already provide, or copying it from a sibling test file, is a review-blocking violation.
+
+**Canonical locations:** list each package's shared scaffolding location (unit helpers, integration fixtures, setup files) in `.claude/project-rules.md` under `## standards`, or in the project CLAUDE.md. Reviewers and implementers look there first.
+
+**Greenfield rule**: in a package with no shared scaffolding yet, establish the shared location with the first test file — do not start per-file duplication. If you find yourself writing scaffolding a sibling file already contains, extract it to the shared location *in the same PR* and import from both.
+
+**Consolidation must delete code (owner rule)**: reuse must not add indirection. Consolidate only when the migrated call sites get *shorter* or the mock vanishes into a global setup file (e.g. vitest `setupFiles`, a pytest `conftest.py`). If routing through a shared helper would make each call site longer (e.g. a per-file factory call wrapping a still-inline payload), keep the inline version and do not consolidate — and do not file cleanup beads for that shape of "duplication." A shared mock is justified when files repeat the *same whole block* (delete N−1 copies), not when they merely share an envelope around differing payloads.
+
+**Thinness constraint** (ties to §A): shared helpers are bootstraps, stubs, and row builders taking `Partial<T>` overrides — each test's GIVEN must stay readable on its own. Opaque scenario-in-a-box mega-fixtures are prohibited; if a reader must open the helper to understand what world the test lives in, the helper is too thick.

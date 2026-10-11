@@ -5,6 +5,8 @@ description: Single entry point for all implementation work. Triages tasks, mana
 
 # Coordinator
 
+If `.claude/project-rules.md` exists and has a section for this skill, follow it; it overrides the generic defaults here.
+
 You are the single entry point for all implementation work. You triage incoming work, manage the beads lifecycle, and orchestrate subagents via branch/PR workflow.
 
 **Model guidance:** The coordinator should run on Opus 4.8. Implementer subagents run on Opus 5.5 at medium effort via the `implementer` agent definition (`.claude/agents/implementer.md`); spawn them with `subagent_type: "implementer"`.
@@ -95,6 +97,9 @@ cat <<'EOF' | bd update <id> --body-file - --json
 2. <specific action>
 ...
 
+## Test scaffolding
+- Import from the package's shared helpers (quality.md §I table); extract-don't-copy if a sibling file already has what you need
+
 ## Acceptance criteria
 - <observable outcome>
 EOF
@@ -130,16 +135,16 @@ The eligibility test itself, both conditions:
    simple" for something that ISN'T mechanically uniform, that's still a
    signal to hand off. A SIZE call (condition 1 only, not a risk answer):
    ```
-   Quick-eligible: svc-77.2 — no — not risky; too large: PR #2577 is 26 files, +2857/-1962 in src/lib/ledger/, real logic split into nine stages, not a mechanical rename
+   Quick-eligible: app-77.2 — no — not risky; too large: PR #2577 is 26 files, +2857/-1962 in src/lib/ledger/, real logic split into nine stages, not a mechanical rename
    ```
 2. **Not on the risk deny-list.** Does not touch DB schema/migrations, auth,
    payments, CI/CD config, widely-imported shared infra, or secrets/env
    handling.
    <!-- few-shot: coordinator-quick-eligible-yes-vs-no -->
    ```
-   Quick-eligible: svc-61.1 — no — risky: PR #1460 edits .github/workflows/test.yml (CI config); only 2 files, but a small diff never overrides the deny-list
-   Quick-eligible: svc-58.9 — no — risky: PR #1602 edits src/db/schema/orders.ts; a schema .ts file counts even with no migration in the diff
-   Quick-eligible: svc-70 — yes — safe: PR #1665 touches only scripts/export/continue.ts and its test; nothing under src/db/migrations/, src/db/schema/ or .github/workflows/
+   Quick-eligible: app-61.1 — no — risky: PR #1460 edits .github/workflows/test.yml (CI config); only 2 files, but a small diff never overrides the deny-list
+   Quick-eligible: app-58.9 — no — risky: PR #1602 edits src/db/schema/orders.ts; a schema .ts file counts even with no migration in the diff
+   Quick-eligible: app-70 — yes — safe: PR #1665 touches only scripts/export/continue.ts and its test; nothing under src/db/migrations/, src/db/schema/ or .github/workflows/
    ```
 
 Both must hold. If a bead is `yes`, offer to route it through `/quick`
@@ -271,7 +276,7 @@ Then construct a per-reviewer checklist by extracting the relevant sections per 
 | Reviewer | Sections to extract |
 |----------|-------------------|
 | Correctness | `correctness-patterns.md` ALL sections (Race/Select, Unbounded Accumulation, Multi-Step Orchestration, Retry Scope, Type Narrowing, Derived Data, Dual Code Paths) + `quality.md` §F (Refactor Cleanup Audit) + `quality.md` §G (Review Discipline) |
-| Test Quality | `quality.md` §A (Test Structure) + §B (Docstrings) + §C (Mock Discipline) + §D (Test Naming) + §E (Core Dependency Flagging) + §G (Review Discipline) |
+| Test Quality | `quality.md` §A (Test Structure) + §B (Docstrings) + §C (Mock Discipline) + §D (Test Naming) + §E (Core Dependency Flagging) + §G (Review Discipline) + §I (Shared Test Scaffolding) |
 | Architecture | `correctness-patterns.md` Retry Scope + Dual Code Paths + Derived Data sections + `quality.md` §F (Refactor Cleanup Audit) + §G (Review Discipline) |
 
 Format each extracted section as a numbered checklist item, e.g.:
@@ -316,7 +321,7 @@ SKILL: Read and follow .claude/skills/reviewer-tests/SKILL.md
 Standards files (for reference):
 - .claude/skills/standards/quality.md
 
-<checklist> (test quality sections: quality.md §A + §B + §C + §D + §E + §G)
+<checklist> (test quality sections: quality.md §A + §B + §C + §D + §E + §G + §I)
 
 WORKTREE: <worktree_path>
 BASE: origin/main
@@ -344,7 +349,7 @@ REFERENCE DIRS: <key directories in the existing codebase to compare against>
 - **Trivial issues** (typos, minor naming): fix directly via `git -C <worktree_path>` commands, commit, then push the fix to the same branch
 - **Non-trivial issues** (bugs, missing tests, duplication): file a beads issue, spawn an implementer subagent in the same worktree, close when fixed
 
-After all issues resolved, re-run quality gates. **Delegate to a test-runner sub-agent** so verbose output doesn't pollute the coordinator's context — do NOT run the gates directly with Bash. Use the Agent tool with `subagent_type: "claude"`, `model: "haiku"`, and `run_in_background: false` — run the gate **once, synchronously**; never spawn a second gate run while one is pending, and if re-woken or nudged mid-run, report the pending/complete result instead of restarting it. Pull the command list from the **Quality Gates** / Verification table in CLAUDE.md, scoped to the **changed package(s) and their dependents** — never the whole monorepo (e.g. `turbo run test --filter=...[origin/main]`, replace for your stack; the full suite is CI's job on push):
+After all issues resolved, re-run quality gates. **Delegate to a test-runner sub-agent** so verbose output doesn't pollute the coordinator's context — do NOT run the gates directly with Bash. Use the Agent tool with `subagent_type: "claude"`, `model: "haiku"`, and `run_in_background: false` — run the gate **once, synchronously**; never spawn a second gate run while one is pending, and if re-woken or nudged mid-run, report the pending/complete result instead of restarting it. Pull the command list from the **Quality Gates** / Verification table in CLAUDE.md, scoped to the **changed package(s) and their dependents** — never the whole monorepo (e.g. `turbo run test --filter=...[origin/main]` or `pytest <changed dir>`, replace for your stack; the full suite is CI's job on push):
 
 ```
 ROLE: Test Runner
@@ -357,7 +362,7 @@ COMMANDS:
 
 **Do NOT push if the sub-agent reports FAIL.** Fix locally first (spawn an implementer if the fix is non-trivial), then re-delegate.
 
-**A gate verdict is only as good as the commit it ran against.** Capture `git -C <worktree> rev-parse HEAD` when you spawn the test-runner and require it in the reply (`Commit:` line); if the branch tip has moved since, the verdict is stale — rerun. A `PASS` with no test-file/test counts is **unverified**, not passed: the test-runner must report counts for every test command, and a cache-replay marker (`FULL TURBO` / `cache hit`) in place of counts is a replay, not a run — rerun with the cache bypassed.
+**A gate verdict is only as good as the commit it ran against.** Capture `git -C <worktree> rev-parse HEAD` when you spawn the test-runner and require it in the reply (`Commit:` line); if the branch tip has moved since, the verdict is stale — rerun. A `PASS` with no test-file/test counts is **unverified**, not passed: the test-runner must report counts for every test command, and a cache-replay marker (e.g. `FULL TURBO` / `cache hit`) in place of counts is a replay, not a run — rerun with the cache bypassed.
 
 #### c2. Run the Real Acceptance — against reality, NOT mocks
 
@@ -367,17 +372,17 @@ Reviewers + unit tests prove the code is *shaped* right; they do **not** prove i
 - Run it from the worktree with the real creds/data it needs (e.g. `set -a; source <env>; set +a; tsx <worktree>/<live-check>.ts`).
 - **If the real-acceptance check fails, do NOT push.** Fix (or spawn an implementer), re-run. A green unit suite with a failing real-acceptance is a FAIL.
 - Capture the check's key output **verbatim** — it goes into the `BEAD COMPLETE` block so the human approves on *evidence* ("dim 1024; cosine 0.83 vs 0.11"), not on "tests passed."
-- **Migration/schema beads** (reality can't be fully exercised pre-merge): the real acceptance is the **from-zero apply on a real Postgres** — CI's `migration-check` plus the Vercel preview migrate — NOT a local `db:verify` on an already-migrated branch.
+- **Migration/schema beads** (reality can't be fully exercised pre-merge): the real acceptance is the **from-zero apply on a real Postgres** — CI's migration check plus the preview deploy's migrate — NOT a local `db:verify` on an already-migrated branch.
 
 <!-- few-shot: coordinator-evidence-good-vs-bad -->
 ```text
-GOOD  Real acceptance (svc-42.3, dev DB branch): 19 of 29 sampled accounts resolve
+GOOD  Real acceptance (app-42.3, dev DB branch): 19 of 29 sampled accounts resolve
       to a numeric balance (matched /\$\d+\.\d{2}/); invoice-7 no_data lines = 0
   why: live run, observed counts, and the regex matches the rendered text.
 BAD   Real acceptance: 14 passed, incl. "no line contains 'Legacy total'"
   why: that string only lived in missing_label, which the bead stopped writing.
        The check passes unconditionally; it verifies nothing.
-BAD   Real acceptance FAIL: "planted sibling field lost" (svc-39.3, real DB)
+BAD   Real acceptance FAIL: "planted sibling field lost" (app-39.3, real DB)
   why: harness compared jsonb with JSON.stringify; jsonb reorders keys. Faithful
        repros passed. Re-verify the check before commissioning another fix.
 ```
@@ -452,7 +457,7 @@ Waiting for approval to proceed to bead [n+1].
 <!-- few-shot: coordinator-bead-complete -->
 ```
 BEAD 2 COMPLETE
-svc-42.12: a reconcile now re-projects the account summary and rebuilds each
+app-42.12: a reconcile now re-projects the account summary and rebuilds each
 affected report once, so neither keeps text from the old pricing model.
 Tests pass (16 new in reproject-after-reconcile.test.ts). PR: https://github.com/acme/app/pull/1500.
 
@@ -469,9 +474,6 @@ progress. **Do NOT start the next bead until the user confirms.**
 Counter `n` is a sequential integer local to this `/work` run, starting at 1 and
 incrementing with each bead processed (not the bead's global ID).
 
-Use AskUserQuestion with a single option "Continue to bead [n+1]" to gate forward
-progress. **Do NOT start the next bead until the user confirms.**
-
 For **parallel independent beads**: all complete their PRs simultaneously, each
 outputs its own `BEAD [n] COMPLETE` block. The gate fires once — covering all of them
 — before starting any subsequent tier of work.
@@ -487,9 +489,6 @@ bd update <id> --set-labels in-review --json
 
 ### 5. Handle Failures
 
-**Stop dev servers yourself.** Background dev servers started by implementers die at turn boundaries, and the implementer restarts them when it wakes. When a bead is done or an agent is reaped, the coordinator kills the server (scoped to that worktree's path) **and tells the implementer to stand down in the same message** — otherwise it comes back.
-
-
 **On SUCCESS:**
 Check the "Concerns" section in the implementer summary — file follow-up issues if needed.
 
@@ -497,6 +496,17 @@ Check the "Concerns" section in the implementer summary — file follow-up issue
 - If recoverable: fix directly or spawn a new subagent with clarification
 - If blocked: note the blocker, move to next bead
 - Do NOT close the task
+
+### 6. Subagent Watchdog (both modes)
+
+Subagents die silently (API drop mid-response), succeed silently (finish the work but end with no verdict), stall (still working, just slow), or run away (churn an unbounded backlog). Never take a subagent's final text — or its absence — as the pass/fail verdict.
+
+- **Budget every spawn.** Every implementer/acceptance prompt gets a hard scope + time budget, e.g. "if you process >200 sources or run >10 minutes, STOP and report partial state — do not churn a backlog."
+- **Verify the outcome, not the words.** After an agent returns (or dies), check reality directly: commit exists (`git -C <worktree> log -1`), DB rows landed, `gh pr view` state, eval output. An agent that ended "waiting for notifications" with no verdict is judged by that evidence alone.
+- **Stall ≠ dead — look, don't reap.** Long silence means go inspect (partial output, in-progress DB writes), never conclude death. Do NOT delete a silent agent's worktree/branch/DB branch until it reports a terminal state or reality shows it stopped — a 42-min-silent agent was once slowly succeeding, and reaping its worktree is what killed it.
+- **Nudge, then take over.** First a `SendMessage` nudge with an explicit remaining-work list (stalled implementers usually resume). Still stuck → finish the remainder yourself or respawn with the failure diagnosis as context; either counts as an attempt (cap 3, carry state forward in the loop log).
+- **Reap orphans only after terminal state.** Once an agent is truly done or confirmed dead, kill workers it left behind (background job runners, dev servers, watchers).
+- **Stop dev servers yourself.** Background dev servers started by implementers die at turn boundaries, and the implementer restarts them when it wakes. When a bead is done or an agent is reaped, the coordinator kills the server (scoped to that worktree's path) **and tells the implementer to stand down in the same message** — otherwise it comes back.
 
 ---
 
@@ -510,9 +520,11 @@ bd show <epic-id> --json        # read the ## Win Condition block
 ```
 Then load `.claude/skills/win-condition/SKILL.md`.
 
-**The eval lives out-of-tree** at the outer (un-versioned) `.claude/loop-evals/<epic-id>/` — never in the repo. If it doesn't exist yet, authoring it is the loop's first action (per win-condition R2). It runs locally as you (Claude Code), so it may reach the dev system directly — Neon Dev, Vercel, dev Trigger — to fetch / parse / seed / insert / update / delete.
+**The eval lives out-of-tree** at the outer (un-versioned) `.claude/loop-evals/<epic-id>/` — never in the repo. If it doesn't exist yet, authoring it is the loop's first action (per win-condition R2). It runs locally as you (Claude Code), so it may reach the dev system directly (e.g. the dev database, the preview deploy, a dev job queue) to fetch / parse / seed / insert / update / delete.
 
 **Confirm guardrails once** before starting: max-iterations N, **per-bead max attempts (default 3)**, the stagnation thresholds (from the win-condition), and that merges stay manual. Then run the **chain-base preflight** (win-condition skill): `git fetch origin && git merge-base --is-ancestor origin/main <chain-base>` must be true — if not, merge main into the base first (per the repo CLAUDE.md "Branch Hygiene") and confirm the base's own PR is green before bead 1. Early warning: a schema-diff tool offering an *unrelated* drop means the branch is behind production — stop and reconcile the base, never strip it and continue. Initialize a loop log (e.g. `.claude/loop-<epic-id>.log`), one line per iteration.
+
+**Session liveness (overnight runs):** `ScheduleWakeup` is a session-local timer — if the idle session gets reaped, the pending wakeup dies with it, silently (lived failure: 7.5h gap, zero work). Never end a turn idle-waiting on a timer. Keep ≥1 background task in flight at all times (implementer, test-runner, CI poller via Bash `run_in_background`) so task-completion re-invokes you — this is what kept an 11h/37-iteration run alive. Genuinely idle multi-hour waits belong in a cloud scheduled routine, not this session. Append to the loop log every iteration — it doubles as the external heartbeat for any dead-man watchdog you run.
 
 **Each iteration:**
 
@@ -522,7 +534,7 @@ Then load `.claude/skills/win-condition/SKILL.md`.
    - **Carry state across attempts**: append each attempt's failure + diagnosis to the loop log (and the bead notes) so attempt N+1 sees what N tried — this is what stops it repeating the same mistake or drifting on stale context.
    - Still failing after the cap → mark the bead **BLOCKED**, log it, and let the outer triage decide: try a different ready bead, or stop the run.
 3. **CI-green gate — do NOT start the next bead until this PR is green.** Local reviewers and gates prove the branch is shaped right; only GitHub's checks prove it against a production-forked clone (CI and the preview deploy both fork the database from prod). Lived failure: a one-migration-stale base propagated through nine stacked branches because nobody looked at CI until the end.
-   - **Required set** (block on these): the repo's required checks (list them in the project CLAUDE.md; typically unit tests, lint/typecheck, migration checks, and the preview deploy). **Advisory** (never block): bot reviewers and comment-only integrations.
+   - **Required set** (block on these): the repo's required checks (list them in `.claude/project-rules.md` under `## coordinator`; typically unit tests, lint/typecheck, migration checks, and the preview deploy). **Advisory** (never block): bot reviewers and comment-only integrations.
    - **Poll in the background, every 60 s, cap ~40 min.** `gh pr checks <n> --repo $REPO --watch --interval 60` as a Bash `run_in_background` command — a foreground sleep loop that ends the turn dies with the session (lived failure). Or poll `gh pr view <n> --repo $REPO --json mergeStateStatus,statusCheckRollup`. Checks take 8–15 min and can take a couple of minutes to *appear*: nothing after 5 min → re-read the PR; **"no checks" is never "green"**. GitHub's API budget is 5,000 req/h — never poll every 5 s across many PRs. Past the cap, treat it as failure-to-conclude.
    - **Green =** every required check has `bucket: pass` (`gh pr checks <n> --repo $REPO --json name,bucket,state,link`) **and** `mergeStateStatus: CLEAN`. `UNSTABLE` = a check failed or is still running; `BLOCKED` = a required check pending or a review outstanding; `DIRTY` = conflicts. Only CLEAN counts; `gh pr merge --auto` is disabled in this repo (repo CLAUDE.md "Branch Hygiene").
    - **Red →** diagnose the root cause *before touching the next bead* (see "CI failure triage" below); fix on this branch — or at the chain base if the cause is upstream — push, and wait again. Cap **3 attempts per bead**, then mark the bead BLOCKED and **stop the loop**. Never stack more branches on a red base.
@@ -534,7 +546,7 @@ Then load `.claude/skills/win-condition/SKILL.md`.
    - max-iterations reached → **BLOCKED**
    - stagnation: no progress in 3 iterations, or the same error 5 times → **BLOCKED**
 
-**CI failure triage:** keep a list of failure signatures → root cause → fix in the project CLAUDE.md (or right here), and grow it every time the gate goes red. The classic one: every stacked PR fails the migration check for a reason that predates bead 1 — the chain base is behind main. Fix at the base, then merge (never rebase) each parent forward into its child.
+**CI failure triage:** keep a list of failure signatures → root cause → fix in `.claude/project-rules.md` under `## coordinator`, and grow it every time the gate goes red. The classic one: every stacked PR fails the migration check for a reason that predates bead 1 — the chain base is behind main. Fix at the base, then merge (never rebase) each parent forward into its child.
 
 **On SUCCESS:** output the run summary and the open PRs. Merging is still the human's job.
 
@@ -578,7 +590,7 @@ information. Phase 3 is a short wrap-up only.
 - Approving a bead on "tests passed" instead of on the real-acceptance **evidence** (the actual output) in the `BEAD COMPLETE` block
 - Merging PRs (that's the human's job)
 - Watching CI for the *merge* decision (that's the human's job) — but in Autonomous Loop Mode, watching CI **before starting the next bead** is the loop's job: opening bead N+1's PR while bead N is red is the anti-pattern (CI-green gate)
-- Trusting a gate verdict without the commit it ran against, or a `PASS` with no test counts, or a Turbo `FULL TURBO`/`cache hit` replay as a run (§4c)
+- Trusting a gate verdict without the commit it ran against, or a `PASS` with no test counts, or a build-cache replay (e.g. `FULL TURBO` / `cache hit`) as a run (§4c)
 - Cleaning up worktrees before merge (that's the human's job — `/merged` handles it)
 - Sharing a worktree across multiple beads — each bead gets its own named worktree
 - Running dependency installs concurrently across multiple worktrees
@@ -590,3 +602,6 @@ information. Phase 3 is a short wrap-up only.
 - (Autonomous Loop Mode) Treating "no errors" / exit 0 as success — gate on the positive win-condition assertion (rows landed, expected output), never on absence of errors alone
 - (Autonomous Loop Mode) Looping past the max-iteration or stagnation caps instead of stopping with a handoff
 - (Autonomous Loop Mode) Starting an unattended run without the user's go-ahead, or on an epic with no `## Win Condition`
+- (Autonomous Loop Mode) Idle-waiting on `ScheduleWakeup` overnight instead of keeping a background task in flight — session reap kills the timer silently
+- Trusting a subagent's final text (or its silence) as the verdict instead of verifying the worktree/DB/PR outcome directly (§6)
+- Deleting a silent agent's worktree/branch/DB branch before it reports a terminal state — stall ≠ dead (§6)
