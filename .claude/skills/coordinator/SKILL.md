@@ -253,7 +253,7 @@ CONSTRAINTS:
 PREVIOUS TRY: <folder printed by save_try for the last attempt at this bead; omit this line on attempt 1>
 ```
 
-Before spawning, record the attempt's start commit: `START=$(git -C <worktree_path> rev-parse HEAD)`. When the Agent tool returns, note the `agentId:` in its result; §4c3 passes it to `save_try.py`.
+Before spawning, run `git -C <worktree_path> rev-parse HEAD` and note the printed sha: it is this attempt's start commit. Shell variables do not survive between Bash calls, so keep the literal value and paste it into §4c3's `--start`. When the Agent tool returns, note the `agentId:` in its result; §4c3 passes it to `save_try.py`.
 
 Mark each bead as claimed before spawning its implementer:
 ```bash
@@ -364,7 +364,7 @@ COMMANDS:
 - <quality-gate commands matching the changed code, scoped to the changed package(s) and dependents>
 ```
 
-**Do NOT push if the sub-agent reports FAIL.** Fix locally first (spawn an implementer if the fix is non-trivial), then re-delegate.
+**Do NOT push if the sub-agent reports FAIL.** Fix locally first (spawn an implementer if the fix is non-trivial; save this attempt per §4c3 first, pass its folder as `PREVIOUS TRY:` and note a new start sha), then re-delegate.
 
 **A gate verdict is only as good as the commit it ran against.** Capture `git -C <worktree> rev-parse HEAD` when you spawn the test-runner and require it in the reply (`Commit:` line); if the branch tip has moved since, the verdict is stale — rerun. A `PASS` with no test-file/test counts is **unverified**, not passed: the test-runner must report counts for every test command, and a cache-replay marker (e.g. `FULL TURBO` / `cache hit`) in place of counts is a replay, not a run — rerun with the cache bypassed.
 
@@ -398,7 +398,7 @@ After every implementer attempt's verdict (gates, reviews and real acceptance, p
 ```bash
 # note.md: 3-6 lines: what this try changed, what failed, your diagnosis
 python3 .claude/skills/coordinator/save_try.py --bead <id> --worktree <worktree_path> \
-  --start "$START" --gates <file with the full gate output> --note <note file> \
+  --start <start sha you noted> --gates <file with the full gate output> --note <note file> \
   --result pass|fail --agent-id <agentId from the Agent tool result>
 ```
 
@@ -510,7 +510,7 @@ bd update <id> --set-labels in-review --json
 Check the "Concerns" section in the implementer summary — file follow-up issues if needed.
 
 **On FAILURE:**
-- If recoverable: fix directly or spawn a new subagent with clarification
+- If recoverable: fix directly or spawn a new subagent with clarification (save this attempt per §4c3 first, pass its folder as `PREVIOUS TRY:` and note a new start sha)
 - If blocked: note the blocker, move to next bead
 - Do NOT close the task
 

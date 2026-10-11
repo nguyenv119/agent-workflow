@@ -15,14 +15,16 @@ Usage:
   save_try.py --bead ID --worktree PATH --start SHA --gates FILE --note FILE --result pass|fail
               [--transcript PATH | --agent-id ID]
   save_try.py --bead ID --from-files DIR --repo-name NAME --result pass|fail [--note FILE]
-    (DIR holds start.sha, end.sha, diff.patch, gates.txt, optional transcript.jsonl,
-     and note.md unless --note is given)
+              [--transcript PATH | --agent-id ID]
+    (DIR holds start.sha, end.sha, diff.patch, gates.txt, and optionally
+     transcript.jsonl and note.md; with no note, note.md says none was given)
 
 Transcript: --transcript copies that file; --agent-id copies
 $CLAUDE_CONFIG_DIR/projects/*/*/subagents/agent-<id>.jsonl (the id is in the Agent
-tool result). With neither, it searches those subagent files for the newest-made-
-after-start one whose first user message names the bead; if none, it writes
-transcript.missing describing the search. Prints the new folder path.
+tool result). With neither, it searches those subagent files made after the start
+commit whose first user message names the bead, preferring implementers (per the
+agent-<id>.meta.json beside each), then the earliest mention, then the newest; if
+none, it writes transcript.missing describing the search. Prints the new folder path.
 """
 import argparse
 import datetime
@@ -76,6 +78,14 @@ def first_user_text(path):
     return ""
 
 
+def agent_type(transcript):
+    """agentType from the sibling agent-<id>.meta.json, or None if absent/unreadable."""
+    try:
+        return json.loads(Path(transcript).with_suffix(".meta.json").read_text()).get("agentType")
+    except (OSError, ValueError, AttributeError):
+        return None
+
+
 def find_transcript(bead, agent_id, since):
     """Return (path or None, description of the search)."""
     projects = Path(os.environ.get("CLAUDE_CONFIG_DIR", Path.home() / ".claude")) / "projects"
@@ -87,18 +97,31 @@ def find_transcript(bead, agent_id, since):
     # The id must stand alone: "demo.3" must not match "demo.30" or "xdemo.3".
     rx = re.compile(r"(?<![\w.-])" + re.escape(bead) + r"(?![\w-]|\.\w)")
     candidates = [p for p in glob.glob(pattern) if os.path.getmtime(p) >= since]
+    matches = [(m.start(), p) for p in candidates if (m := rx.search(first_user_text(p)))]
+    # Reviewers and test-runners name the bead too; keep implementers when the
+    # meta file says so (older transcripts have no meta file: keep everything).
+    impl = [x for x in matches if agent_type(x[1]) == "implementer"]
     best = None
-    for p in candidates:
-        m = rx.search(first_user_text(p))
-        if m:
-            # Prompts mention other beads too ("see x.2"); the one this agent works on
-            # comes first. Ties (retries of the same bead) go to the newest file.
-            key = (m.start(), -os.path.getmtime(p))
-            if best is None or key < best[0]:
-                best = (key, p)
+    for pos, p in impl or matches:
+        # Prompts mention other beads too ("see x.2"), and another bead's implementer
+        # can be newer, so the bead it works on (named first) wins. Ties (retries of
+        # the same bead) go to the newest file.
+        key = (pos, -os.path.getmtime(p))
+        if best is None or key < best[0]:
+            best = (key, p)
     desc = (f"glob {pattern}, modified at or after {since:.0f} (start commit time): "
             f"{len(candidates)} file(s); none had a first user message naming {bead}")
     return (best[1] if best else None), desc
+
+
+def pick_transcript(a, since):
+    """(transcript path or None, why it is missing). Exits if an explicit --transcript is absent."""
+    if a.transcript:
+        if not Path(a.transcript).is_file():
+            sys.exit(f"save_try: transcript not found: {a.transcript}")
+        return Path(a.transcript), None
+    found, desc = find_transcript(a.bead, a.agent_id, since)
+    return (Path(found), None) if found else (None, desc)
 
 
 def main():
@@ -122,7 +145,11 @@ def main():
         if not a.repo_name:
             ap.error("--from-files needs --repo-name")
         note = Path(a.note) if a.note else src / "note.md"
-        need = [src / f for f in ("start.sha", "end.sha", "diff.patch", "gates.txt")] + [note]
+        need = [src / f for f in ("start.sha", "end.sha", "diff.patch", "gates.txt")]
+        if a.note:
+            need.append(note)
+        elif not note.is_file():
+            note = None  # the exam's export has no note
         missing = [str(p) for p in need if not p.is_file()]
         if missing:
             sys.exit(f"save_try: missing input file(s): {', '.join(missing)}")
@@ -131,13 +158,12 @@ def main():
         patch = (src / "diff.patch").read_bytes()
         gates = src / "gates.txt"
         repo_name = a.repo_name
-        transcript = src / "transcript.jsonl"
-        if a.transcript:
-            transcript = Path(a.transcript)
-        if transcript.is_file():
-            missing_note = None
+        if a.transcript or a.agent_id:
+            transcript, missing_note = pick_transcript(a, since=0)
+        elif (src / "transcript.jsonl").is_file():
+            transcript, missing_note = src / "transcript.jsonl", None
         else:
-            transcript, missing_note = None, f"no transcript.jsonl in {src} and no --transcript given"
+            transcript, missing_note = None, f"no transcript.jsonl in {src} and no --transcript or --agent-id given"
     else:
         for opt in ("worktree", "start", "gates", "note"):
             if not getattr(a, opt):
@@ -153,14 +179,8 @@ def main():
         gates, note = Path(a.gates), Path(a.note)
         common = Path(git(wt, "rev-parse", "--path-format=absolute", "--git-common-dir").strip())
         repo_name = a.repo_name or common.parent.name
-        if a.transcript:
-            if not Path(a.transcript).is_file():
-                sys.exit(f"save_try: transcript not found: {a.transcript}")
-            transcript, missing_note = Path(a.transcript), None
-        else:
-            since = float(git(wt, "show", "-s", "--format=%ct", start).strip())
-            found, desc = find_transcript(a.bead, a.agent_id, since)
-            transcript, missing_note = (Path(found), None) if found else (None, desc)
+        transcript, missing_note = pick_transcript(
+            a, since=float(git(wt, "show", "-s", "--format=%ct", start).strip()))
 
     repo_dir = Path(os.environ.get("HARNESS_TRIES_DIR", Path.home() / ".claude/tries")) / repo_name
     bead_dir = repo_dir / a.bead
@@ -179,7 +199,10 @@ def main():
     (folder / "end.sha").write_text(end + "\n")
     (folder / "diff.patch").write_bytes(patch)
     shutil.copyfile(gates, folder / "gates.txt")
-    shutil.copyfile(note, folder / "note.md")
+    if note:
+        shutil.copyfile(note, folder / "note.md")
+    else:
+        (folder / "note.md").write_text("No note was given for this try.\n")
     if transcript:
         shutil.copyfile(transcript, folder / "transcript.jsonl")
     else:

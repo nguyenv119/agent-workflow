@@ -58,7 +58,7 @@ def main():
     tries.sort(key=lambda t: t[0])
 
     now = time.time()
-    log = []
+    log = []  # deletions, for the dry-run cap arithmetic
     gone = set()
 
     def delete(folder, reason):
@@ -68,7 +68,11 @@ def main():
         if not a.dry_run:
             tx.unlink()
         stamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-        log.append(f"{stamp}\t{tx.relative_to(root)}\t{reason}\t{size}\n")
+        line = f"{stamp}\t{tx.relative_to(root)}\t{reason}\t{size}\n"
+        log.append(line)
+        if not a.dry_run:  # log each deletion as it happens, so a crash loses none
+            with open(root / "cut.log", "a") as fh:
+                fh.write(line)
         gone.add(folder)
         return size
 
@@ -85,10 +89,6 @@ def main():
             break
         if folder not in gone:
             size -= delete(folder, f"cap {a.cap_bytes} bytes")
-
-    if log and not a.dry_run:
-        with open(root / "cut.log", "a") as fh:
-            fh.writelines(log)
 
 
 if __name__ == "__main__":

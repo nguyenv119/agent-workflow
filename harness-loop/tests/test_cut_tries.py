@@ -103,6 +103,45 @@ class CutTriesTest(unittest.TestCase):
         self.assertTrue((newest / "transcript.jsonl").exists())
         self.assertTrue((pinned / "transcript.jsonl").exists())
         self.assertIn("cap", (self.root / "cut.log").read_text())
+        # AND the trimmed tries keep everything but the transcript
+        for d in (older, middle):
+            for f in ("note.md", "diff.patch", "start.sha", "end.sha", "gates.txt"):
+                self.assertTrue((d / f).exists(), f"{d.parent.name}/{f}")
+
+    def test_unindexed_try_gets_the_failed_rule(self):
+        """
+        A folder with no index row (a crash between mkdir and the index write,
+        or a hand-copied try) has no known result. It must get the longer,
+        failed-try retention, so a 100-day-old unknown try is kept.
+        """
+        # GIVEN a 100-day-old try whose index row is removed
+        orphan = self.make_try("b.1", 1, "pass", 100)
+        (self.root / "r/index.tsv").write_text("")
+        # WHEN cut_tries runs
+        self.cut()
+        # THEN its transcript stays
+        self.assertTrue((orphan / "transcript.jsonl").exists())
+
+    def test_dry_run_with_cap_lists_what_a_real_run_deletes(self):
+        """
+        In a dry run nothing is deleted, so the size must be reduced by what the
+        age rule would have removed before checking the cap. Otherwise the dry
+        run reports extra cap deletions a real run would not make.
+        """
+        # GIVEN an old failed try and two young ones, 1000 bytes each, cap 2600
+        old = self.make_try("b.1", 1, "fail", 400, size=1000)
+        young = [self.make_try(f"b.{i}", 1, "fail", 10 + i, size=1000) for i in (2, 3)]
+        # WHEN cut_tries runs with --dry-run
+        out = self.cut("--dry-run", "--cap-bytes", "2600").stdout
+        # THEN it lists only the old try, and deletes nothing
+        self.assertEqual(len(out.splitlines()), 1, out)
+        self.assertIn("b.1/try-1", out)
+        for d in [old] + young:
+            self.assertTrue((d / "transcript.jsonl").exists())
+        # AND a real run deletes exactly that one
+        self.cut("--cap-bytes", "2600")
+        self.assertFalse((old / "transcript.jsonl").exists())
+        self.assertTrue(all((d / "transcript.jsonl").exists() for d in young))
 
     def test_dry_run_deletes_nothing(self):
         """

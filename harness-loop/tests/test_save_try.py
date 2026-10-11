@@ -16,9 +16,15 @@ FILES = ["start.sha", "end.sha", "diff.patch", "gates.txt", "transcript.jsonl", 
 BEAD = "demo-abc.3"
 
 
-def write_transcript(path, first_message, mtime=None):
-    """Write a minimal subagent transcript whose first user message is first_message."""
+def write_transcript(path, first_message, mtime=None, agent_type=None):
+    """Write a minimal subagent transcript whose first user message is first_message.
+
+    agent_type, if given, is written to the sibling agent-<id>.meta.json the way
+    Claude Code does.
+    """
     path.parent.mkdir(parents=True, exist_ok=True)
+    if agent_type:
+        path.with_suffix(".meta.json").write_text(json.dumps({"agentType": agent_type}))
     lines = [
         {"type": "user", "message": {"role": "user", "content": first_message}},
         {"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "ok"}]}},
@@ -89,11 +95,18 @@ class SaveTryTest(unittest.TestCase):
         """
         diff.patch must be the exact change from start to end, so a reader can
         replay the try. If it were taken against the wrong base (e.g. the
-        working tree, or end..start), applying it to start would not give
-        end's tree and the record would mislead.
+        working tree, end..start, or only the last commit), applying it to
+        start would not give end's tree and the record would mislead. A try
+        with two commits, a changed binary file and an uncommitted edit covers
+        those three ways to get it wrong.
         """
-        # GIVEN a saved try from start to mid
+        # GIVEN a try of two commits (the second changes a binary file) and a dirty worktree
+        make_repo(self.repo, {"b.bin": "\0\x01binary\xff\0\n", "a.py": "x = 2\ny = 4\n"})
+        end = run(GIT + ["rev-parse", "HEAD"], self.repo).stdout.strip()
+        (self.repo / "a.py").write_text("UNCOMMITTED\n")
         folder = Path(self.save_worktree(self.start).stdout.strip())
+        # THEN the uncommitted edit is not in diff.patch
+        self.assertNotIn(b"UNCOMMITTED", (folder / "diff.patch").read_bytes())
         check = self.tmp / "check"
         run(GIT + ["clone", "-q", str(self.repo), str(check)], self.tmp)
         run(GIT + ["checkout", "-q", self.start], check)
@@ -102,7 +115,7 @@ class SaveTryTest(unittest.TestCase):
         run(GIT + ["apply", "--index", str(folder / "diff.patch")], check)
         # THEN the resulting tree hash equals end's tree hash
         tree = run(GIT + ["write-tree"], check).stdout.strip()
-        self.assertEqual(tree, run(GIT + ["rev-parse", self.mid + "^{tree}"], self.repo).stdout.strip())
+        self.assertEqual(tree, run(GIT + ["rev-parse", end + "^{tree}"], self.repo).stdout.strip())
 
     def test_index_counts_files_and_lines_changed(self):
         """
@@ -148,17 +161,82 @@ class SaveTryTest(unittest.TestCase):
         The search must pick the file whose first message is about this bead,
         made after the start commit, or the record holds someone else's work.
         """
-        # GIVEN three subagent transcripts after the start commit, plus one before it
+        # GIVEN the right transcript, newer lookalikes (another bead that cites this
+        # one, prefix/suffix ids), and an older transcript from before the start commit
         proj = self.config / "projects/-repo/sess1/subagents"
         now = time.time()
         right = write_transcript(proj / "agent-right.jsonl", f"You are the implementer for bead {BEAD}. Go.", now + 10)
         write_transcript(proj / "agent-other.jsonl", f"implementer for bead demo-abc.4; see {BEAD} for context", now + 20)
         write_transcript(proj / "agent-prefix.jsonl", "implementer for bead demo-abc.30", now + 30)
+        write_transcript(proj / "agent-x.jsonl", "implementer for bead xdemo-abc.3", now + 40)
+        write_transcript(proj / "agent-child.jsonl", "implementer for bead demo-abc.3.1", now + 50)
         write_transcript(proj / "agent-old.jsonl", f"implementer for bead {BEAD}", now - 10**8)
         # WHEN save_try runs with no --transcript and no --agent-id
         folder = Path(self.save_worktree(self.start).stdout.strip())
         # THEN the copied transcript is byte-identical to the right one
         self.assertEqual((folder / "transcript.jsonl").read_bytes(), right.read_bytes())
+
+    def test_search_prefers_implementer_transcripts(self):
+        """
+        Reviewers and test-runners are also spawned with the bead id in their
+        prompt, often first. When Claude Code's meta file says which agent
+        type wrote a transcript, the search must keep implementers, or the
+        record would hold a reviewer's transcript. Among implementers, a newer
+        one for another bead that cites this one must still lose (the real
+        case seen on this machine: the 8vp.3 implementer's prompt cites 8vp.2).
+        """
+        # GIVEN a reviewer naming the bead first, this bead's implementer, and a
+        # newer implementer of another bead that cites this one
+        proj = self.config / "projects/-repo/sess1/subagents"
+        now = time.time()
+        write_transcript(proj / "agent-rev.jsonl", f"{BEAD}: review this diff", now + 30, "reviewer-correctness")
+        right = write_transcript(proj / "agent-impl.jsonl", f"You are the implementer for bead {BEAD}.", now + 10, "implementer")
+        write_transcript(proj / "agent-impl2.jsonl", f"You are the implementer for bead demo-abc.4, see {BEAD}", now + 20, "implementer")
+        # WHEN save_try searches
+        folder = Path(self.save_worktree(self.start).stdout.strip())
+        # THEN this bead's implementer transcript is copied
+        self.assertEqual((folder / "transcript.jsonl").read_bytes(), right.read_bytes())
+
+    def test_from_files_without_note_writes_placeholder(self):
+        """
+        The exam's export (bead B13) has only start.sha, end.sha, diff.patch,
+        gates.txt and maybe a transcript. --from-files must accept that and
+        still write note.md, or exam folders would fail to save or break the
+        six-file layout the improver expects.
+        """
+        # GIVEN a from-files dir with no note.md and no transcript
+        src = self.tmp / "src"
+        src.mkdir()
+        for f, text in (("start.sha", self.start), ("end.sha", self.mid), ("diff.patch", "diff\n"), ("gates.txt", "ok\n")):
+            (src / f).write_text(text + "\n")
+        # WHEN it is saved
+        folder = Path(self.save("--from-files", str(src), "--repo-name", "exam", "--result", "pass").stdout.strip())
+        # THEN note.md says no note was given, and transcript.missing explains why
+        self.assertEqual((folder / "note.md").read_text(), "No note was given for this try.\n")
+        self.assertIn("no transcript.jsonl", (folder / "transcript.missing").read_text())
+
+    def test_from_files_validates_transcript_and_uses_agent_id(self):
+        """
+        --from-files must treat --transcript and --agent-id as worktree mode
+        does: a missing explicit transcript is an error (not a quiet
+        transcript.missing), and --agent-id finds that agent's file.
+        """
+        # GIVEN a from-files dir and one agent transcript
+        src = self.tmp / "src"
+        src.mkdir()
+        for f in ("start.sha", "end.sha", "diff.patch", "gates.txt", "note.md"):
+            (src / f).write_text(f + "\n")
+        aaa = write_transcript(self.config / "projects/-r/s/subagents/agent-aaa.jsonl", "anything")
+        base = ["--from-files", str(src), "--repo-name", "exam", "--result", "fail"]
+        # WHEN given a missing --transcript
+        bad = self.save(*base, "--transcript", str(self.tmp / "nope.jsonl"), check=False)
+        # THEN it fails and writes nothing
+        self.assertNotEqual(bad.returncode, 0)
+        self.assertFalse((self.tries / "exam").exists())
+        # WHEN given --agent-id aaa
+        folder = Path(self.save(*base, "--agent-id", "aaa").stdout.strip())
+        # THEN that agent's transcript is copied
+        self.assertEqual((folder / "transcript.jsonl").read_bytes(), aaa.read_bytes())
 
     def test_agent_id_picks_that_agents_transcript(self):
         """
