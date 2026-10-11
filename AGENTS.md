@@ -227,3 +227,4 @@ dolt push origin main
 - NEVER stop before pushing - that leaves work stranded locally
 - NEVER say "ready to push when you are" - YOU must push
 - If push fails, resolve and retry until it succeeds
+- In exam mode (`.claude/EXAM_MODE` exists), pushing to the local bare origin completes the work; there is no PR.

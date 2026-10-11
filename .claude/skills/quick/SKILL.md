@@ -13,6 +13,8 @@ already tiers AI-authored PR review: *"a config change earns a linter and a
 glance; a revision to core business logic earns the full stack."* Quick is
 the "linter and a glance" tier — never zero review, always less ceremony.
 
+Never used in exam mode (`.claude/EXAM_MODE` exists): exam runs always take the full `coordinator` flow.
+
 **Model guidance:** the implementer runs at the parent's normal
 model/effort — a small diff still deserves correct code. Only the *review*
 layer is lightened: the single reviewer spawns as the `quick-reviewer`

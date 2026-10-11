@@ -9,3 +9,4 @@ dolt/
 .learning/
 .claude/loop-evals/
 harness-loop/.venv/
+.claude/EXAM_MODE

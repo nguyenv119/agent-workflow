@@ -16,6 +16,16 @@ You are the single entry point for all implementation work. You triage incoming 
 - **Interactive (default)** — process ready beads and gate on human approval after each (Phase 2 §4e). Current behavior; nothing changes.
 - **Autonomous Loop Mode** — when the epic carries a `## Win Condition`, offer to run the loop unattended: the §4e human gate is replaced by the win-condition eval, and you iterate until it passes (or a cap trips). See "Autonomous Loop Mode" below. The per-bead machinery (worktree, branch, implementer, reviewers, gates, PR) is identical in both modes.
 
+## Exam mode
+
+Exam mode is ON when `.claude/EXAM_MODE` exists at the main repo root, where `/work` starts (it is never committed, so worktrees, implementers and reviewers never see it). Check once at the start and print its one line. It means nobody is watching and there is no GitHub: `origin` is a local bare repo, so `git fetch`, worktrees off `origin/main`, reviewers' `BASE: origin/main` and `git push` work unchanged. Exam mode changes only these five things:
+
+1. Quick eligibility (Phase 1 §3): still print the `Quick-eligible:` line, then `EXAM_MODE: full flow, no offer`. Never offer `/quick`.
+2. Every AskUserQuestion or "wait for approval/confirmation" gate (§4e, the Autonomous Loop start): skip it and print `EXAM_MODE: auto-continue`.
+3. §4d: push to origin as normal, run no `gh` command. The bead ends there; in its BEAD COMPLETE block, the line `EXAM_MODE: no PR` (verbatim, its own line) replaces `PR: <url>`.
+4. Real acceptance (§4c2) = the repo's own visible tests from CLAUDE.md's Quality Gates.
+5. Beads stay local: never run `bd dolt push` or `/setup-remote`.
+
 ## Stay quiet during execution
 
 Nothing in Phase 2's per-bead loop — spawning the implementer, spawning the
@@ -134,7 +144,7 @@ The eligibility test itself, both conditions:
 
 Both must hold. If a bead is `yes`, offer to route it through `/quick`
 instead of the full flow — still requires the user's go-ahead to switch, but
-the offer itself is mandatory, not optional. If `no`, proceed to Phase 2
+the offer itself is mandatory, not optional (exam mode: no offer, rule 1). If `no`, proceed to Phase 2
 normally, no further action needed.
 
 ---
@@ -374,6 +384,8 @@ BAD   Real acceptance FAIL: "planted sibling field lost" (svc-39.3, real DB)
 
 #### d. Push Branch and Create PR
 
+> **Exam mode:** push only; skip every `gh` step below (rule 3).
+
 Push the reviewed, quality-gate-passing branch:
 
 ```bash
@@ -418,6 +430,8 @@ Generated with Claude Code
 ```
 
 #### e. Approval Gate
+
+> **Exam mode:** print the block with `EXAM_MODE: no PR` (rule 3), skip the AskUserQuestion gate (rule 2).
 
 > **Autonomous Loop Mode:** skip this human gate. Instead run the win-condition eval and let the triage step decide continue/stop (see "Autonomous Loop Mode"). The rest of §4 (push, PR, beads status) is unchanged.
 
