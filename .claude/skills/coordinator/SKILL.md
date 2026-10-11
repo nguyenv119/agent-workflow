@@ -22,7 +22,7 @@ Exam mode is ON when `.claude/EXAM_MODE` exists at the main repo root, where `/w
 
 1. Quick eligibility (Phase 1 §3): still print the `Quick-eligible:` line, then `EXAM_MODE: full flow, no offer`. Never offer `/quick`.
 2. Every AskUserQuestion or "wait for approval/confirmation" gate (§4e, the Autonomous Loop start): skip it and print `EXAM_MODE: auto-continue`.
-3. §4d: push to origin as normal, run no `gh` command, print `EXAM_MODE: no PR`. The bead ends there (its BEAD COMPLETE block says `PR: none`).
+3. §4d: push to origin as normal, run no `gh` command. The bead ends there; in its BEAD COMPLETE block, the line `EXAM_MODE: no PR` (verbatim, its own line) replaces `PR: <url>`.
 4. Real acceptance (§4c2) = the repo's own visible tests from CLAUDE.md's Quality Gates.
 5. Beads stay local: never run `bd dolt push` or `/setup-remote`.
 
@@ -431,7 +431,7 @@ Generated with Claude Code
 
 #### e. Approval Gate
 
-> **Exam mode:** print the block, skip the AskUserQuestion gate (rule 2).
+> **Exam mode:** print the block with `EXAM_MODE: no PR` (rule 3), skip the AskUserQuestion gate (rule 2).
 
 > **Autonomous Loop Mode:** skip this human gate. Instead run the win-condition eval and let the triage step decide continue/stop (see "Autonomous Loop Mode"). The rest of §4 (push, PR, beads status) is unchanged.
 
