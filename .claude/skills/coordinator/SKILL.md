@@ -249,7 +249,11 @@ CONSTRAINTS:
 - Commit your work when implementer phases are complete (do NOT push)
 - Phase 5 of the implementer skill produces a structured summary — that is your final output
 - Apply the `ponytail` skill during Phase 2: climb its ladder (YAGNI → stdlib → native platform → existing dep → one line → minimum code) and ship the shortest diff that fully does the task, without cutting validation, error handling, security, accessibility, or tests
+
+PREVIOUS TRY: <folder printed by save_try for the last attempt at this bead; omit this line on attempt 1>
 ```
+
+Before spawning, run `git -C <worktree_path> rev-parse HEAD` and note the printed sha: it is this attempt's start commit. Shell variables do not survive between Bash calls, so keep the literal value and paste it into §4c3's `--start`. When the Agent tool returns, note the `agentId:` in its result; §4c3 passes it to `save_try.py`.
 
 Mark each bead as claimed before spawning its implementer:
 ```bash
@@ -360,7 +364,7 @@ COMMANDS:
 - <quality-gate commands matching the changed code, scoped to the changed package(s) and dependents>
 ```
 
-**Do NOT push if the sub-agent reports FAIL.** Fix locally first (spawn an implementer if the fix is non-trivial), then re-delegate.
+**Do NOT push if the sub-agent reports FAIL.** Fix locally first (spawn an implementer if the fix is non-trivial; save this attempt per §4c3 first, pass its folder as `PREVIOUS TRY:` and note a new start sha), then re-delegate.
 
 **A gate verdict is only as good as the commit it ran against.** Capture `git -C <worktree> rev-parse HEAD` when you spawn the test-runner and require it in the reply (`Commit:` line); if the branch tip has moved since, the verdict is stale — rerun. A `PASS` with no test-file/test counts is **unverified**, not passed: the test-runner must report counts for every test command, and a cache-replay marker (e.g. `FULL TURBO` / `cache hit`) in place of counts is a replay, not a run — rerun with the cache bypassed.
 
@@ -386,6 +390,19 @@ BAD   Real acceptance FAIL: "planted sibling field lost" (app-39.3, real DB)
   why: harness compared jsonb with JSON.stringify; jsonb reorders keys. Faithful
        repros passed. Re-verify the check before commissioning another fix.
 ```
+
+#### c3. Save the try
+
+After every implementer attempt's verdict (gates, reviews and real acceptance, pass or fail), save the try so the next attempt and the harness improver can read the full record:
+
+```bash
+# note.md: 3-6 lines: what this try changed, what failed, your diagnosis
+python3 .claude/skills/coordinator/save_try.py --bead <id> --worktree <worktree_path> \
+  --start <start sha you noted> --gates <file with the full gate output> --note <note file> \
+  --result pass|fail --agent-id <agentId from the Agent tool result>
+```
+
+For the gates file, ask the test-runner to also write the untrimmed output of every command to a file you name (e.g. `<cmd> 2>&1 | tee -a <tmpdir>/gates-<id>-<n>.txt`); its trimmed reply is not the full record. It prints the try folder (`$HARNESS_TRIES_DIR`, default `~/.claude/tries`, then `<repo>/<bead>/try-<n>/`) and appends a row to `<repo>/index.tsv`. Without `--agent-id` it guesses the transcript by searching subagent files for the bead id; pass the id. On the next attempt at this bead, put that folder in the implementer prompt as `PREVIOUS TRY: <folder>`. `cut_tries.py` (same dir) trims old transcripts; notes, diffs and the index are kept forever.
 
 #### d. Push Branch and Create PR
 
@@ -493,7 +510,7 @@ bd update <id> --set-labels in-review --json
 Check the "Concerns" section in the implementer summary — file follow-up issues if needed.
 
 **On FAILURE:**
-- If recoverable: fix directly or spawn a new subagent with clarification
+- If recoverable: fix directly or spawn a new subagent with clarification (save this attempt per §4c3 first, pass its folder as `PREVIOUS TRY:` and note a new start sha)
 - If blocked: note the blocker, move to next bead
 - Do NOT close the task
 
@@ -531,7 +548,7 @@ Then load `.claude/skills/win-condition/SKILL.md`.
 1. **Triage** — run the win-condition's verification; if it passes **and** its output ends with the success sentinel → exit **SUCCESS** (cite the evidence). Otherwise pick exactly one action: `RUN_BEAD <id>` / `NEW_BEAD <desc>` / `QUICK_FIX <desc>` / `STOP <reason>`.
 2. **Execute (bounded per-bead fix-loop)** — carry out the action via the existing Phase 2 machinery: its own worktree + branch, implementer subagent, all three reviewers, quality gates, **and the bead's acceptance check** (the integration check for risky beads, per the win-condition skill — not just unit gates). One action = one PR (drift containment). **No human approval gate** in this mode.
    - If reviewers / gates / acceptance fail: **diagnose the failure yourself** (read the failing gate/reviewer output, identify the root cause — don't just retry), then re-spawn the implementer with that diagnosis as context. Repeat up to **per-bead max attempts (default 3)**.
-   - **Carry state across attempts**: append each attempt's failure + diagnosis to the loop log (and the bead notes) so attempt N+1 sees what N tried — this is what stops it repeating the same mistake or drifting on stale context.
+   - **Carry state across attempts**: save each attempt with `save_try.py` (§4c3; the note holds the failure + diagnosis), append the same diagnosis to the loop log (and the bead notes), and give attempt N+1 the folder as `PREVIOUS TRY: <folder>` so it sees what N tried. This is what stops it repeating the same mistake or drifting on stale context.
    - Still failing after the cap → mark the bead **BLOCKED**, log it, and let the outer triage decide: try a different ready bead, or stop the run.
 3. **CI-green gate — do NOT start the next bead until this PR is green.** Local reviewers and gates prove the branch is shaped right; only GitHub's checks prove it against a production-forked clone (CI and the preview deploy both fork the database from prod). Lived failure: a one-migration-stale base propagated through nine stacked branches because nobody looked at CI until the end.
    - **Required set** (block on these): the repo's required checks (list them in `.claude/project-rules.md` under `## coordinator`; typically unit tests, lint/typecheck, migration checks, and the preview deploy). **Advisory** (never block): bot reviewers and comment-only integrations.
@@ -540,7 +557,7 @@ Then load `.claude/skills/win-condition/SKILL.md`.
    - **Red →** diagnose the root cause *before touching the next bead* (see "CI failure triage" below); fix on this branch — or at the chain base if the cause is upstream — push, and wait again. Cap **3 attempts per bead**, then mark the bead BLOCKED and **stop the loop**. Never stack more branches on a red base.
    - **Two acceptable shapes**: fully serial (simplest; ~10–15 min wall time per bead), or overlapped — bead N+1's implementer may start in its own worktree, but its branch is **not pushed and its PR not opened** until bead N is green, so a base fix can be merged forward before the child exists.
 4. **Verify** — re-run the win-condition's runnable check. Dual-condition: it must exit 0 **and** its output must end with the success sentinel `<promise>WIN</promise>` (printed by the eval, not the implementer). Absence of errors alone is never success.
-5. **Record** — append to the loop log: action, result, verification output (exit code + key line), files touched, and approximate token cost (track cost-per-accepted-change; if the accept rate craters, stop and re-tune rather than burning tokens).
+5. **Record** — append to the loop log: action, result, verification output (exit code + key line), files touched, the try folder(s) `save_try.py` printed, and approximate token cost (track cost-per-accepted-change; if the accept rate craters, stop and re-tune rather than burning tokens).
 6. **Stop checks** — exit the loop if:
    - win-condition met → **SUCCESS**
    - max-iterations reached → **BLOCKED**
