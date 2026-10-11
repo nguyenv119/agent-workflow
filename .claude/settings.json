@@ -84,5 +84,5 @@
   "enabledPlugins": {
     "beads@beads-marketplace": true
   },
-  "autoCompactWindow": 256000
+  "autoCompactWindow": 300000
 }
