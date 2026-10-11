@@ -1,3 +1,7 @@
+---
+model: haiku
+---
+
 # Close Bead After Merge
 
 If `.claude/project-rules.md` exists and has a section for this skill, follow it; it overrides the generic defaults here.

@@ -1,3 +1,7 @@
+---
+model: haiku
+---
+
 # Setup DoltHub Remote
 
 Configure a DoltHub remote for multi-machine beads collaboration in this project.
