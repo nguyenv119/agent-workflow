@@ -53,7 +53,7 @@ The harness gets agents to both with a loop.
 | `document` | Keep a living HTML page for a topic. Short plain-language sections for you, a collapsed "For agents" section that holds notes and links |
 | `win-condition` | Define the end-to-end check for an epic |
 | `quick` | Small, low-risk fixes. One reviewer instead of three, still a real branch and PR. It refuses anything risky and hands off to `/work` |
-| `copy-harness` | Install this harness in another repo |
+| `copy-harness` | Install this harness in another repo by running `harness-loop/install_harness.py` from a clone of agent-workflow |
 
 ## Quick start
 

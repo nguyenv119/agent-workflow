@@ -5,6 +5,8 @@ description: Pure development workflow with test-first development and coverage 
 
 # Implementer
 
+If `.claude/project-rules.md` exists and has a section for this skill, follow it; it overrides the generic defaults here.
+
 Follow these phases **in strict order**. Do not skip phases. Do not proceed until the current phase's gate is satisfied.
 
 This skill covers development only — no issue tracking, no pushes. The coordinator handles push and beads lifecycle. The implementer commits its own work.
@@ -49,7 +51,7 @@ The sub-agent replies `RESULT: PASS` or `RESULT: FAIL` with a trimmed error summ
 
 **Run-once discipline:** Run gates **once, synchronously** (`run_in_background: false`) and wait for the reply — never launch a gate run in the background and idle/sleep "waiting" for it. Never spawn a second gate run while one is still pending. If you are re-woken or nudged while a gate run is in flight, **report its pending or completed result** — do not restart it; the harness already re-wakes you when a background job finishes, so idling or re-spawning on a nudge only duplicates load.
 
-**Run scope (changed package, not the whole monorepo):** Run only the tests for the **changed package(s) and their dependents** (downstream consumers) — never the whole monorepo locally. The exact scoping command is stack-specific — put it in CLAUDE.md's Quality Gates table and **replace for your stack**; examples: `turbo run test --filter=...[origin/main]` (Turborepo), `nx affected --target=test` (Nx), `pnpm --filter "...[origin/main]" test` (pnpm workspaces), or a Bazel target-scoped query. **Cap worker count machine-wide, not per command** (for vitest: the `VITEST_MAX_WORKERS` environment variable; most runners have an equivalent). Set it so that *your typical number of concurrent agents x workers per run* lands near your core count. Do **not** append a `--maxWorkers`-style flag to individual gate commands: agents forget it, and command-rewriting hooks can silently drop appended flags, so the cap quietly fails to apply. A machine-wide setting needs no lock and no coordination between agents - it just makes every run well-behaved by default. The **full / timing-sensitive suite is CI's job**, run on push on a clean machine — scoped-local can miss cross-package breaks by design; that's fine because CI is the authoritative gate.
+**Run scope (changed package, not the whole monorepo):** Run only the tests for the **changed package(s) and their dependents** (downstream consumers) — never the whole monorepo locally. The exact scoping command is stack-specific — put it in CLAUDE.md's Quality Gates table and **replace for your stack**; e.g. `pytest tests/<pkg>` (Python), `turbo run test --filter=...[origin/main]` (Turborepo), `nx affected --target=test` (Nx), `pnpm --filter "...[origin/main]" test` (pnpm workspaces), or a Bazel target-scoped query. **Cap worker count machine-wide, not per command** (most runners read an environment variable for this, e.g. `VITEST_MAX_WORKERS` for vitest, `PYTEST_XDIST_AUTO_NUM_WORKERS` for pytest-xdist). Set it so that *your typical number of concurrent agents x workers per run* lands near your core count. Do **not** append a `--maxWorkers`-style flag to individual gate commands: agents forget it, and command-rewriting hooks can silently drop appended flags, so the cap quietly fails to apply. A machine-wide setting needs no lock and no coordination between agents - it just makes every run well-behaved by default. The **full / timing-sensitive suite is CI's job**, run on push on a clean machine — scoped-local can miss cross-package breaks by design; that's fine because CI is the authoritative gate.
 
 ## Phase 0: Announce Approach
 
@@ -75,8 +77,9 @@ Write tests for the behavior you are about to change or add. Do this **before** 
 - "I'll add tests later" — no, tests ship with the code, always
 
 1. Read the relevant production code to understand current behavior
-2. Write new test cases that describe the desired behavior after your change
-3. Verify the new tests fail by delegating to a test-runner sub-agent (see "Running quality gates" above)
+2. **Locate the package's shared test scaffolding** (quality.md §I canonical-locations table) and import from it. If scaffolding you need doesn't exist yet, create it in the canonical shared location as part of this task — never inline a private copy of something §I covers. §I's owner rule also applies in reverse: don't route through a helper when that makes the call site longer than the inline version.
+3. Write new test cases that describe the desired behavior after your change
+4. Verify the new tests fail by delegating to a test-runner sub-agent (see "Running quality gates" above)
 
 ### Test Structure Requirements
 
@@ -98,9 +101,9 @@ Run quality gates — scoped to the changed package(s) and their dependents, not
 
 **Gate:** The sub-agent reports `RESULT: PASS`. If it reports FAIL, read the error summary, fix the issues, and re-delegate before proceeding.
 
-### Real-acceptance artifact (not just mocks)
+### Real-acceptance check (not just mocks)
 
-The unit/quality gates above are the **CI gate** — they prove the code is shaped right. They are **not** the acceptance bar (see `standards/quality.md` §H). The bead's `## Real acceptance` names a check **against reality**: a live API/model call, real corpus data, or a real dev-DB integration. If that runnable artifact doesn't exist yet, **build it** — a small `*.live-check.ts` script or a real integration test — so the coordinator can run it for real. Do **not** run a live check needing credentials you weren't given; leave it runnable and record its path + exact command in your Phase 5 summary.
+The unit/quality gates above are the **CI gate** — they prove the code is shaped right. They are **not** the acceptance bar (see `standards/quality.md` §H). The bead's `## Real acceptance` names a check **against reality**: a live API/model call, real corpus data, or a real dev-DB integration. If that check doesn't exist yet, **run it** — write a throwaway script (e.g. `*.live-check.ts`, `live_check.py`) (or exercise a real integration test), run it against reality, and paste its actual output into the PR as the acceptance evidence. The script itself is scratch work, not a deliverable: do **not** commit it, and do **not** park it in `.claude/loop-evals/` either — out-of-tree evals cause reviewer agents to falsely block on "no acceptance evidence" since they can't see them. The evidence belongs in the PR body. If a check is genuinely worth keeping permanently, promote it into `test/integration/` where CI actually runs it. Do **not** run a live check needing credentials you weren't given; leave it runnable and record the exact command in your Phase 5 summary.
 
 <!-- few-shot: implementer-evidence-good-vs-bad -->
 ```text
@@ -183,7 +186,7 @@ Commit: <full commit hash, or "N/A" on failure>
 - <1 bullet per test file added/modified, what it covers>
 
 ## Real acceptance
-- <the runnable real-acceptance check (path + exact command), and its output if you ran it; else "left for coordinator to run — needs <creds/data>">
+- <the exact command you ran and its actual output, pasted here as evidence (not committed); else "left for coordinator to run — needs <creds/data>">
 
 ## Concerns
 - <anything the coordinator should know, or "None">
@@ -202,7 +205,7 @@ If implementation failed, replace "What changed" with:
 <!-- few-shot: implementer-result-success -->
 ```
 IMPLEMENTATION RESULT: SUCCESS
-Task: svc-42.12
+Task: app-42.12
 Commit: 8251810a69ca7f3b7e7dcb85fabea298ae128ae7
 ## What changed
 - New reproject-after-reconcile task: forced summary regen per account, then one report rebuild per report_key
@@ -219,7 +222,7 @@ Commit: 8251810a69ca7f3b7e7dcb85fabea298ae128ae7
 <!-- few-shot: implementer-result-failure -->
 ```
 IMPLEMENTATION RESULT: FAILURE
-Task: svc-42.12
+Task: app-42.12
 Commit: N/A
 ## Error
 The all-failed guard test stays red: with a single-account batch the summary builder mock is never awaited, so nothing throws.

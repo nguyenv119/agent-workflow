@@ -5,6 +5,8 @@ description: Define a measurable win-condition (the eval) for an epic — the ru
 
 # Win Condition
 
+If `.claude/project-rules.md` exists and has a section for this skill, follow it; it overrides the generic defaults here.
+
 An autonomous loop is only as good as the win-condition it stops on. This skill turns a user's **high-level** goal ("both sources ingest end-to-end in dev without me doing anything") into a **measurable eval** the loop can run every iteration to decide continue vs. stop.
 
 You discuss the high-level outcome with the user, then **derive the technical eval yourself** — that derivation is the hard part and the whole point of this skill.
@@ -18,11 +20,11 @@ Define a verifiable **end state**, not a process. "Fix the ingestion" is a proce
 **R1 — Positive signal required. Absence of errors is never sufficient on its own.**
 A pipeline can exit 0 while ingesting nothing: empty feed, a silent auth failure that returns 200, an over-eager filter. So every win-condition must assert a *positive, observable* outcome (rows landed, endpoint returns the expected shape, file exists with content). "No errors" may appear only as one clause *inside* a positive assertion — never as the whole gate.
 
-**R2 — The eval is local loop scaffolding, never a repo artifact.** It lives out-of-tree under the outer (un-versioned) `.claude/loop-evals/<epic-id>/`, authored by the agent at loop setup — never committed, never a bead, never a PR. It runs on your laptop *as Claude Code*, so it may reach the dev system directly (Neon Dev, Vercel, dev Trigger) to fetch / parse / seed / insert / update / delete; that direct access is *why* it never needs to ride into the repo. Do not fall back to the unit-test suite (unit ≠ end-to-end) or to a blind LLM judge. If no runnable end-to-end check exists yet, the loop's first action is to author one under `.claude/loop-evals/`.
+**R2 — The eval is local loop scaffolding, never a repo artifact.** It lives out-of-tree under the outer (un-versioned) `.claude/loop-evals/<epic-id>/`, authored by the agent at loop setup — never committed, never a bead, never a PR. It runs on your laptop *as Claude Code*, so it may reach the dev system directly (e.g. the dev database, the preview deploy, a dev job queue) to fetch / parse / seed / insert / update / delete; that direct access is *why* it never needs to ride into the repo. Do not fall back to the unit-test suite (unit ≠ end-to-end) or to a blind LLM judge. If no runnable end-to-end check exists yet, the loop's first action is to author one under `.claude/loop-evals/`.
 
 **R3 — Runnable check first; LLM judge only as a backstop.** A command that exits 0/1 is the primary signal. Claude Code's `/goal` (a Stop hook that asks a fast model yes/no after each turn) is a backstop only, and is trustworthy *only when handed evidence* — e.g. the result of a `SELECT count(*)…`, not "does it look done?" Prefer to assert the evidence in a script.
 
-**R4 — Bound it.** The win-condition is a bounded *build-completion* state, then the loop stops. It is NOT "run forever." Long-running production behavior (continuous polling) belongs to prod scheduling (Trigger.dev), not the agent loop.
+**R4 — Bound it.** The win-condition is a bounded *build-completion* state, then the loop stops. It is NOT "run forever." Long-running production behavior (continuous polling) belongs to prod scheduling (a cron or job scheduler), not the agent loop.
 
 **R5 — The eval emits the success sentinel, never the implementer.** The verification script prints `<promise>WIN</promise>` as its final line only when all positive assertions pass. The worker that made the change never declares its own success — independence comes from the eval testing reality (it queries the live system), not from the worker's word. The sentinel + exit-0 together guard a script that exits 0 without finishing its assertions.
 
@@ -48,6 +50,9 @@ after every positive assertion passes. Both required.
 - <epic-specific false-positives>
 
 **Stop conditions**:
+- preflight: before iteration 1, run the project's service smoke test (if it has one) — every
+  service this epic touches must PASS; any relevant FAIL → BLOCKED with zero
+  iterations spent (quota/tier caps have burned loops mid-run)
 - max-iterations: <N>            # hard cap, always set
 - stagnation: no progress in 3 iterations, or the same error in 5 → BLOCKED
 - preflight (chain base, when beads will stack): `git fetch origin && git merge-base --is-ancestor origin/main <chain-base>`
@@ -62,7 +67,7 @@ after every positive assertion passes. Both required.
 1. **Restate the goal as a positive end state.** Push back on negative phrasings ("no errors") until you have something observable.
 2. **Locate the verification.** Is there a script/command that runs the real thing end-to-end and inspects the result? If yes, that's your check. If no → R2: author it under `.claude/loop-evals/<epic-id>/` (local scaffolding, never a bead).
 3. **Write the runnable assert.** Run the actual flow in dev, then check state. Make failure loud (non-zero exit) and success specific (counts/shape/idempotency), per R1.
-4. **Set the caps** (max-iterations + stagnation) per R4 and the dual-condition done signal per R3/R5 (eval exits 0 AND prints the success sentinel on its last line). When the epic will run as a chain of stacked beads, add the chain-base preflight too: the base must be an ancestor of `origin/main` before bead 1, and bead N+1 never opens its PR while bead N's checks are red (the coordinator's CI-green gate).
+4. **Set the caps** (max-iterations + stagnation) per R4, the dual-condition done signal per R3/R5 (eval exits 0 AND prints the success sentinel on its last line), and the smoke-test preflight over the services the epic touches. When the epic will run as a chain of stacked beads, add the chain-base preflight too: the base must be an ancestor of `origin/main` before bead 1, and bead N+1 never opens its PR while bead N's checks are red (the coordinator's CI-green gate).
 5. **Try to defeat the eval before trusting it.** For each assertion, write the cheapest way a run could make it print WIN without the outcome holding — widening an ignore/allow list, mocking the boundary, counting a proxy instead of the thing, a config knob the worker can turn. Each such path either gets its own assertion (the allow-list must equal the approved one; the count must come from the live system) or goes into **Does NOT count**. Then name the pass AND fail controls — something concrete the eval must accept and something it must reject — so the first run proves the eval discriminates. An eval with no fail control has not been tested.
 6. **Write the block onto the epic** and confirm the outcome wording with the user.
 
@@ -80,7 +85,7 @@ landing valid `pipeline.content` rows for each, with no human intervention.
 
 **Verification**: .claude/loop-evals/<epic-id>/ingest-e2e.sh X Y
   # runs the dev pipeline against both feed-slugs for one poll window, then asserts:
-  #   - pipeline.content rows for each feed-slug >= 1 (Neon query)
+  #   - pipeline.content rows for each feed-slug >= 1 (dev DB query)
   #   - required fields non-null; no duplicate rows on a second run (idempotent)
   #   - unhandled-error count == 0 over the run
   # exits 0 only if all hold; on full success, prints <promise>WIN</promise> as its last line
@@ -109,7 +114,7 @@ The epic win-condition gates the whole loop. Each **bead** also needs an accepta
 
 **Why units fail here:** a unit test mocks the boundary most likely to break. A migration can pass every unit and still fail to apply, lock a table, drop data, or break the running prod app during the deploy window. Only a real run catches that.
 
-**Schema-change acceptance — worked example** (the migration workflow lives in `packages/db/CLAUDE.md`; Neon branching makes this cheap and prod-safe):
+**Schema-change acceptance — worked example** (document your migration workflow in `.claude/project-rules.md` under `## win-condition`; a database that can branch from production, e.g. Neon, makes this cheap and prod-safe):
 1. Branch from `production`.
 2. Apply the migration on the branch.
 3. Run the app's real queries / boot against the branch; assert they pass.

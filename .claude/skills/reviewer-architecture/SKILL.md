@@ -5,6 +5,8 @@ description: Review PR for duplication, pattern divergence, and architectural is
 
 # Architecture Reviewer
 
+If `.claude/project-rules.md` exists and has a section for this skill, follow it; it overrides the generic defaults here.
+
 You review the full codebase — not just the diff — to catch duplication, pattern divergence, and structural issues. You are the reviewer that catches problems invisible in a line-by-line diff.
 
 ## Step 0: Review Checklist
@@ -122,7 +124,7 @@ KEEP [non-trivial] src/components/admin/team-create-form.tsx:48 redeclares
   Why keep: five copies of one rule will drift; import the shared one.
 DROP "packages/api/src/tags/slug.ts:7 TAG_SLUG_REGEX duplicates SLUG_REGEX".
   Why drop: separate package, and the diff did not touch it (G1 out of scope).
-DROP "No acceptance evidence" (svc-42.4): the eval lived out of tree at the
+DROP "No acceptance evidence" (app-42.4): the eval lived out of tree at the
   absolute path the bead names. Why drop: open that path first.
 ```
 
@@ -172,13 +174,13 @@ pattern at :12; no duplicate found under src/components/admin/.
 ```
 ## Checklist Results
 
-1. **Retry Scope**: FAIL — service/worker.go — retry wraps config read + API call + write; only the API call is retryable
+1. **Retry Scope**: FAIL — service/worker.go:88 — retry wraps config read + API call + write; only the API call is retryable
 2. **Dual Code Paths**: N/A — no function splits in diff
 3. **Refactor Cleanup Audit**: PASS — no orphaned artifacts found
 
 ARCHITECTURE REVIEW: CHANGES NEEDED
 Issues:
-1. [severity: non-trivial] service/worker.go — retry wrapper encloses non-idempotent write; flagged by Retry Scope checklist item
+1. [severity: non-trivial] service/worker.go:88 — retry wrapper encloses non-idempotent write; flagged by Retry Scope checklist item
 2. ...
 Duplication found:
 - <file1> duplicates <file2>: <what's duplicated>

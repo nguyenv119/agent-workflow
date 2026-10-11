@@ -1,9 +1,11 @@
 ---
 name: session-handoff
-description: Use when the user says "session handoff", "wrap up session", "hand off", "handoff summary", or wants a structured end-of-session summary before clearing context. Writes the handoff to a file under /Users/nguyenv/.claude/handoffs/ and puts the path plus a two-line gist in chat. A briefing + operator manual for a fresh agent, covering facts verified this session and how they were verified, what was tried that did NOT work and why, what was built, how it fits together, work→PR traceability, non-obvious traps and why, how to run it, running state, key files, what's held for the human, verification, and what is still open with its single next action.
+description: Use when the user says "session handoff", "wrap up session", "hand off", "handoff summary", or wants a structured end-of-session summary before clearing context. Writes the handoff to a file under ~/.claude/handoffs/ and puts the path plus a two-line gist in chat. A briefing + operator manual for a fresh agent, covering facts verified this session and how they were verified, what was tried that did NOT work and why, what was built, how it fits together, work→PR traceability, non-obvious traps and why, how to run it, running state, key files, what's held for the human, verification, and what is still open with its single next action.
 ---
 
 # Session Handoff
+
+If `.claude/project-rules.md` exists and has a section for this skill, follow it; it overrides the generic defaults here.
 
 Produce a repeatable end-of-session artifact so the user can `/clear` and start a fresh agent without losing continuity. The next agent should be able to pick up by reading this alone.
 
@@ -26,19 +28,19 @@ User says: "session handoff", "wrap up session", "hand off", "handoff summary", 
 
 1. **Review the full conversation**, not just the last few turns. Handoffs miss things when they only summarize recent context.
 2. **Pull state from these sources (in order):**
-   - Plan files referenced this session (check `/Users/nguyenv/.claude/plans/` if a plan was mentioned).
+   - Plan files referenced this session (check `~/.claude/plans/` if a plan was mentioned).
    - TodoWrite / task state — any in-progress or pending items.
    - Background processes you started with `run_in_background` — shell/agent IDs are load-bearing for the next agent.
    - Files created or modified this session — you know what you touched; don't grep to re-discover.
    - Tracked work you shipped — beads/issues closed, PRs opened/merged, commits (you know these from the session; don't audit).
-   - Memory files written or updated (`/Users/nguyenv/.claude/projects/<project>/memory/`).
+   - Memory files written or updated (`~/.claude/projects/<project>/memory/`).
    - Discover knowledge-base entries — if `discover` ran this session, the facts it verified and wrote to `.claude/discover-kb/<repo-slug>/` (index + topic files, each with a freshness marker) so the next agent trusts them instead of re-verifying.
    - **Approaches that failed** — what you tried that did not work, the symptom, and the root cause if you found it. You know these from the session; they are the highest-value content in the handoff and the easiest to forget to write down.
    - Unresolved questions — things you asked the user that never got a clear answer, or things the user asked that got deflected.
    - **Decisions you deliberately did NOT act on** — anything spend-affecting, production-facing, or destructive that you held for the human. These are the easiest thing to lose and the most dangerous.
 3. **Do NOT audit the filesystem to reconstruct.** This is synthesis of what happened in THIS session. No broad `Glob`/`git log` sweeps to rediscover. (Pulling a PR number or commit hash you already produced this session is fine.)
 4. **Write the handoff to a file, then post a pointer in chat.**
-   - Path: `/Users/nguyenv/.claude/handoffs/YYYY-MM-DD-<short-slug>.md` (flat dir, always the same location — NOT the repo and NOT a worktree, which `/merged` deletes).
+   - Path: `~/.claude/handoffs/YYYY-MM-DD-<short-slug>.md` (flat dir, always the same location — NOT the repo and NOT a worktree, which `/merged` deletes).
    - In chat, post ONLY the **TLDR block** below. Never paste the full handoff into chat.
    - Do not update memory from this skill.
 
@@ -131,7 +133,7 @@ method does not belong here.>
 
 ## Hard rules
 
-1. **File output, TLDR block in chat.** The summary goes to `/Users/nguyenv/.claude/handoffs/YYYY-MM-DD-<slug>.md`. Chat gets the TLDR block (step 5) and nothing else — it is written to be pasted into a fresh session, not read as a status update. Never update memory from this skill.
+1. **File output, TLDR block in chat.** The summary goes to `~/.claude/handoffs/YYYY-MM-DD-<slug>.md`. Chat gets the TLDR block (step 5) and nothing else — it is written to be pasted into a fresh session, not read as a status update. Never update memory from this skill.
 2. **Never invent state.** If a *core* section (Where it started, Ruled out, Running state, Key files, Verified this session, Verification, Deferred + open, Pick up here) has nothing to report, write "none" — don't omit it. The *(when applicable)* sections are the opposite: omit them entirely when they don't fit, rather than writing an empty heading.
 3. **Absolute paths always.** The next agent may have a different working directory.
 4. **If a plan file drove the session, name it first** in "Key files".

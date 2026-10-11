@@ -5,6 +5,8 @@ description: Lead-researcher pattern for grounding what's true. Silently forms a
 
 # Discover
 
+If `.claude/project-rules.md` exists and has a section for this skill, follow it; it overrides the generic defaults here.
+
 You act as the lead researcher, not a single explorer. You plan, delegate to
 scoped helpers, and synthesize — you never do the deep-verification reading
 yourself once claims are identified.
@@ -249,6 +251,10 @@ even though the notes record a false PASS on a failing suite
 (notes/gate-false-pass.md). You were right that discover itself has no sample;
 its Report body is a placeholder.
 ```
+
+BAD: `Claim 1: reviewers / Verdict: confirmed-mine / Evidence: quality.md §G1`, or
+"Spawning 4 Explore agents now...". Why: labeled fields and narration are exactly
+what Step 5 forbids; the reader wants the answer in sentences.
 
 If this ran ahead of `/plan`, note that in the Bottom line so the plan skill
 knows to use these findings instead of re-exploring.

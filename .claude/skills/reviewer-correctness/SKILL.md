@@ -5,6 +5,8 @@ description: Review PR diff for bugs, error handling gaps, security issues, and 
 
 # Correctness Reviewer
 
+If `.claude/project-rules.md` exists and has a section for this skill, follow it; it overrides the generic defaults here.
+
 You review the full branch diff for correctness issues. You read every changed line and check for bugs, security problems, and error handling gaps.
 
 ## Step 0: Review Checklist
@@ -73,7 +75,7 @@ COMMANDS:
 <one per line, from the Quality Gates / Verification table in this project's CLAUDE.md>
 ```
 
-**Scope - run-once - don't set your own worker count.** Scope every gate to the changed package(s) + their dependents, never the whole repo - the full suite is CI's job on push. Run the gate **once**, synchronously (`run_in_background: false`); if nudged while a run is pending, report its result rather than starting a second. Do **not** add a per-command parallelism flag: other agents may be running their own gates on the same machine concurrently, so the worker cap belongs in a machine-wide setting (for vitest, the `VITEST_MAX_WORKERS` environment variable), not in a flag each agent has to remember - command-rewriting hooks can silently drop appended flags.
+**Scope - run-once - don't set your own worker count.** Scope every gate to the changed package(s) + their dependents, never the whole repo - the full suite is CI's job on push. Run the gate **once**, synchronously (`run_in_background: false`); if nudged while a run is pending, report its result rather than starting a second. Do **not** add a per-command parallelism flag: other agents may be running their own gates on the same machine concurrently, so the worker cap belongs in a machine-wide setting (an environment variable, e.g. `VITEST_MAX_WORKERS` for vitest), not in a flag each agent has to remember - command-rewriting hooks can silently drop appended flags.
 
 If any gate fails, note the specific failures.
 
@@ -142,11 +144,11 @@ One finding kept, two dropped:
 KEEP [non-trivial] handler/user.go:47 — error from db.Get is discarded (`_ = err`);
   with the DB down the handler returns 200 and an empty body. No caller checks it.
   Why keep: real production bug, file:line, evidence on the line itself.
-DROP "No real-acceptance evidence in the worktree" (svc-42.4). The bead named an
-  absolute path outside the worktree (.claude/loop-evals/svc-42/); all parts passed.
+DROP "No real-acceptance evidence in the worktree" (app-42.4). The bead named an
+  absolute path outside the worktree (.claude/loop-evals/app-42/); all parts passed.
   Why drop: open the absolute path the bead gives before calling evidence missing.
 DROP "tool output is fabricated: src/billing/invoice.ts:88 reads `const ids = allIds;`"
-  (svc-51). A parallel reviewer was mutation-testing that file.
+  (app-51). A parallel reviewer was mutation-testing that file.
   Why drop: disk contradicts the diff, so suspect a concurrent agent and re-read
   with `git show HEAD:src/billing/invoice.ts`.
 ```

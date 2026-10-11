@@ -20,13 +20,13 @@ A single HTML page that grows through a session. Two readers use it:
   cp <skill-dir>/template.html ~/Downloads/<topic-slug>-<YYYY-MM-DD>.html
   ```
   The date is the creation date and stays in the filename across updates.
-- The template is the shared page shell: Inter, the Conspectus tokens, dither background, Edit/Save buttons (Save rewrites the file via the file picker; Cmd+S works). Keep all of that as is.
+- The template is the shared page shell: Inter, the color tokens, dither background, Edit/Save buttons (Save rewrites the file via the file picker; Cmd+S works). Keep all of that as is.
 
 **Before every edit**, check whether Long changed the page since your last write (he edits in the browser and saves). Compare the file's modified time with your last write. If it changed, read it and keep his edits; never overwrite them from a copy you held.
 
 ## 2. Structure
 
-The template is a blanked copy of `example-firehose.html` (in this skill's folder), a finished page frozen as the reference for this shape. The example is about 35,000 tokens: never Read it whole. When unsure how a section should look, pull just that section by its heading:
+The template is a blanked copy of `example-firehose.html` (in this skill's folder if present; else work from `template.html`), a finished page frozen as the reference for this shape. The two example pages (`example-firehose.html`, `example-layered.html`) are real working pages, so they ship only with a private add-on; when they are absent, work from `template.html` and the rules here. The example is about 35,000 tokens: never Read it whole. When unsure how a section should look, pull just that section by its heading:
 
 ```bash
 awk '/<h2>Why/,/<\/section>/' <skill-dir>/example-firehose.html | head -60
@@ -151,7 +151,7 @@ GOOD  Layer 1's FIRST PASS box wears #3177 (grey) and #3194 (orange); Layer 2's 
       the PRs drawn on it.
 ```
 - **Work items live inside the layers** (section 2: blue note + to-do box per layer), not in a Backlog after them. A short conclusions section after the last layer is optional; then Open questions, then For agents.
-- **Reference page:** `<skill-dir>/example-layered.html` is a finished example of this shape (a frozen copy of the 9 Oct entity-identity page, draft 2). Its generator is `<skill-dir>/example-layered-svg.py`: a table of boxes and arrows plus a `svg(layer)` function. Copy and adapt the generator; don't start from scratch. Pull one layer with `awk '/Layer 2\./,/<\/figure>/' <page> | head -60` instead of reading it whole.
+- **Reference page:** `<skill-dir>/example-layered.html` (if present; else `template.html`) is a finished example of this shape (a frozen copy of the 9 Oct entity-identity page, draft 2). Its generator is `<skill-dir>/example-layered-svg.py`: a table of boxes and arrows plus a `svg(layer)` function. Copy and adapt the generator; don't start from scratch. Pull one layer with `awk '/Layer 2\./,/<\/figure>/' <page> | head -60` instead of reading it whole.
 
 ## 5. Writing
 

@@ -5,6 +5,8 @@ description: Review filed implementation plans for architectural issues, duplica
 
 # Plan Reviewer
 
+If `.claude/project-rules.md` exists and has a section for this skill, follow it; it overrides the generic defaults here.
+
 You are a plan reviewer agent. You review filed beads issues (an epic and its subtasks) against the actual codebase to catch architectural problems before implementation begins.
 
 ## Your Constraints
@@ -48,6 +50,7 @@ Read the code that will be affected. Understand:
 - [ ] Will any task create types/functions that already exist elsewhere?
 - [ ] Are there shared packages that should be used instead of creating new ones?
 - [ ] Will multiple tasks create similar code that should be unified?
+- [ ] Do test-writing tasks point at the package's shared test scaffolding (quality.md §I) instead of letting implementers re-declare it? Conversely, does any proposed consolidation violate §I's owner rule (call sites must get shorter or vanish into a global setup file — no wrapper-call rewrites)?
 
 #### Shared Types & Packages
 - [ ] Are shared types identified where multiple tasks will need the same structures?
@@ -113,7 +116,7 @@ Notes: <any observations, or "None">
 Filled example:
 ```
 PLAN REVIEW RESULT: APPROVED
-Epic: svc-42
+Epic: app-42
 Tasks reviewed: 10
 Adversarial: Wrong problem SURVIVED (audit note lists outputs with no example) ·
 Simpler alternative SURVIVED · Missing bead SURVIVED (Step 0 baseline) ·
@@ -141,7 +144,7 @@ Dependency fixes:
 Filled example:
 ```
 PLAN REVIEW RESULT: CHANGES NEEDED
-Epic: svc-42
+Epic: app-42
 Tasks reviewed: 10
 Adversarial: Wrong problem SURVIVED · Simpler alternative SURVIVED · Missing bead
 SURVIVED · Acceptance passes, user unhappy HIT (issue 1) · What breaks SURVIVED ·
