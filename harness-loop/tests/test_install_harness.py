@@ -396,29 +396,64 @@ class InstallHarnessTest(unittest.TestCase):
         self.assertEqual(tree_hashes(target), before)
         self.assertEqual((nested / "SKILL.md").read_text(), "nested repo copy\n")
 
-    def test_failed_force_install_exits_2_and_keeps_old_manifest(self):
+    def test_failed_force_install_exits_2_and_tracks_every_path_it_may_have_written(self):
         """
         If an install fails part-way (here: an unmanaged regular file sits where
         an add-on needs a directory), it must exit 2 with a message, not a
-        traceback, and the old manifest must survive. Losing it would turn the
-        half-installed files into unmanaged files that no later --force
-        run could clean up.
+        traceback, and the manifest must list every old path plus every path
+        the failed run may have written. A file written before the failure but
+        missing from the manifest would be orphaned for good: no later --force
+        run would ever delete it.
         """
         # GIVEN commit 1 installed, and an unmanaged file blocking an add-on dir
+        _, sha3 = make_repo(self.repo, {".claude/skills/b-only/SKILL.md": "b only\n"})
         target = self.tmp / "t"
         self.install(self.sha1, target)
-        old_manifest = (target / ".claude/HARNESS_MANIFEST").read_text()
+        old_manifest = set((target / ".claude/HARNESS_MANIFEST").read_text().splitlines())
         (target / ".claude/skills/newskill").write_text("unmanaged file\n")
         addon = self.tmp / "addon"
         (addon / "skills/newskill").mkdir(parents=True)
         (addon / "skills/newskill/SKILL.md").write_text("new\n")
-        # WHEN commit 2 is installed with --force and that add-on
-        result = self.install(self.sha2, target, "--addon", str(addon), "--force", check=False)
-        # THEN it exits 2 cleanly and the old manifest is still there
+        # WHEN commit 3 is installed with --force and that add-on
+        result = self.install(sha3, target, "--addon", str(addon), "--force", check=False)
+        # THEN it exits 2 cleanly and the manifest tracks old and new paths
         self.assertEqual(result.returncode, 2)
         self.assertIn("install failed", result.stderr)
         self.assertNotIn("Traceback", result.stderr)
-        self.assertEqual((target / ".claude/HARNESS_MANIFEST").read_text(), old_manifest)
+        manifest = set((target / ".claude/HARNESS_MANIFEST").read_text().splitlines())
+        self.assertTrue(old_manifest <= manifest)
+        self.assertIn(".claude/skills/b-only/SKILL.md", manifest)
+        self.assertIn(".claude/skills/newskill/SKILL.md", manifest)
+
+    def test_force_rollback_after_failed_install_removes_files_the_failed_run_wrote(self):
+        """
+        After a failed --force install of commit B, a --force rollback to
+        commit A must leave no B-only files behind. Otherwise the rolled-back
+        harness still carries skills from B, and the exam result labelled
+        "commit A" actually ran a mix of A and B.
+        """
+        # GIVEN a failed --force install of commit 3 (adds b-only) over commit 1
+        _, sha3 = make_repo(self.repo, {".claude/skills/b-only/SKILL.md": "b only\n"})
+        target = self.tmp / "t"
+        self.install(self.sha1, target)
+        blocker = target / ".claude/skills/newskill"
+        blocker.write_text("unmanaged file\n")
+        addon = self.tmp / "addon"
+        (addon / "skills/aaa").mkdir(parents=True)
+        (addon / "skills/aaa/SKILL.md").write_text("copied before failure\n")
+        (addon / "skills/newskill").mkdir(parents=True)
+        (addon / "skills/newskill/SKILL.md").write_text("new\n")
+        failed = self.install(sha3, target, "--addon", str(addon), "--force", check=False)
+        self.assertEqual(failed.returncode, 2)
+        self.assertTrue((target / ".claude/skills/b-only/SKILL.md").exists())
+        blocker.unlink()
+        # WHEN rolled back to commit 1 with --force
+        self.install(self.sha1, target, "--force")
+        # THEN no commit-3 or add-on file remains and the manifest is exactly commit 1's
+        self.assertFalse((target / ".claude/skills/b-only").exists())
+        self.assertFalse((target / ".claude/skills/aaa").exists())
+        manifest = (target / ".claude/HARNESS_MANIFEST").read_text().splitlines()
+        self.assertEqual(sorted(manifest), sorted(tree_hashes(target)))
 
     def test_executable_addon_file_stays_executable(self):
         """

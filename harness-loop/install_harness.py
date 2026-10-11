@@ -16,8 +16,10 @@ as `relpath \\0 len(bytes) \\0 bytes`.
 
 A previous manifest blocks a reinstall (exit 2) unless --force, which deletes
 ONLY the files that manifest lists. Without a manifest, files are overlaid and
-nothing is deleted. Nothing is ever written or deleted through a symlink
-under the target. Every refusal or failure exits 2 with a message.
+nothing is deleted. Before touching anything it refuses if any component of
+a path it would write or delete (every directory down to and including the
+file itself) is a symlink on disk, or lies under a symlink shipped in the
+harness commit. Every refusal or failure exits 2 with a message.
 """
 import argparse
 import hashlib
@@ -116,8 +118,7 @@ def install(argv):
             if inside((target / rel).resolve(), addon):
                 die(f"refusing to touch the add-on dir: {rel} resolves inside {addon}")
 
-    # The old manifest is kept until the new one is written, so a failed
-    # install can still be cleaned up by the next --force run.
+    # The old manifest is never deleted here; it is rewritten below.
     for rel in previous:
         path = target / rel
         if rel == MANIFEST:
@@ -133,7 +134,10 @@ def install(argv):
         if (target / rel).exists() and rel not in previous:
             print(f"replaced {rel}")
 
-    target.mkdir(parents=True, exist_ok=True)
+    # Track every path this run may write before writing any, so a failure
+    # mid-install leaves nothing untracked; on success it shrinks to `planned`.
+    (target / MANIFEST).parent.mkdir(parents=True, exist_ok=True)
+    (target / MANIFEST).write_text("".join(f"{rel}\n" for rel in sorted(set(previous) | planned)))
     tar.extractall(target, members=members, filter="data")
     for rel, src in files or []:
         dest = target / ".claude" / rel
