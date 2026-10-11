@@ -15,7 +15,7 @@ Python is stdlib only; tests use `unittest`.
 | Area | Tests | Lint |
 |------|-------|------|
 | harness-loop | `python3 -m unittest discover -s harness-loop/tests` (no `-t .`: without it unittest puts the start dir on `sys.path`, so `from helpers import ...` resolves; with it, it fails on Python 3.14 because the dir has no `__init__.py`) | `python3 -m py_compile $(git ls-files 'harness-loop/*.py' '.claude/*.py')` |
-| hooks | — | `for f in .claude/hooks/*.sh; do bash -n "$f"; done` |
+| hooks | — | `for f in .claude/hooks/*.sh; do bash -n "$f" || exit 1; done` |
 | settings | — | `python3 -m json.tool .claude/settings.json >/dev/null` |
 
 ## Workflow

@@ -16,13 +16,13 @@ as `relpath \\0 len(bytes) \\0 bytes`.
 
 A previous manifest blocks a reinstall (exit 2) unless --force, which deletes
 ONLY the files that manifest lists. Without a manifest, files are overlaid and
-nothing is deleted. Exit 2 on every refusal.
+nothing is deleted. Nothing is ever written or deleted through a symlink
+under the target. Every refusal or failure exits 2 with a message.
 """
 import argparse
 import hashlib
 import io
 import json
-import os
 import shutil
 import subprocess
 import sys
@@ -64,7 +64,7 @@ def inside(path, root):
     return path == root or root in path.parents
 
 
-def main(argv=None):
+def install(argv):
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--commit", required=True)
     ap.add_argument("--target", required=True)
@@ -100,14 +100,29 @@ def main(argv=None):
     for rel in previous:
         if not inside((target / rel).resolve(), target):
             die(f"previous manifest lists a path outside the target: {rel}")
+    # Writing or deleting through a symlink would change files the manifest
+    # does not own (e.g. skills linked into a nested repo), so refuse outright.
+    core_links = {m.name for m in members if m.issym() or m.islnk()}
+    for rel in [*previous, *planned]:
+        path = target
+        for part in Path(rel).parts:
+            path = path / part
+            if path.is_symlink():
+                die(f"refusing to write or delete through a symlink: {path}")
+        if any(a.as_posix() in core_links for a in Path(rel).parents):
+            die(f"refusing to write through a symlink in the harness itself: {rel}")
     if addon:
         for rel in [*previous, *planned]:
             if inside((target / rel).resolve(), addon):
                 die(f"refusing to touch the add-on dir: {rel} resolves inside {addon}")
 
+    # The old manifest is kept until the new one is written, so a failed
+    # install can still be cleaned up by the next --force run.
     for rel in previous:
         path = target / rel
-        if path.is_file() or path.is_symlink():
+        if rel == MANIFEST:
+            continue
+        if path.is_file():
             path.unlink()
         parent = path.parent
         while parent != target and parent.is_dir() and not any(parent.iterdir()):
@@ -115,7 +130,7 @@ def main(argv=None):
             parent = parent.parent
 
     for rel in sorted(planned):
-        if (target / rel).exists():
+        if (target / rel).exists() and rel not in previous:
             print(f"replaced {rel}")
 
     target.mkdir(parents=True, exist_ok=True)
@@ -123,7 +138,7 @@ def main(argv=None):
     for rel, src in files or []:
         dest = target / ".claude" / rel
         dest.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copyfile(src, dest)
+        shutil.copy(src, dest)  # keeps the executable bit for add-on hooks
 
     version = {"commit": sha, "addon": str(addon) if addon else None,
                "addon_sha256": addon_sha256(files) if addon else None}
@@ -133,6 +148,12 @@ def main(argv=None):
     print(f"installed agent-workflow {sha} into {target / '.claude'} "
           f"({len(planned) - 2} files), addon: {addon or 'none'}")
 
+
+def main(argv=None):
+    try:
+        install(argv)
+    except (OSError, tarfile.TarError, UnicodeDecodeError) as e:
+        die(f"install failed: {e}")
 
 if __name__ == "__main__":
     main()

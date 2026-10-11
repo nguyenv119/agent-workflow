@@ -1,6 +1,7 @@
 """Tests for harness-loop/install_harness.py, run against real temp git repos."""
 import hashlib
 import json
+import os
 import sys
 import tempfile
 import unittest
@@ -82,7 +83,10 @@ class InstallHarnessTest(unittest.TestCase):
     def test_same_commit_into_two_dirs_gives_byte_identical_trees(self):
         """
         Two installs of one commit must be byte-identical, so a harness
-        version is reproducible on any machine or sandbox.
+        version is reproducible on any machine or sandbox. If installs drift
+        (timestamps baked into files, order-dependent overlays), two exam runs
+        labelled with the same commit would test different harnesses and
+        their scores could not be compared.
         """
         # GIVEN two empty targets
         a, b = self.tmp / "a", self.tmp / "b"
@@ -163,7 +167,12 @@ class InstallHarnessTest(unittest.TestCase):
                                    "addon_sha256": addon_hash(addon)})
 
     def test_harness_version_without_addon_has_nulls(self):
-        """With no add-on, addon and addon_sha256 are null, not missing or empty."""
+        """
+        With no add-on, addon and addon_sha256 are JSON null, not missing or
+        empty strings. Readers of HARNESS_VERSION tell "no add-on" from "add-on"
+        by these fields; a missing key would crash a strict reader, and an
+        empty string would be mistaken for a real (empty) add-on hash.
+        """
         # GIVEN an empty target
         target = self.tmp / "t"
         # WHEN installed without an add-on
@@ -254,7 +263,11 @@ class InstallHarnessTest(unittest.TestCase):
         self.assertEqual((target / ".claude/skills/coordinator/SKILL.md").read_text(), "X")
 
     def test_missing_addon_exits_2_and_writes_nothing(self):
-        """A typo in --addon must fail loudly rather than install a bare core harness."""
+        """
+        A typo in --addon must fail loudly rather than install a bare core
+        harness. Otherwise the project silently runs without its rules and
+        overrides, and the exam result is labelled as if the add-on applied.
+        """
         # GIVEN an add-on path that does not exist
         target = self.tmp / "t"
         # WHEN installing with it
@@ -320,7 +333,12 @@ class InstallHarnessTest(unittest.TestCase):
         self.assertEqual((target / ".claude/local.md").read_text(), "mine\n")
 
     def test_unknown_commit_exits_2(self):
-        """A ref that does not resolve must fail with a clear exit code, not a traceback."""
+        """
+        A ref that does not resolve must exit 2 with a message, not a
+        traceback. Callers (the loop, the exam runner) branch on exit 2 as
+        "refused, nothing changed"; a traceback exit 1 reads as a crash and
+        leaves them unsure whether the target was half-written.
+        """
         # GIVEN a ref that does not exist
         target = self.tmp / "t"
         # WHEN installing it
@@ -329,6 +347,116 @@ class InstallHarnessTest(unittest.TestCase):
         self.assertEqual(result.returncode, 2)
         self.assertFalse(target.exists())
 
+
+    def test_symlinked_dir_in_target_is_refused_before_writing(self):
+        """
+        Real targets link some .claude/skills/* dirs into a nested repo. An
+        install that writes through such a link overwrites files in that other
+        repo, which no manifest owns and nothing can restore. It must refuse
+        (exit 2) and leave the link target byte-identical.
+        """
+        # GIVEN .claude/skills/coordinator is a symlink to a dir elsewhere in the target
+        target = self.tmp / "t"
+        nested = target / "nested/coordinator"
+        nested.mkdir(parents=True)
+        (nested / "SKILL.md").write_text("nested repo copy\n")
+        (target / ".claude/skills").mkdir(parents=True)
+        (target / ".claude/skills/coordinator").symlink_to(nested)
+        before = tree_hashes(nested)
+        # WHEN commit 1 (which has skills/coordinator/SKILL.md) is installed
+        result = self.install(self.sha1, target, check=False)
+        # THEN it exits 2, names the symlink, and the link target is untouched
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("symlink", result.stderr)
+        self.assertEqual(tree_hashes(nested), before)
+        self.assertFalse((target / ".claude/HARNESS_MANIFEST").exists())
+
+    def test_force_refuses_to_delete_previous_manifest_path_under_symlink(self):
+        """
+        --force deletes previous-manifest paths. If a dir on that path is now a
+        symlink, the delete would remove a file in the linked repo (and the
+        empty-dir cleanup would crash on the link). It must refuse before any
+        delete, leaving the whole target and the link target unchanged.
+        """
+        # GIVEN commit 1 installed, then .claude/skills/old replaced by a link
+        # (old is listed in the previous manifest but not in commit 2)
+        target = self.tmp / "t"
+        self.install(self.sha1, target)
+        nested = target / "nested/old"
+        nested.mkdir(parents=True)
+        (nested / "SKILL.md").write_text("nested repo copy\n")
+        run(["rm", "-rf", str(target / ".claude/skills/old")], "/")
+        (target / ".claude/skills/old").symlink_to(nested)
+        before = tree_hashes(target)
+        # WHEN commit 2 is installed with --force
+        result = self.install(self.sha2, target, "--force", check=False)
+        # THEN it exits 2 and nothing was deleted or changed
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("symlink", result.stderr)
+        self.assertEqual(tree_hashes(target), before)
+        self.assertEqual((nested / "SKILL.md").read_text(), "nested repo copy\n")
+
+    def test_failed_force_install_exits_2_and_keeps_old_manifest(self):
+        """
+        If an install fails part-way (here: an unmanaged regular file sits where
+        an add-on needs a directory), it must exit 2 with a message, not a
+        traceback, and the old manifest must survive. Losing it would turn the
+        half-installed files into unmanaged files that no later --force
+        run could clean up.
+        """
+        # GIVEN commit 1 installed, and an unmanaged file blocking an add-on dir
+        target = self.tmp / "t"
+        self.install(self.sha1, target)
+        old_manifest = (target / ".claude/HARNESS_MANIFEST").read_text()
+        (target / ".claude/skills/newskill").write_text("unmanaged file\n")
+        addon = self.tmp / "addon"
+        (addon / "skills/newskill").mkdir(parents=True)
+        (addon / "skills/newskill/SKILL.md").write_text("new\n")
+        # WHEN commit 2 is installed with --force and that add-on
+        result = self.install(self.sha2, target, "--addon", str(addon), "--force", check=False)
+        # THEN it exits 2 cleanly and the old manifest is still there
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("install failed", result.stderr)
+        self.assertNotIn("Traceback", result.stderr)
+        self.assertEqual((target / ".claude/HARNESS_MANIFEST").read_text(), old_manifest)
+
+    def test_executable_addon_file_stays_executable(self):
+        """
+        An add-on may ship its own hook script. Claude Code runs hooks as
+        executables, so dropping the executable bit on copy would make the
+        hook fail with "permission denied" at runtime.
+        """
+        # GIVEN an add-on with an executable hook
+        addon = self.tmp / "addon"
+        (addon / "hooks").mkdir(parents=True)
+        (addon / "hooks/x.sh").write_text("#!/bin/sh\necho hi\n")
+        (addon / "hooks/x.sh").chmod(0o755)
+        target = self.tmp / "t"
+        # WHEN installed with the add-on
+        self.install(self.sha1, target, "--addon", str(addon))
+        # THEN the installed hook is executable
+        self.assertTrue(os.access(target / ".claude/hooks/x.sh", os.X_OK))
+
+    def test_core_file_landing_inside_addon_dir_is_refused(self):
+        """
+        If the harness commit itself contains a file under the add-on's
+        location (.claude/harness-addon/), installing would overwrite the
+        project's add-on. It must refuse with exit 2 and leave the target and
+        the add-on byte-identical.
+        """
+        # GIVEN a core commit with .claude/harness-addon/x.md and the add-on at that path
+        _, sha3 = make_repo(self.repo, {".claude/harness-addon/x.md": "core\n"})
+        target = self.tmp / "t"
+        addon = target / ".claude/harness-addon"
+        addon.mkdir(parents=True)
+        (addon / "x.md").write_text("project addon\n")
+        before = tree_hashes(target)
+        # WHEN that commit is installed with the add-on
+        result = self.install(sha3, target, "--addon", str(addon), check=False)
+        # THEN it exits 2 and nothing changed
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("add-on dir", result.stderr)
+        self.assertEqual(tree_hashes(target), before)
 
 if __name__ == "__main__":
     unittest.main()
