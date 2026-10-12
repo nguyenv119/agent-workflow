@@ -74,7 +74,7 @@ EXAMPLE_LEAK = re.compile(r"Neon|NEON_|pnpm|turbo|vitest|VITEST|rtk |PGlite|Trig
 TRY_PATH = re.compile(r"(?<![\w/.~-])((?:runs/|~/\.claude/tries/agent-workflow/)[^\s`'\"<>()\[\],;]+)")
 # The improver gets Bedrock only: never an Anthropic API key, OAuth token or admin AWS key.
 SCRUB_ENV = re.compile(r"^(ANTHROPIC_BASE_URL|AWS_ADMIN_.*|AWS_PROFILE"
-                       r"|.*(TOKEN|SECRET|KEY|PASSWORD|CREDENTIAL).*)$", re.I)
+                       r"|.*(TOKEN(?!S)|SECRET|KEY|PASSWORD|CREDENTIAL).*)$", re.I)
 BEDROCK_ENV = {"AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN", "AWS_BEARER_TOKEN_BEDROCK"}
 
 # Gate guard (Long, 12 Oct): a change may add or sharpen checks, never remove or weaken one.
@@ -84,12 +84,12 @@ WEAKEN = re.compile(r"\b(skip\w*|shorten\w*|sampl\w*|bypass\w*|omit\w*|disabl\w*
                     r"|loosen\w*|relax\w*|waive\w*)\b", re.I)
 _WEAK = r"(?:skip|shorten|sampl|bypass|omit|disabl|ignor|loosen|relax|waive)\w*"
 NEGATED_WEAKEN = re.compile(r"\b(?:never|not|no|cannot|don't|must not)\s+(?:\w+\s+){0,2}?" + _WEAK
-                            + r"|\b" + _WEAK + r"\b[^.;]{0,40}?\b(?:is|are)\s+(?:never|not)\s+"
+                            + r"|\b" + _WEAK + r"(?:\s+\w+){0,3}?\s+(?:is|are)\s+(?:never|not)\s+"
                             r"(?:allowed|permitted|acceptable)\b", re.I)
 _GATE_NOUN = r"(?:reviewers?|reviews?|gates?|tests?|test-runner|acceptance)"
 # ponytail: phrase lists, not understanding; a reworded weakening can still slip past (the
 # improver skill's hard rule 8 and human review of every PR are the backstop).
-FEWER = re.compile(r"\b(?:only|just|a single)\s+(?:one\s+|a\s+)?" + _GATE_NOUN + r"\b"
+FEWER = re.compile(r"\b(?:only|just|a single)\s+(?:one\s+|a\s+)?(?:reviewers?|reviews?|gates?|tests?)\b(?!-)"
                    r"|\binstead of (?:all |the )?(?:three|3|every)\b"
                    r"|(?<!not )(?<!never )(?<!n't )\b(?:push|merge|commit|open)\w*\s+before\s+(?:the\s+)?"
                    r"(?:\w+\s+)?" + _GATE_NOUN + r"\s+(?:finish|pass|complete|report|return)\w*", re.I)
@@ -105,10 +105,10 @@ def die(msg, code=2):
 
 
 def git(*args, cwd=AW_ROOT, check=True):
-    p = subprocess.run(["git", "-C", str(cwd), *args], capture_output=True, text=True)
+    p = subprocess.run(["git", "-C", str(cwd), *args], capture_output=True)  # bytes: text=True turns \r into \n
     if check and p.returncode != 0:
-        raise RuntimeError(f"git {' '.join(args)}: {p.stderr.strip()}")
-    return p.stdout
+        raise RuntimeError(f"git {' '.join(args)}: {p.stderr.decode(errors='replace').strip()}")
+    return p.stdout.decode("utf-8", "surrogateescape")
 
 
 def now():
@@ -158,7 +158,7 @@ def update_history(round_n, **fields):
 def week_spent(rows, at):
     """USD in ledger rows from the last 7 days before `at`."""
     week = datetime.timedelta(days=7)
-    return sum(float(r["usd"]) for r in rows if at - datetime.datetime.fromisoformat(r["ts"]) < week)
+    return sum(max(0.0, float(r["usd"])) for r in rows if at - datetime.datetime.fromisoformat(r["ts"]) < week)
 
 
 def check_budget(est, what):
@@ -169,9 +169,13 @@ def check_budget(est, what):
     return spent
 
 
+BOOKED = []  # every ledger row this process wrote; restore_state puts them back
+
+
 def book(kind, usd, round_n, note=""):
-    append_jsonl(HOME / "spend.jsonl", {"ts": now().isoformat(), "kind": kind, "round": round_n,
-                                        "usd": round(float(usd), 4), "note": note})
+    row = {"ts": now().isoformat(), "kind": kind, "round": round_n, "usd": round(float(usd), 4), "note": note}
+    BOOKED.append(row)
+    append_jsonl(HOME / "spend.jsonl", row)
 
 
 # ---- tamper snapshot (in memory only) ----------------------------------------------------
@@ -202,9 +206,12 @@ def git_config_state():
     """Hashes of what can change how git diffs or pushes: the shared .git config/hooks/info, user config."""
     common = Path(git("rev-parse", "--path-format=absolute", "--git-common-dir").strip())
     out = {f".git/{k}": v for k, v in hash_tree(common).items() if k.split("/")[0] in ("config", "hooks", "info")}
-    for f in (Path.home() / ".gitconfig", Path.home() / ".config/git/config"):
-        if f.is_file():
-            out[str(f)] = hashlib.sha256(f.read_bytes()).hexdigest()
+    f = Path.home() / ".gitconfig"
+    if f.is_file():
+        out[str(f)] = hashlib.sha256(f.read_bytes()).hexdigest()
+    xdg = {Path.home() / ".config/git", Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config") / "git"}
+    for d in xdg:  # config, attributes, ignore: attributes can drop files from `git archive`
+        out.update({f"{d}/{k}": v for k, v in hash_tree(d).items()})
     return out
 
 
@@ -240,12 +247,15 @@ def tampered(before, after, ignore_pycache=False, skip_state=()):
 
 
 def restore_state(saved):
+    """Put the state files back as snapshotted, then re-append the ledger rows this process booked since."""
     for name, data in saved.items():
         f = HOME / name
         if data is None:
             f.unlink(missing_ok=True)
         elif not f.is_file() or f.read_bytes() != data:
             f.write_bytes(data)
+    for row in BOOKED:
+        append_jsonl(HOME / "spend.jsonl", row)
 
 
 # ---- diff parsing and the gate guard -----------------------------------------------------
@@ -439,7 +449,7 @@ def run_checks(base, cand, proposal, private, existing=None):
     out.append(("one commit", count == 1, f"{count} commits"))
     files = parse_diff(git("diff", "-M", "--no-color", "--no-ext-diff", "--no-textconv", "--text", base, cand))
     paths = sorted({p for f in files for p in (f["old"], f["new"])})
-    bad = [p for p in paths if not ALLOWED_PATH.match(p) or "EXAM_MODE" in p]
+    bad = [p for p in paths if not ALLOWED_PATH.match(p) or "EXAM_MODE" in p or p.endswith(".gitattributes")]
     out.append(("allowed paths", not bad, ", ".join(bad) or f"{len(paths)} path(s)"))
     changed = [t for f in files for _, _, t in f["lines"]]
     exam = [t.strip()[:80] for t in changed if EXAM_WORDS.search(t)]
@@ -484,7 +494,11 @@ def run_exam(sha, manifest, kind, budget, round_n, screen=True, tries=1):
     cmd = tool("LOOP_RUN_EXAM", "run_exam.py") + ["--harness", sha, "--tasks", str(manifest),
                                                    "--budget-usd", f"{budget:.2f}", "--kind", kind,
                                                    "--tries", str(tries)] + (["--screen"] if screen else [])
-    p = subprocess.run(cmd, capture_output=True, text=True, env=exam_env())
+    try:
+        p = subprocess.run(cmd, capture_output=True, text=True, env=exam_env())
+    except BaseException:
+        book(f"exam-{kind}", budget, round_n, "interrupted: booked at budget")
+        raise
     m = re.search(r"^run_exam: (\S+) (complete|incomplete)", p.stdout, re.M)
     if not m:
         raise RuntimeError(f"run_exam left no run (exit {p.returncode}): {p.stderr.strip()[-300:]}")
@@ -544,7 +558,7 @@ def mask_task(path):
     return "/".join(parts)
 
 
-def proposal_for_body(proposal):
+def proposal_for_body(proposal, existing=None):
     """proposal.md with its Evidence list reduced to the cited paths (exam task dirs masked) and no marker lines."""
     out, skip = [], False
     proposal = re.sub(re.escape(SCORES_OPEN) + r".*?" + re.escape(SCORES_CLOSE), "", proposal, flags=re.S)
@@ -553,7 +567,7 @@ def proposal_for_body(proposal):
             skip = line.startswith("Evidence:")
             if skip:
                 out.append("Evidence (task dirs masked; notes in the round's proposal.md):")
-                out += [f"  {mask_task(t)}" for t in try_folders(proposal)[0]]
+                out += [f"  {mask_task(t)}" for t in try_folders(proposal, existing)[0]]
                 continue
         if not skip and "harness-loop:scores" not in line:
             out.append(line)
@@ -661,6 +675,7 @@ def cmd_round(args):
         append_jsonl(HOME / "history.jsonl", row)
         print(f"round {n}: {outcome}{': ' + reason if reason else ''}")
 
+    before = None
     try:
         msg = "\n".join([
             "Follow the improver skill. Everything you need is at these paths.",
@@ -715,8 +730,7 @@ def cmd_round(args):
         cand_run = run_exam(cand, manifest, "candidate", per_run, n)
         changes = tampered(before, snapshot(branch, base_run), ignore_pycache=True, skip_state=("spend.jsonl",))
         if changes:
-            # spend.jsonl is kept: book() appended the exam's real cost to it during the screen
-            restore_state({k: v for k, v in before["state"].items() if k != "spend.jsonl"})
+            restore_state(before["state"])
             return finish("dropped", "tamper during screen: " + "; ".join(changes))
         stats = compare(base_run, cand_run, "--screen-rule")
         verdict = stats["screen"]
@@ -731,7 +745,7 @@ def cmd_round(args):
 
         label = "harness-loop" if default else "harness-loop-test"
         body = "\n\n".join([
-            proposal_for_body(proposal), scores_block(line),
+            proposal_for_body(proposal, existing), scores_block(line),
             f"Runs (under the loop home): `{rel_home(base_run)}` (main), `{rel_home(cand_run)}` (candidate)",
             f"Round {n}, improver: {row['improver']}. Opened by harness-loop/loop.py; scores are written by the "
             "script from compare.py, never by the improver. The loop never merges."])
@@ -751,6 +765,8 @@ def cmd_round(args):
         print(f"PR {url} (label {label}){', queued' if verdict == 'pass' else ', draft (screen fail)'}")
         return finish("queued" if verdict == "pass" else "screen-fail", keep_branch=True)
     except BaseException as e:  # every started round gets a history row, Ctrl-C included
+        if before:  # an error the improver provoked must not keep what it wrote
+            restore_state(before["state"])
         if row["improver_cost_usd"] == "running":  # interrupted mid-improver: its cost is unknown
             row["improver_cost_usd"] = args.improver_budget_usd if default else None
             if default:
@@ -801,18 +817,19 @@ def cmd_monthly(args):
                                         q["base_sha"], q["cand_sha"], 1, f"screen={screen['verdict']}"))
             lines.append(score_line("full", stats, main_sha, q["cand_sha"], tries_of(b),
                                     f"diff={stats['diff']} margin={stats['margin']} verdict={stats['verdict']}"))
+            # record and dequeue first: the exam is paid, so a failed PR edit must not make a rerun pay again
+            update_history(q["round"], full=full)
+            write_queue([x for x in read_queue() if x["round"] != q["round"]])
             body = gh_json("pr", "view", str(q["pr"]), "--json", "body")["body"]
             new = re.sub(re.escape(SCORES_OPEN) + r".*?" + re.escape(SCORES_CLOSE), lambda _: scores_block(*lines),
                          body, count=1, flags=re.S)
             if new == body:
                 new = body.rstrip() + "\n\n" + scores_block(*lines)
-            with tempfile.NamedTemporaryFile("w", suffix=".md", delete=False) as fh:
-                fh.write(new)
-            subprocess.run(["gh", "pr", "edit", str(q["pr"]), "--repo", GH_REPO, "--body-file", fh.name],
+            body_f = HOME / "rounds" / str(q["round"]) / "pr-body-full.md"  # kept to re-apply by hand on failure
+            body_f.parent.mkdir(parents=True, exist_ok=True)
+            body_f.write_text(new)
+            subprocess.run(["gh", "pr", "edit", str(q["pr"]), "--repo", GH_REPO, "--body-file", str(body_f)],
                            check=True, capture_output=True, text=True)
-            os.unlink(fh.name)
-            update_history(q["round"], full=full)
-            write_queue([x for x in read_queue() if x["round"] != q["round"]])  # a rerun never pays for it again
             print(f"monthly: round {q['round']} PR #{q['pr']}: {lines[-1]}"
                   + (f" (cut short: {', '.join(cut)})" if cut else ""))
 
