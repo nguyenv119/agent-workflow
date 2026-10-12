@@ -58,6 +58,11 @@ default docker setup can switch the network per phase. The copy opens it to `"pu
 already shown that test.sh passes offline. On public network an agent could look up
 the upstream PR, the same as on the Monthly-SWEBench tasks.
 
+Each task folder holds files from its upstream repo (tests, patches) under that repo's
+license. `fresh-2026-10`: StuffAnThings/qbit_manage (MIT), agentconnect-md/agentconnect
+(Apache-2.0), Ikalus1988/MisakaNet (Apache-2.0), chrisbenincasa/tunarr (Zlib),
+basicmachines-co/basic-memory (AGPL-3.0), Gentleman-Programming/gentle-shell (MIT).
+
 Before a set joins the exam, check every task independently of SWE-gen's own check,
 locally and free (oracle must score 1, nop 0):
 
