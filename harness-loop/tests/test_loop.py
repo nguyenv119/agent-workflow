@@ -826,14 +826,18 @@ class SyncAndMonthly(LoopTestCase):
         self.assertEqual([q["round"] for q in json.loads((self.r.home / "queue.json").read_text())], [2])
 
     def test_monthly_failed_pr_edit_still_records_and_dequeues(self):
-        """If `gh pr edit` fails after the exam was paid, history has the full result and the queue is empty."""
-        # GIVEN one queued round, and gh failing on pr edit
+        """If `gh pr edit` fails, monthly still examines every queued round once, records them, empties the queue, exits 1."""
+        # GIVEN two queued rounds, and gh failing on pr edit
         self.assertEqual(self.r.round().returncode, 0)
+        self.assertEqual(self.r.round("--budget-usd", "10").returncode, 0)
+        self.r.exam_log.unlink()
         # WHEN monthly runs
-        p = self.r.loop("monthly", "--budget-usd", "30", env={"FAKE_GH_FAIL_EDIT": "1"})
-        # THEN it fails, but the result is recorded and nothing is left to pay for again
-        self.assertNotEqual(p.returncode, 0)
-        self.assertIsNotNone(self.r.history()[0]["full"])
+        p = self.r.loop("monthly", "--budget-usd", "20", env={"FAKE_GH_FAIL_EDIT": "1"})
+        # THEN main ran twice and each candidate once, both results are recorded, nothing is left to pay for again
+        self.assertEqual(p.returncode, 1, p.stderr)
+        self.assertEqual([c[c.index("--kind") + 1] for c in self.r.exam_calls()],
+                         ["baseline", "baseline", "candidate", "candidate"])
+        self.assertTrue(all(r["full"] for r in self.r.history()))
         self.assertEqual(json.loads((self.r.home / "queue.json").read_text()), [])
         self.assertTrue((self.r.home / "rounds/1/pr-body-full.md").is_file())
 
@@ -917,7 +921,7 @@ class GuardUnit(unittest.TestCase):
         for line in ("Reviewers are optional for small diffs.", "Sample 3 of the tests instead of the suite.",
                      "Run without waiting for the test-runner.", "Run only one reviewer instead of three.",
                      "A single reviewer is enough for docs-only diffs.", "Push before the reviewers finish.",
-                     "Skip the reviewers, waiting is not allowed."):
+                     "Skip the reviewers, waiting is not allowed.", "Run only one acceptance check."):
             with self.subTest(line=line):
                 # GIVEN a diff adding the line
                 diff = ("diff --git a/AGENTS.md b/AGENTS.md\n--- a/AGENTS.md\n+++ b/AGENTS.md\n"

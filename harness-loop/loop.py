@@ -89,7 +89,7 @@ NEGATED_WEAKEN = re.compile(r"\b(?:never|not|no|cannot|don't|must not)\s+(?:\w+\
 _GATE_NOUN = r"(?:reviewers?|reviews?|gates?|tests?|test-runner|acceptance)"
 # ponytail: phrase lists, not understanding; a reworded weakening can still slip past (the
 # improver skill's hard rule 8 and human review of every PR are the backstop).
-FEWER = re.compile(r"\b(?:only|just|a single)\s+(?:one\s+|a\s+)?(?:reviewers?|reviews?|gates?|tests?)\b(?!-)"
+FEWER = re.compile(r"\b(?:only|just|a single)\s+(?:one\s+|a\s+)?(?:reviewers?|reviews?|gates?|tests?|acceptance)\b(?!-)"
                    r"|\binstead of (?:all |the )?(?:three|3|every)\b"
                    r"|(?<!not )(?<!never )(?<!n't )\b(?:push|merge|commit|open)\w*\s+before\s+(?:the\s+)?"
                    r"(?:\w+\s+)?" + _GATE_NOUN + r"\s+(?:finish|pass|complete|report|return)\w*", re.I)
@@ -765,7 +765,7 @@ def cmd_round(args):
         print(f"PR {url} (label {label}){', queued' if verdict == 'pass' else ', draft (screen fail)'}")
         return finish("queued" if verdict == "pass" else "screen-fail", keep_branch=True)
     except BaseException as e:  # every started round gets a history row, Ctrl-C included
-        if before:  # an error the improver provoked must not keep what it wrote
+        if before and row["pr"] is None:  # an error the improver provoked must not keep what it wrote
             restore_state(before["state"])
         if row["improver_cost_usd"] == "running":  # interrupted mid-improver: its cost is unknown
             row["improver_cost_usd"] = args.improver_budget_usd if default else None
@@ -794,6 +794,7 @@ def cmd_monthly(args):
     git("fetch", "-q", "origin", "main")
     main_sha = git("rev-parse", "origin/main").strip()
     history = {r["round"]: r for r in read_jsonl(HOME / "history.jsonl")}
+    failed = []
     for manifest, items in groups.items():
         a1 = run_exam(main_sha, manifest, "baseline", per_run, 0, screen=False, tries=2)
         a2 = run_exam(main_sha, manifest, "baseline", per_run, 0, screen=False, tries=2)
@@ -828,10 +829,17 @@ def cmd_monthly(args):
             body_f = HOME / "rounds" / str(q["round"]) / "pr-body-full.md"  # kept to re-apply by hand on failure
             body_f.parent.mkdir(parents=True, exist_ok=True)
             body_f.write_text(new)
-            subprocess.run(["gh", "pr", "edit", str(q["pr"]), "--repo", GH_REPO, "--body-file", str(body_f)],
-                           check=True, capture_output=True, text=True)
+            edit = subprocess.run(["gh", "pr", "edit", str(q["pr"]), "--repo", GH_REPO, "--body-file", str(body_f)],
+                                  capture_output=True, text=True)
+            if edit.returncode != 0:  # carry on: the other rounds share this group's paid main runs
+                failed.append(q["round"])
+                print(f"monthly: round {q['round']} PR #{q['pr']}: gh pr edit failed; body kept at {body_f}",
+                      file=sys.stderr)
+                continue
             print(f"monthly: round {q['round']} PR #{q['pr']}: {lines[-1]}"
                   + (f" (cut short: {', '.join(cut)})" if cut else ""))
+    if failed:
+        die(f"gh pr edit failed for round(s) {', '.join(map(str, failed))}; results are in history.jsonl", code=1)
 
 
 def cmd_sync(_args):
