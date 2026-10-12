@@ -84,3 +84,20 @@ Harbor's default network mode is public. None of the 105 Monthly-SWEBench 2026-0
 Terminal-Bench 4.0 Software picks set `network_mode` in `task.toml`, so none needs an override. A
 task that restricts the agent phase would need an allowlist with
 `bedrock-runtime.<region>.amazonaws.com`, github.com (bd/dolt downloads) and its package registries.
+
+## Run the exam
+
+`run_exam.py` runs a manifest's tasks through Harbor at one harness sha and seals the results under
+`~/.harness-loop/runs/<run-id>/`; `compare.py` compares two runs with a luck margin. Controls and
+the planted-harm branch are in `controls.md`.
+
+```bash
+harness-loop/exam/run_exam.py --harness main --tasks harness-loop/tasks/shakedown-2026-05.json \
+  --screen --kind baseline --budget-usd 60          # per-run cap: --max-budget-usd (default 12.05)
+harness-loop/exam/run_exam.py --harness main --tasks <same> --screen --agent controls --budget-usd 1
+harness-loop/exam/compare.py <runA> <runB> --margin-from <runA2> --screen-rule
+```
+
+Task folders come from the manifest's `cache/` (git-ignored); in a worktree, symlink it from the
+main clone. A task asking for more than 4 CPUs or 8 GiB gets `--override-cpus 4
+--override-memory-mb 8192`, Daytona's cap.
