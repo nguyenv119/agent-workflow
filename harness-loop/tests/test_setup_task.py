@@ -571,6 +571,11 @@ class PinnedToolsTest(unittest.TestCase):
         f.write_text(f"#!/bin/sh\n{body}\n")
         f.chmod(0o755)
 
+    def skip_if_dolt_preinstalled(self):
+        # setup_task.sh puts /usr/local/bin first on PATH, so a dolt there skips the install.
+        if shutil.which("dolt", path="/usr/local/bin"):
+            self.skipTest("a dolt in /usr/local/bin would skip the tools-phase install")
+
     def setup(self, *args, os_name="Linux", machine="x86_64"):
         env = {"PATH": f"{self.bin}:/usr/bin:/bin", "HOME": str(self.tmp),
                "FAKE_OS": os_name, "FAKE_M": machine}
@@ -618,6 +623,7 @@ class PinnedToolsTest(unittest.TestCase):
         The tools phase is where the pin is used. On a machine with no pin it
         must fail before any download, naming the missing tool.
         """
+        self.skip_if_dolt_preinstalled()
         # GIVEN dolt is not installed and the machine has no pinned build
         # WHEN the tools phase runs
         r = self.setup("tools", machine="riscv64")
@@ -632,6 +638,7 @@ class PinnedToolsTest(unittest.TestCase):
         a hard-coded amd64 url, the checksum would still be checked against
         the wrong file and setup would fail on every laptop run.
         """
+        self.skip_if_dolt_preinstalled()
         # GIVEN dolt is missing on an aarch64 Linux machine (curl is faked to fail)
         # WHEN the tools phase runs
         r = self.setup("tools", machine="aarch64")
