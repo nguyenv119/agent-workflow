@@ -44,8 +44,10 @@ for task, (reward, cost) in spec.items():
         (d / "result.json").write_text(json.dumps({"task": task, "try": t, "agent": "workflow", "status": "ok",
                                                    "reward": reward, "cost_usd": cost}))
         total += cost
+manifest = json.loads(Path(args.tasks).read_text())
 (run / "run.json").write_text(json.dumps({
     "run_id": run.name, "kind": args.kind, "harness_commit": args.harness, "screen": args.screen,
+    "set": manifest.get("set"), "tasks": sorted(t["id"] for t in manifest.get("tasks", []) if t["screen"] or not args.screen),
     "manifest": str(Path(args.tasks).resolve()), "agent": "workflow", "tries": args.tries,
     "status": status, "max_budget_usd": 12.05}))
 (run / "summary.json").write_text(json.dumps({"total_cost_usd": round(total, 4)}))

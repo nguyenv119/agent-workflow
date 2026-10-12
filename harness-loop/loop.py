@@ -516,22 +516,34 @@ def compare(a, b, *extra):
     return dict(tok.split("=", 1) for tok in p.stdout.split() if "=" in tok)
 
 
+def harness_tree(sha):
+    """What the exam installs at sha: the .claude tree and AGENTS.md blob ids ('' if sha is unknown)."""
+    if not re.fullmatch(r"[0-9a-f]{7,40}", sha):
+        return ""
+    return git("ls-tree", sha, "--", ".claude", "AGENTS.md", check=False)
+
+
 def find_base_run(base_sha, manifest):
-    """Newest complete, sealed main screen run at base_sha on this manifest that this script booked, or None.
+    """Newest complete, sealed main screen run of this manifest's screen tasks that this script booked,
+    made at any commit whose installed harness (.claude/ + AGENTS.md) matches base_sha's, or None.
 
     Booked = named in an exam-baseline row of spend.jsonl, which the improver cannot write (it is
-    hashed and restored every round), so a run dir the improver forged is never reused."""
+    hashed and restored every round), so a run dir the improver forged is never reused. Matching on
+    the installed tree, not the commit, lets a run survive main commits that only touch harness-loop/."""
     booked = {r.get("note") for r in read_jsonl(HOME / "spend.jsonl") if r.get("kind") == "exam-baseline"}
+    data = json.loads(Path(manifest).read_text())
+    want = sorted(t["id"] for t in data.get("tasks", []) if t.get("screen"))
+    tree = harness_tree(base_sha)
     found = []
     for meta_f in (HOME / "runs").glob("*/run.json"):
         try:
             meta = json.loads(meta_f.read_text())
         except ValueError:
             continue
-        if (meta.get("harness_commit") == base_sha and meta.get("manifest") == str(Path(manifest).resolve())
-                and meta.get("screen") and meta.get("agent") == "workflow" and meta.get("kind") == "baseline"
+        if (meta.get("set") == data.get("set") and meta.get("tasks") == want and meta.get("screen")
+                and meta.get("agent") == "workflow" and meta.get("kind") == "baseline"
                 and meta.get("status") == "complete" and (meta_f.parent / "summary.sha256").is_file()
-                and meta_f.parent.name in booked):
+                and meta_f.parent.name in booked and tree and harness_tree(str(meta.get("harness_commit"))) == tree):
             found.append((meta_f.stat().st_mtime, meta_f.parent))
     return max(found)[1] if found else None
 

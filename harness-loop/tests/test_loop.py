@@ -241,6 +241,51 @@ class RoundOpensPR(LoopTestCase):
         body = [c for c in self.r.gh_calls() if "body" in c][0]["body"]
         self.assertIn(f"runs/{base.name}", body)
 
+    def commit_on_main(self, rel, text):
+        """Commit one file on the test checkout's main and push it, so origin/main moves."""
+        (self.r.aw / rel).parent.mkdir(parents=True, exist_ok=True)
+        (self.r.aw / rel).write_text(text)
+        run(GIT + ["add", rel], self.r.aw)
+        run(GIT + ["commit", "-q", "-m", f"touch {rel}"], self.r.aw)
+        run(GIT + ["push", "-q", "origin", "main"], self.r.aw)
+
+    def test_reuses_main_run_from_an_older_commit_with_the_same_harness_tree(self):
+        """A main screen run at an older commit is reused when .claude/ and AGENTS.md are unchanged since."""
+        # GIVEN a booked main screen run, then a main commit that touches only harness-loop/
+        base = self.r.base_run()
+        self.commit_on_main("harness-loop/notes.txt", "exam code moved on\n")
+        # WHEN a stub round runs on the new main
+        p = self.r.round()
+        # THEN main is not re-examined and the PR cites the older run
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertEqual([c[c.index("--kind") + 1] for c in self.r.exam_calls()], ["candidate"])
+        self.assertIn(f"runs/{base.name}", [c for c in self.r.gh_calls() if "body" in c][0]["body"])
+
+    def test_main_run_is_not_reused_once_the_harness_tree_changes(self):
+        """A main screen run is not reused after a main commit changes what the exam installs."""
+        # GIVEN a booked main screen run, then a main commit that touches .claude/ (or AGENTS.md)
+        for rel in (".claude/skills/coordinator/notes.md", "AGENTS.md"):
+            with self.subTest(rel=rel):
+                self.setUp()
+                self.r.base_run()
+                self.commit_on_main(rel, "# changed\n")
+                # WHEN a stub round runs
+                p = self.r.round()
+                # THEN main is examined afresh
+                self.assertEqual(p.returncode, 0, p.stderr)
+                self.assertEqual([c[c.index("--kind") + 1] for c in self.r.exam_calls()], ["baseline", "candidate"])
+
+    def test_main_run_is_not_reused_for_a_different_screen_task_list(self):
+        """A main screen run of other screen tasks (or another set) is not reused, whatever its manifest path."""
+        # GIVEN a booked main screen run, then the manifest gains a screen task
+        self.r.base_run()
+        self.r.manifest.write_text(json.dumps({"set": "s", "tasks": [{"id": "t9", "screen": True}]}))
+        # WHEN a stub round runs
+        p = self.r.round()
+        # THEN main is examined afresh
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertEqual([c[c.index("--kind") + 1] for c in self.r.exam_calls()], ["baseline", "candidate"])
+
     def test_unbooked_main_run_is_not_reused(self):
         """A sealed main run that spend.jsonl does not name (one an improver could forge) is never reused."""
         # GIVEN a valid-looking main screen run that this script never booked
