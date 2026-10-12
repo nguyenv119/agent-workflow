@@ -419,6 +419,16 @@ class OpenNetworkTest(unittest.TestCase):
         # AND running it twice changes nothing more
         self.assertEqual(collect.open_network(text), text)
 
+    def test_agent_timeout_raised_never_lowered(self):
+        """SWE-gen's 600 s agent limit goes up to the other sets' 1800 s; a longer one stays."""
+        # GIVEN SWE-gen's task.toml / WHEN raised / THEN agent is 1800, verifier untouched
+        cfg = collect.tomllib.loads(collect.raise_agent_timeout(SWEGEN_TOML))
+        self.assertEqual(cfg["agent"]["timeout_sec"], 1800.0)
+        self.assertEqual(cfg["verifier"]["timeout_sec"], 600.0)
+        # AND a longer limit is kept
+        longer = SWEGEN_TOML.replace("[agent]\ntimeout_sec = 600.0", "[agent]\ntimeout_sec = 3600.0")
+        self.assertEqual(collect.tomllib.loads(collect.raise_agent_timeout(longer))["agent"]["timeout_sec"], 3600.0)
+
     def test_toml_without_network_mode_is_unchanged(self):
         # GIVEN a task.toml that sets no network mode (Harbor's default is public)
         text = "[environment]\ncpus = 2\n"
@@ -488,6 +498,7 @@ class ManifestTest(Tmp):
         cfg = collect.tomllib.loads((published / "task.toml").read_text())
         self.assertEqual(cfg["environment"]["network_mode"], "public")
         self.assertEqual(cfg["environment"]["cpus"], 1)
+        self.assertEqual(cfg["agent"]["timeout_sec"], 1800.0)
         self.assertFalse((build / "acme__widgets-8").exists())
         self.assertFalse((self.dir / "fresh-2026-10" / "acme__widgets-8").exists())
 

@@ -173,14 +173,31 @@ def open_network(toml_text):
     return text
 
 
+# SWE-gen gives the agent 600 s; the other exam sets give 1800 (run_exam multiplies by 4),
+# and one /work run has taken ~41 min.
+AGENT_TIMEOUT_SEC = 1800.0
+AGENT_TIMEOUT = re.compile(r"^(\[agent\]\s*\n(?:[^\[\n].*\n|\n)*?\s*timeout_sec\s*=\s*)([0-9.]+)", re.M)
+
+
+def raise_agent_timeout(toml_text, seconds=AGENT_TIMEOUT_SEC):
+    """task.toml text with [agent] timeout_sec raised to at least `seconds` (never lowered)."""
+    def bump(m):
+        return m.group(1) + (str(seconds) if float(m.group(2)) < seconds else m.group(2))
+    text = AGENT_TIMEOUT.sub(bump, toml_text, count=1)
+    got = tomllib.loads(text).get("agent", {}).get("timeout_sec")
+    if got is not None and float(got) < seconds:
+        raise ValueError(f"[agent] timeout_sec is still {got}")
+    return text
+
+
 def publish(tdir, dest):
-    """Copy one built task folder to dest (replaced if present), network opened."""
+    """Copy one built task folder to dest (replaced if present), network opened, agent time raised."""
     dest = Path(dest)
     if dest.exists():
         shutil.rmtree(dest)
     shutil.copytree(tdir, dest, symlinks=True)  # never follow links in untrusted output
     toml = dest / "task.toml"
-    toml.write_text(open_network(toml.read_text()))
+    toml.write_text(raise_agent_timeout(open_network(toml.read_text())))
     return dest
 
 
