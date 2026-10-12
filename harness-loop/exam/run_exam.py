@@ -128,8 +128,11 @@ def docker_capacity():
     if p.returncode:
         sys.exit(f"run_exam: Docker is not running (open Docker Desktop, or pass --env daytona): "
                  f"{p.stderr.strip()[-300:]}")
-    cpus, mem = p.stdout.split()
-    return int(cpus), int(mem) // 2**20
+    try:
+        cpus, mem = p.stdout.split()
+        return int(cpus), int(mem) // 2**20
+    except ValueError:
+        sys.exit(f"run_exam: unexpected `docker info` output: {p.stdout.strip()[:200]!r}")
 
 
 def local_concurrency(cpus, memory_mb):
@@ -149,10 +152,14 @@ def remove_leftovers(job_dir):
     """Remove containers and networks Harbor left behind for this job's trials. Returns their ids.
 
     Harbor runs `docker compose down` itself; this covers a Harbor that crashed or was killed.
-    Every compose project of a trial (main env, separate verifier) starts with the trial's name.
+    A trial dir (it holds config.json) is named after the trial, and every compose project of
+    that trial is `<trial>__env` or `<trial>__verifier__<key>`; the verifier's session id first
+    turns characters other than alphanumerics and -._ into _, so both spellings are matched.
     """
     job_dir = Path(job_dir)
-    prefixes = tuple(compose_project(d.name) for d in job_dir.iterdir() if d.is_dir()) if job_dir.is_dir() else ()
+    trials = [d.name for d in job_dir.iterdir() if (d / "config.json").is_file()] if job_dir.is_dir() else []
+    prefixes = tuple({compose_project(n) + "__" for n in trials}
+                     | {compose_project(re.sub(r"[^\w.-]", "_", n)) + "__" for n in trials})
     removed = []
     if not prefixes:
         return removed

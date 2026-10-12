@@ -17,6 +17,7 @@ import sys
 import tempfile
 import textwrap
 import unittest
+import unittest.mock
 from pathlib import Path
 
 from helpers import make_repo
@@ -51,6 +52,7 @@ FAKE_HARBOR = textwrap.dedent('''\
     cost = 0 if agent in ("oracle", "nop") else spec.get("cost", 8.0)
     trial = Path(opt("-o")) / opt("--job-name") / (task[:20] + "__abc")
     (trial / "verifier").mkdir(parents=True)
+    (trial / "config.json").write_text("{}")  # Harbor writes it when the trial starts
     (trial / "verifier/reward.txt").write_text(f"{reward}\\n")
     (trial / "verifier/test-stdout.txt").write_text("tests ran\\n")
     (trial / "result.json").write_text(json.dumps({
@@ -90,6 +92,8 @@ FAKE_DOCKER = textwrap.dedent('''\
         fh.write(json.dumps(argv) + "\\n")
     if spec.get("down"):
         sys.exit("Cannot connect to the Docker daemon")
+    if spec.get("ps_fails") and argv[0] != "info":
+        sys.exit("error listing")
     if argv[0] == "info":
         print(spec.get("info", "10 8217473024"))  # Docker Desktop's default share of a 16 GiB Mac
     elif argv[:2] == ["ps", "-a"]:
@@ -480,10 +484,13 @@ class RunExamTest(unittest.TestCase):
         If Harbor dies before `compose down`, the try's containers would pile up;
         run_exam removes those of this trial only, never anyone else's.
         """
-        # GIVEN Docker holds the trial's main and verifier containers, its network, and an unrelated container
+        # GIVEN Docker holds the trial's main and verifier containers and its network, plus a
+        # concurrent try of the same task, a task whose name extends this trial's, an unlabelled
+        # container and an unrelated network
         m = self.manifest({"t1": 2})
         self.docker_spec.write_text(json.dumps({
-            "containers": ["c1\tt1__abc__env", "c2\tt1__abc__verifier__tests", "c3\tsomeone-else", "c4\t"],
+            "containers": ["c1\tt1__abc__env", "c2\tt1__abc__verifier__tests", "c3\tt1__xyz__env",
+                           "c4\tt1__abcd__env", "c5\t", "c6\tsomeone-else"],
             "networks": ["n1\tt1__abc__env", "n2\tbridge-of-someone"]}))
         # WHEN run_exam runs the try (the fake Harbor's trial dir is t1__abc)
         self.run_exam("--tasks", m, "--budget-usd", 100)
@@ -496,6 +503,33 @@ class RunExamTest(unittest.TestCase):
         # AND the job log says so
         log = next((self.only_run() / "harbor").glob("t1-try1.log")).read_text()
         self.assertIn("removed leftover docker objects: c1 c2 n1", log)
+
+    def test_only_trial_dirs_name_projects(self):
+        """A non-trial dir in the job dir (Harbor's .sources) must not become a match prefix."""
+        # GIVEN a job dir with one trial and a .sources dir, and containers for both names
+        job = self.root / "job"
+        (job / "t1__abc").mkdir(parents=True)
+        (job / "t1__abc/config.json").write_text("{}")
+        (job / ".sources").mkdir()
+        self.docker_spec.write_text(json.dumps({"containers": ["c1\tt1__abc__env", "c2\t0-sources__env"]}))
+        env = {"EXAM_DOCKER": f"{sys.executable} {self.fake_docker} {self.docker_log} {self.docker_spec}"}
+        # WHEN the cleanup runs
+        with unittest.mock.patch.dict(os.environ, env):
+            removed = run_exam.remove_leftovers(job)
+        # THEN only the trial's container went
+        self.assertEqual(removed, ["c1"])
+
+    def test_failed_cleanup_keeps_the_try(self):
+        """If docker cannot list containers after a try, the try is still filed with its reward."""
+        # GIVEN docker answers info but fails every listing
+        m = self.manifest({"t1": 2})
+        self.docker_spec.write_text(json.dumps({"ps_fails": True}))
+        # WHEN run_exam runs
+        self.run_exam("--tasks", m, "--budget-usd", 100)
+        # THEN the try is ok with its reward and nothing was removed
+        r = self.results(self.only_run())["t1"]
+        self.assertEqual((r["status"], r["reward"]), ("ok", 1))
+        self.assertFalse(any(c[0] == "rm" for c in self.docker_calls()))
 
     def test_local_concurrency_fits_docker_memory_and_cpus(self):
         """Each task takes 2 CPUs and 4 GiB; 1 GiB stays for the engine; at least one runs."""
