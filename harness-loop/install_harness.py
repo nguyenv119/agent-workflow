@@ -23,12 +23,35 @@ the reference fix), which must never reach the agent's sandbox, and rebuilding
 one must not change the harness version label. Any add-on file still to be
 installed that is named `task.toml` (a task folder left un-ignored) is refused.
 
+An optional `<addon>/.skipbase` opts the target out of parts of the base
+(core) harness. It is never installed, but it IS hashed into addon_sha256
+(fed like any add-on file, path `.skipbase`), so the version label changes
+when the opt-outs do. One entry per line (blank lines and `#` comments ignored):
+
+  path <prefix>            base files at or under this TARGET-relative prefix
+                           (e.g. `.claude/skills/x/`, `AGENTS.md`) are not
+                           installed; add-on files there still are
+  setting <a.b.c>          delete this dotted key from the installed settings.json
+  hook <Event> <matcher>   delete the hooks.<Event> groups whose "matcher" equals
+                           <matcher> (`-` = groups with no matcher); an Event left
+                           with no groups is deleted
+
+Fail closed: an unknown keyword, a malformed line, a path that is absolute,
+holds `..` or matches no base file, a missing key, a hook entry matching no
+group, or a setting/hook entry with no installed settings.json all exit 2
+before anything is written.
+
 A previous manifest blocks a reinstall (exit 2) unless --force, which deletes
 ONLY the files that manifest lists. Without a manifest, files are overlaid and
-nothing is deleted. Before touching anything it refuses if any component of
-a path it would write or delete (every directory down to and including the
-file itself) is a symlink on disk, or lies under a symlink shipped in the
-harness commit. Every refusal or failure exits 2 with a message.
+nothing is deleted. A path it would write through a symlink already in the
+target (e.g. a skill dir linked into a nested repo) is skipped and left alone:
+it is not written and not listed in the manifest, and a note names the link
+and says whether the skipped content is identical to what is behind it (any
+differing file is listed). Before touching anything it refuses if any
+component of a path it would DELETE is a symlink, if HARNESS_VERSION or
+HARNESS_MANIFEST would be written through one, or if a path lies under a
+symlink shipped in the harness commit. Every refusal or failure exits 2 with
+a message.
 """
 import argparse
 import hashlib
@@ -58,6 +81,8 @@ def git(repo, *args):
 
 
 IGNORE_FILE = ".installignore"
+SKIP_FILE = ".skipbase"
+SETTINGS = ".claude/settings.json"
 
 
 def addon_files(addon):
@@ -77,7 +102,7 @@ def addon_files(addon):
     for s, line in zip(skip, patterns):
         if not any(inside(r, s) for r in rels):
             die(f"{ignore}: line {line!r} matches no add-on file")
-    skip.append(Path(IGNORE_FILE))
+    skip += [Path(IGNORE_FILE), Path(SKIP_FILE)]
     files = sorted((r.as_posix(), addon / r) for r in rels if not any(inside(r, s) for s in skip))
     for rel, _ in files:
         if Path(rel).name == "task.toml":
@@ -95,6 +120,66 @@ def addon_sha256(files):
 
 def inside(path, root):
     return path == root or root in path.parents
+
+
+def read_skipbase(addon):
+    """(paths, settings_ops) from <addon>/.skipbase, or ([], []) if absent. Dies on a malformed line."""
+    f = addon / SKIP_FILE if addon else None
+    if not f or not f.is_file():
+        return [], []
+    paths, ops = [], []
+    for line in f.read_text().splitlines():
+        words = line.split()
+        if not words or words[0].startswith("#"):
+            continue
+        kind, rest = words[0], words[1:]
+        if kind == "path" and len(rest) == 1:
+            if rest[0].startswith("/") or ".." in Path(rest[0]).parts:
+                die(f"{f}: line {line!r} must be a target-relative prefix (no leading /, no ..)")
+            paths.append((line, Path(rest[0].rstrip("/"))))
+        elif kind == "setting" and len(rest) == 1:
+            ops.append((line, "setting", rest[0].split(".")))
+        elif kind == "hook" and len(rest) == 2:
+            ops.append((line, "hook", rest))
+        else:
+            die(f"{f}: cannot parse line {line!r} (want `path <prefix>`, `setting <a.b>` or `hook <Event> <matcher|->`)")
+    return paths, ops
+
+
+def apply_settings_ops(data, ops):
+    """Delete the opted-out keys / hook groups from parsed settings; dies on any entry that matches nothing."""
+    for line, kind, arg in ops:
+        if kind == "setting":
+            node = data
+            for key in arg[:-1]:
+                node = node.get(key) if isinstance(node, dict) else None
+            if not isinstance(node, dict) or arg[-1] not in node:
+                die(f"{SKIP_FILE}: line {line!r} names no key in {SETTINGS}")
+            del node[arg[-1]]
+        else:
+            event, matcher = arg
+            groups = data.get("hooks", {}).get(event) if isinstance(data.get("hooks"), dict) else None
+            if not isinstance(groups, list):
+                die(f"{SKIP_FILE}: line {line!r}: {SETTINGS} has no hooks.{event}")
+            want = None if matcher == "-" else matcher
+            kept = [g for g in groups if not (isinstance(g, dict) and g.get("matcher") == want)]
+            if len(kept) == len(groups):
+                die(f"{SKIP_FILE}: line {line!r} matches no hooks.{event} group")
+            if kept:
+                data["hooks"][event] = kept
+            else:
+                del data["hooks"][event]
+    return data
+
+
+def first_symlink(target, rel):
+    """The first path component of target/rel (dirs down to the file itself) that is a symlink, or None."""
+    path = target
+    for part in Path(rel).parts:
+        path = path / part
+        if path.is_symlink():
+            return path
+    return None
 
 
 def install(argv):
@@ -115,11 +200,36 @@ def install(argv):
         if not addon.is_dir():
             die(f"add-on dir not found: {addon}")
         files = addon_files(addon)
+    skip_paths, settings_ops = read_skipbase(addon)
+    hashed = sorted([*(files or []), *([(SKIP_FILE, addon / SKIP_FILE)] if addon and (addon / SKIP_FILE).is_file() else [])])
 
     # Read the whole archive first: every guard runs before anything is written.
     tar = tarfile.open(fileobj=io.BytesIO(git(args.repo, "archive", sha, ".claude", "AGENTS.md")))
     members = [m for m in tar.getmembers()
                if not inside(Path(m.name), Path(EXCLUDED)) and not m.isdir()]
+    for line, prefix in skip_paths:
+        hit = [m for m in members if inside(Path(m.name), prefix)]
+        if not hit:
+            die(f"{SKIP_FILE}: line {line!r} matches no base file")
+        members = [m for m in members if m not in hit]
+        print(f"opted out of base {prefix.as_posix()} ({len(hit)} files)")
+    addon_by_rel = {f".claude/{rel}": src for rel, src in files or []}
+
+    def source_bytes(rel):
+        if rel in addon_by_rel:
+            return addon_by_rel[rel].read_bytes()
+        f = tar.extractfile(next(m for m in members if m.name == rel))
+        return f.read() if f else None
+
+    new_settings = None
+    if settings_ops:
+        if SETTINGS not in addon_by_rel and SETTINGS not in {m.name for m in members}:
+            die(f"{SKIP_FILE} has setting/hook lines but no {SETTINGS} is installed")
+        data = json.loads(source_bytes(SETTINGS))
+        if not isinstance(data, dict):
+            die(f"{SETTINGS} is not a JSON object")
+        data = apply_settings_ops(data, settings_ops)
+        new_settings = (json.dumps(data, indent=2, ensure_ascii=False) + "\n").encode()
     planned = {m.name for m in members}
     planned |= {f".claude/{rel}" for rel, _ in files or []}
     planned |= {VERSION, MANIFEST}
@@ -134,16 +244,31 @@ def install(argv):
         if not inside((target / rel).resolve(), target):
             die(f"previous manifest lists a path outside the target: {rel}")
     # Writing or deleting through a symlink would change files the manifest
-    # does not own (e.g. skills linked into a nested repo), so refuse outright.
+    # does not own (e.g. skills linked into a nested repo): deletes refuse,
+    # writes skip the linked path and leave it as it is.
     core_links = {m.name for m in members if m.issym() or m.islnk()}
-    for rel in [*previous, *planned]:
-        path = target
-        for part in Path(rel).parts:
-            path = path / part
-            if path.is_symlink():
-                die(f"refusing to write or delete through a symlink: {path}")
+    for rel in previous:
+        link = first_symlink(target, rel)
+        if link:
+            die(f"refusing to delete through a symlink: {link}")
+    linked = {}  # symlink in the target -> planned paths under it, left alone
+    for rel in sorted(planned):
+        link = first_symlink(target, rel)
+        if link and rel in (VERSION, MANIFEST):
+            die(f"refusing to write {rel} through a symlink: {link}")
+        if link:
+            linked.setdefault(link, []).append(rel)
+    for rel in planned:
         if any(a.as_posix() in core_links for a in Path(rel).parents):
             die(f"refusing to write through a symlink in the harness itself: {rel}")
+    for link, rels in linked.items():
+        differ = [rel for rel in rels
+                  if not (target / rel).is_file() or (target / rel).read_bytes() != source_bytes(rel)]
+        state = (f"{len(differ)} of {len(rels)} files differ from what is behind it: {', '.join(differ)}"
+                 if differ else f"all {len(rels)} files identical to what is behind it")
+        print(f"skipped symlink {link.relative_to(target).as_posix()} (left in place; {state})")
+        planned -= set(rels)
+    members = [m for m in members if m.name in planned]
     if addon:
         for rel in [*previous, *planned]:
             if inside((target / rel).resolve(), addon):
@@ -171,12 +296,16 @@ def install(argv):
     (target / MANIFEST).write_text("".join(f"{rel}\n" for rel in sorted(set(previous) | planned)))
     tar.extractall(target, members=members, filter="data")
     for rel, src in files or []:
+        if f".claude/{rel}" not in planned:
+            continue
         dest = target / ".claude" / rel
         dest.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy(src, dest)  # keeps the executable bit for add-on hooks
+    if new_settings is not None and SETTINGS in planned:
+        (target / SETTINGS).write_bytes(new_settings)
 
     version = {"commit": sha, "addon": str(addon) if addon else None,
-               "addon_sha256": addon_sha256(files) if addon else None}
+               "addon_sha256": addon_sha256(hashed) if addon else None}
     (target / VERSION).write_text(json.dumps(version) + "\n")
     (target / MANIFEST).write_text("".join(f"{rel}\n" for rel in sorted(planned)))
 
@@ -187,7 +316,7 @@ def install(argv):
 def main(argv=None):
     try:
         install(argv)
-    except (OSError, tarfile.TarError, UnicodeDecodeError) as e:
+    except (OSError, tarfile.TarError, ValueError) as e:  # ValueError covers bad JSON and UnicodeDecodeError
         die(f"install failed: {e}")
 
 if __name__ == "__main__":
