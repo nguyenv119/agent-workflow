@@ -153,6 +153,22 @@ class ConstructionTest(AgentCase):
             WorkflowAgent.preflight({**kwargs, "no_such_option": 1}, {})
 
 
+class WakeupTest(AgentCase):
+    def test_schedule_wakeup_is_disallowed_and_other_disallows_kept(self):
+        """
+        A pending ScheduleWakeup kept `claude -p` alive ~29 min after /work
+        finished and re-ran `/work`; claude must get it in --disallowedTools,
+        alongside anything the caller disallowed.
+        """
+        # GIVEN agents with and without a caller disallow list
+        # WHEN their CLI flags are built
+        plain = self.make_agent().build_cli_flags()
+        extra = self.make_agent(disallowed_tools="WebFetch").build_cli_flags()
+        # THEN ScheduleWakeup is disallowed in both and WebFetch is kept
+        self.assertIn("--disallowedTools ScheduleWakeup", plain)
+        self.assertIn("--disallowedTools WebFetch,ScheduleWakeup", extra)
+
+
 class LifecycleTest(AgentCase):
     def install(self, agent, env):
         with mock.patch.object(ClaudeCode, "install", new=mock.AsyncMock()), \

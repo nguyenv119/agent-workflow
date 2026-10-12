@@ -90,6 +90,12 @@ class WorkflowAgent(ClaudeCode):
         # The repo dir; None = the image's WORKDIR (betterleaks' is /app, its repo /app/betterleaks).
         self._repo: str | None = _text(workdir)
         self._bead: str | None = None
+        # In -p mode a pending ScheduleWakeup keeps claude alive after /work is
+        # done and re-sends its prompt when it fires (first Daytona run: ~29 min
+        # idle, then a second `/work` turn). Background-agent completions
+        # already wake the coordinator, so the tool is not needed.
+        kwargs["disallowed_tools"] = ",".join(
+            filter(None, [_text(kwargs.get("disallowed_tools")), "ScheduleWakeup"]))
         super().__init__(logs_dir, *args, **kwargs)
         if not self._model and self.model_name:  # harbor -m provider/model
             self._model = self.model_name.split("/")[-1]
