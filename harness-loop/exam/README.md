@@ -102,6 +102,10 @@ Task containers are built for the host's CPU: the base images are multi-arch, so
 Apple-silicon Mac they build natively as arm64. A task whose Dockerfile downloads x86-64 binaries
 cannot build that way (none in the shakedown, hard or TB4 sets does; six other Monthly-SWEBench
 tasks do); run the controls on a new task first and send it to `--env daytona` if oracle is not 1.
+The tools `setup_task.sh` installs into the container (dolt, bd) are pinned per architecture:
+a linux amd64 and a linux arm64 release tarball, each with its upstream sha256, chosen by `uname -m`.
+`setup_task.sh pin <dolt|bd>` prints the url, sha256 and tarball member it would use; on any other
+machine it stops naming the tool and the machine.
 
 Concurrency: each task asks for 2 CPUs and 4 GiB (one TB4 task asks for more and is capped to what
 Docker has). `--concurrency` defaults to `local_concurrency`: as many tasks as fit in the CPUs and
