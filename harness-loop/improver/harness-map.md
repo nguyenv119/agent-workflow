@@ -40,5 +40,5 @@ Paths are relative to the repo root. `§` numbers are the coordinator's own sect
 
 `settings.json` also prints `AGENTS.md` at session start, echoes a reminder on SessionStart
 `compact` and on PostCompact (`asyncRewake`), and sets `autoCompactWindow`. The loop's gate
-guard treats every hook and `settings.json` entry as a quality gate (improver skill, rule 8).
+guard treats every hook entry in `settings.json` as a quality gate (improver skill, rule 8).
 
