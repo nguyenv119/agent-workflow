@@ -1,0 +1,310 @@
+diff --git a/docs/configure/media_sources/local/shows.md b/docs/configure/media_sources/local/shows.md
+index aa07ab3b..44e83afa 100644
+--- a/docs/configure/media_sources/local/shows.md
++++ b/docs/configure/media_sources/local/shows.md
+@@ -31,6 +31,4 @@ Tunarr will attempt to scan various artwork files for each show, season, and epi
+ 
+ ## Fallback
+ 
+-Without NFO files, Tunarr can still scan a shows directory. For the show itself, Tunarr will simply create an entry with the show name and no additional metadata. For each episode, Tunarr uses the file name as the title and takes the episode number from the file name.
+-
+-Tunarr also falls back when an NFO file exists but can't be used. This happens when the file isn't valid Kodi NFO, when it describes a different kind of item (for example a movie), or when an episode NFO has no entry for the episode number in the file name. Tunarr logs a warning and scans the item with fallback metadata instead of skipping it.
+\ No newline at end of file
++Without NFO files, Tunarr can still scan a shows directory. For the show itself, Tunarr will simply create an entry with the show name and no additional metadata. Fallback is not supported for episodes or seasons at this time.
+\ No newline at end of file
+diff --git a/server/src/services/scanner/LocalTvShowScanner.ts b/server/src/services/scanner/LocalTvShowScanner.ts
+index 6e6fc929..883ef9d5 100644
+--- a/server/src/services/scanner/LocalTvShowScanner.ts
++++ b/server/src/services/scanner/LocalTvShowScanner.ts
+@@ -22,6 +22,7 @@ import {
+ import type { Dirent } from 'node:fs';
+ import fs from 'node:fs/promises';
+ import path, { basename, dirname, extname } from 'node:path';
++import { format } from 'node:util';
+ import { match } from 'ts-pattern';
+ import { v4 } from 'uuid';
+ import { ProgramGroupingMinter } from '../../db/converters/ProgramGroupingMinter.ts';
+@@ -700,14 +701,10 @@ export class LocalTvShowScanner extends FileSystemScanner {
+     const metadata = await this.tvShowNfoParser.parseFile(nfoFile);
+ 
+     if (metadata.isFailure()) {
+-      this.logger.warn(
+-        metadata.error,
+-        'Unable to parse %s, using fallback metadata',
+-        nfoFile,
+-      );
+-      return Result.attemptAsync(() =>
+-        Promise.resolve(
+-          this.fallbackMetadataService.getShowFallbackMetadata(fullShowPath),
++      return Result.forError(
++        new Error(
++          format('Error loading metadata for show at path: %s', fullShowPath),
++          metadata.error,
+         ),
+       );
+     }
+@@ -760,18 +757,34 @@ export class LocalTvShowScanner extends FileSystemScanner {
+       basename(fullEpisodePath, extname(fullEpisodePath)) + '.nfo',
+     );
+     if (!(await fileExists(nfoPath))) {
++      // Do fallback
+       this.logger.debug(
+         'No nfo file found for episode %s. Falling back to basic metadata',
+         fullEpisodePath,
+       );
+-      return Result.success(
+-        this.episodeFallbackMetadata(fullEpisodePath, expectedEpisodeNumber),
+-      );
++      const title = basename(fullEpisodePath, extname(fullEpisodePath));
++      return Result.success({
++        episodeNumber: expectedEpisodeNumber,
++        identifiers: [],
++        originalTitle: null,
++        releaseDate: null,
++        releaseDateString: null,
++        sortTitle: title,
++        sourceType: 'local',
++        summary: null,
++        title,
++        tags: [],
++        type: 'episode',
++        uuid: v4(),
++        year: null,
++        artwork: [],
++        state: 'ok',
++      });
+     }
+ 
+     const parseResult = await this.tvEpisodeNfoParser.parseFile(nfoPath);
+ 
+-    const nfoMetadata = parseResult
++    return parseResult
+       .flatMapPure<TvEpisodeNfo>(({ episodedetails }) => {
+         const matchingEpisode = episodedetails.find(
+           (ep) => ep.episode === expectedEpisodeNumber,
+@@ -815,43 +828,6 @@ export class LocalTvShowScanner extends FileSystemScanner {
+           state: 'ok',
+         } satisfies EpisodeMetadata;
+       });
+-
+-    if (nfoMetadata.isFailure()) {
+-      this.logger.warn(
+-        nfoMetadata.error,
+-        'Unable to use %s, falling back to basic metadata',
+-        nfoPath,
+-      );
+-      return Result.success(
+-        this.episodeFallbackMetadata(fullEpisodePath, expectedEpisodeNumber),
+-      );
+-    }
+-
+-    return nfoMetadata;
+-  }
+-
+-  private episodeFallbackMetadata(
+-    fullEpisodePath: string,
+-    episodeNumber: number,
+-  ): EpisodeMetadata {
+-    const title = basename(fullEpisodePath, extname(fullEpisodePath));
+-    return {
+-      episodeNumber,
+-      identifiers: [],
+-      originalTitle: null,
+-      releaseDate: null,
+-      releaseDateString: null,
+-      sortTitle: title,
+-      sourceType: 'local',
+-      summary: null,
+-      title,
+-      tags: [],
+-      type: 'episode',
+-      uuid: v4(),
+-      year: null,
+-      artwork: [],
+-      state: 'ok',
+-    };
+   }
+ 
+   private async scanShowArtwork(
+diff --git a/server/src/stream/FfprobeStreamDetails.ts b/server/src/stream/FfprobeStreamDetails.ts
+index e99ecbd5..858e5d22 100644
+--- a/server/src/stream/FfprobeStreamDetails.ts
++++ b/server/src/stream/FfprobeStreamDetails.ts
+@@ -7,6 +7,7 @@ import type {
+ import type { Maybe } from '@/types/util.js';
+ import dayjs from '@/util/dayjs.js';
+ import {
++  isDefined,
+   isNonEmptyArray,
+   isNonEmptyString,
+   parseFloatOrNull,
+@@ -40,20 +41,15 @@ export class FfprobeStreamDetails
+   async getStream({
+     path,
+   }: FfprobeStreamDetailsRequest): Promise<Result<ProgramStreamResult>> {
+-    const probeResult = await Result.attemptAsync(() =>
+-      this.ffmpegInfo.probeFile(path),
+-    );
++    const probeResult = (
++      await Result.attemptAsync(() => this.ffmpegInfo.probeFile(path))
++    ).filter(isDefined);
+ 
+     if (probeResult.isFailure()) {
+       return probeResult.recast();
+     }
+ 
+     const probeDetails = probeResult.get();
+-    if (!probeDetails) {
+-      return Result.failure(
+-        `ffprobe output for ${path} did not match the expected schema`,
+-      );
+-    }
+ 
+     const videoStream = find(
+       probeDetails.streams,
+@@ -136,7 +132,7 @@ export class FfprobeStreamDetails
+           lang && LanguageService.isValidLanguageCode(lang) ? lang : undefined;
+         return {
+           type: 'embedded',
+-          codec: stream.codec_name ?? 'unknown',
++          codec: stream.codec_name,
+           index: stream.index,
+           default: stream.disposition?.default === 1,
+           forced: stream.disposition?.forced === 1,
+diff --git a/server/src/types/ffmpeg.test.ts b/server/src/types/ffmpeg.test.ts
+index d34217b7..2ad8a742 100644
+--- a/server/src/types/ffmpeg.test.ts
++++ b/server/src/types/ffmpeg.test.ts
+@@ -1,44 +1,6 @@
+ import { describe, expect, test } from 'vitest';
+ import { FfprobeMediaInfoSchema } from './ffmpeg.ts';
+ 
+-const baseProbe = {
+-  streams: [
+-    {
+-      index: 0,
+-      codec_name: 'h264',
+-      codec_long_name: 'H.264 / AVC / MPEG-4 AVC / MPEG-4 part 10',
+-      profile: 'High',
+-      codec_type: 'video',
+-      width: 1920,
+-      height: 1080,
+-      coded_width: 1920,
+-      coded_height: 1080,
+-      has_b_frames: 2,
+-      sample_aspect_ratio: '1:1',
+-      display_aspect_ratio: '16:9',
+-      pix_fmt: 'yuv420p',
+-      level: 40,
+-      r_frame_rate: '24000/1001',
+-      avg_frame_rate: '24000/1001',
+-      time_base: '1/1000',
+-      start_pts: 0,
+-      start_time: '0.000000',
+-      bits_per_raw_sample: '8',
+-    },
+-  ],
+-  format: {
+-    filename: 'file.mkv',
+-    nb_streams: 1,
+-    format_name: 'matroska,webm',
+-    format_long_name: 'Matroska / WebM',
+-    start_time: '0.000000',
+-    duration: '1320.810000',
+-    size: '1162966026',
+-    bit_rate: '7043956',
+-    probe_score: 100,
+-  },
+-} as const;
+-
+ // Regression tests for https://github.com/chrisbenincasa/tunarr/issues/2078
+ //
+ // ffprobe omits the `tags` key entirely for chapters that have no tags
+@@ -48,6 +10,44 @@ const baseProbe = {
+ // the scan failed with "Unable to parse ffprobe output" / "Filter was not a
+ // match".
+ describe('FfprobeMediaInfoSchema chapters', () => {
++  const baseProbe = {
++    streams: [
++      {
++        index: 0,
++        codec_name: 'h264',
++        codec_long_name: 'H.264 / AVC / MPEG-4 AVC / MPEG-4 part 10',
++        profile: 'High',
++        codec_type: 'video',
++        width: 1920,
++        height: 1080,
++        coded_width: 1920,
++        coded_height: 1080,
++        has_b_frames: 2,
++        sample_aspect_ratio: '1:1',
++        display_aspect_ratio: '16:9',
++        pix_fmt: 'yuv420p',
++        level: 40,
++        r_frame_rate: '24000/1001',
++        avg_frame_rate: '24000/1001',
++        time_base: '1/1000',
++        start_pts: 0,
++        start_time: '0.000000',
++        bits_per_raw_sample: '8',
++      },
++    ],
++    format: {
++      filename: 'file.mkv',
++      nb_streams: 1,
++      format_name: 'matroska,webm',
++      format_long_name: 'Matroska / WebM',
++      start_time: '0.000000',
++      duration: '1320.810000',
++      size: '1162966026',
++      bit_rate: '7043956',
++      probe_score: 100,
++    },
++  } as const;
++
+   test('parses chapters without tags and with ids above Int32.MaxValue', () => {
+     const result = FfprobeMediaInfoSchema.safeParse({
+       ...baseProbe,
+@@ -93,29 +93,3 @@ describe('FfprobeMediaInfoSchema chapters', () => {
+     }
+   });
+ });
+-
+-// Regression test for https://github.com/chrisbenincasa/tunarr/issues/2091
+-//
+-// ffprobe reports VobSub-style tracks without a codec ID with no
+-// `codec_name`. One such track must not reject the whole probe.
+-describe('FfprobeMediaInfoSchema subtitle streams', () => {
+-  test('parses subtitle streams without codec_name', () => {
+-    const result = FfprobeMediaInfoSchema.safeParse({
+-      ...baseProbe,
+-      streams: [
+-        ...baseProbe.streams,
+-        {
+-          index: 1,
+-          codec_type: 'subtitle',
+-          tags: { language: 'eng' },
+-        },
+-      ],
+-    });
+-
+-    expect(result.success).toBe(true);
+-    if (result.success) {
+-      const subtitle = result.data.streams[1];
+-      expect(subtitle?.codec_type).toBe('subtitle');
+-    }
+-  });
+-});
+diff --git a/server/src/types/ffmpeg.ts b/server/src/types/ffmpeg.ts
+index e0e12bfe..539fbd2e 100644
+--- a/server/src/types/ffmpeg.ts
++++ b/server/src/types/ffmpeg.ts
+@@ -62,7 +62,7 @@ export type FfprobeAudioStream = z.infer<typeof FfprobeAudioStreamSchema>;
+ 
+ const FfprobeSubtitleStreamSchema = BaseFfprobeMediaStreamSchema.extend({
+   codec_type: z.literal('subtitle'),
+-  codec_name: z.string().optional(),
++  codec_name: z.string(),
+   disposition: z
+     .object({
+       default: z.number().optional(),

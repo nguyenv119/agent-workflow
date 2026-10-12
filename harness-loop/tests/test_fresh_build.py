@@ -242,6 +242,36 @@ class SandboxEnvTest(unittest.TestCase):
         self.assertEqual(daytona_build.sandbox_env({"IS_SANDBOX": "0"}), {"IS_SANDBOX": "1"})
 
 
+class CapacityRetryTest(unittest.TestCase):
+    def test_memory_cap_is_waited_out_and_other_errors_raise(self):
+        """
+        Another run may hold the org's 10 GiB; a create refused for memory waits and
+        retries (nothing is deleted), any other error raises at once, and the wait
+        is bounded.
+        """
+        import daytona_build
+        calls, sleeps = [], []
+
+        def create():
+            calls.append(1)
+            if len(calls) < 3:
+                raise RuntimeError("Failed to create sandbox: Total memory limit exceeded. Maximum allowed: 10GiB.")
+            return "sandbox"
+        # WHEN the first two creates hit the cap / THEN the third is returned after two waits
+        self.assertEqual(daytona_build.create_when_free(create, sleep=sleeps.append, retry=5, wait=60), "sandbox")
+        self.assertEqual(sleeps, [5, 5])
+        # AND a different error is not retried
+        with self.assertRaisesRegex(RuntimeError, "quota"):
+            daytona_build.create_when_free(lambda: (_ for _ in ()).throw(RuntimeError("quota")), sleep=sleeps.append)
+        # AND the cap error stops being retried once the wait is used up
+        sleeps.clear()
+        with self.assertRaisesRegex(RuntimeError, "memory limit"):
+            daytona_build.create_when_free(
+                lambda: (_ for _ in ()).throw(RuntimeError("Total memory limit exceeded")),
+                sleep=sleeps.append, retry=10, wait=30)
+        self.assertEqual(sleeps, [10, 10, 10])
+
+
 class CostTest(unittest.TestCase):
     def test_sandbox_time_is_added_to_the_session_cost(self):
         """Daytona time counts against the budget too."""
@@ -316,6 +346,25 @@ class TestCommandTest(unittest.TestCase):
         # THEN only the hidden run drops them
         self.assertEqual(hidden, "pytest -q")
         self.assertEqual(control, "pytest src/check_x.py fixtures/data.json -q")
+
+    def test_continued_lines_are_joined(self):
+        """A runner split over `\\` continuation lines is read as one command."""
+        # GIVEN pytest with its hidden files on continuation lines
+        sh = ("cd /app/src\n/opt/venv/bin/python -m pytest -v --no-cov \\\n"
+              "  tests/api/test_router.py \\\n  tests/test_other.py\ntest_status=$?\n")
+        # WHEN extracted / THEN the flags stay and the hidden files go
+        self.assertEqual(collect.test_command(sh, {"tests/api/test_router.py", "tests/test_other.py"}),
+                         "/opt/venv/bin/python -m pytest -v --no-cov")
+
+    def test_node_test_runner(self):
+        """`node [flags] --test <files>` is a runner; the hidden files are dropped."""
+        # GIVEN node's built-in test runner with a flag before --test
+        sh = "node --experimental-strip-types --test tests/a.test.ts tests/b.test.ts\n"
+        # WHEN extracted / THEN node and its flags remain
+        self.assertEqual(collect.test_command(sh, {"a.test.ts", "b.test.ts"}),
+                         "node --experimental-strip-types --test")
+        # AND plain node running a script is not a runner
+        self.assertIsNone(collect.test_command("node build.js\n", set()))
 
     def test_no_runner_gives_none(self):
         """A test.sh with no recognisable runner yields null ('no visible tests')."""

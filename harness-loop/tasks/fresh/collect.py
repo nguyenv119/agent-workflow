@@ -33,11 +33,12 @@ from pick_prs import is_test_path  # noqa: E402
 
 PLAN_REFUSED = 3
 # A test runner as the first word of a command (path prefix like /opt/venv/bin/ allowed),
-# optionally behind uv/poetry/npx/pnpm/yarn/npm/bun or `python -m`.
+# optionally behind uv/poetry/npx/pnpm/yarn/npm/bun or `python -m`; or `node [flags] --test`.
 RUNNER = re.compile(
     r"^(?:\S+/)?(?:(?:uv|poetry|pdm|hatch)\s+run\s+|npx\s+|pnpm\s+(?:exec\s+|run\s+)?|"
     r"yarn\s+(?:run\s+)?|npm\s+(?:run\s+|exec\s+)?|bun\s+(?:run\s+)?|python3?\s+-m\s+)?"
-    r"(?:\S+/)?(pytest|jest|vitest|mocha|ava|tap|unittest|test)\b")
+    r"(?:\S+/)?(pytest|jest|vitest|mocha|ava|tap|unittest|test)\b"
+    r"|^(?:\S+/)?node\s+(?:--[\w-]+(?:=\S+)?\s+)*--test\b")
 
 
 def task_id(repo, pr):
@@ -121,7 +122,7 @@ def test_command(test_sh, hidden):
     naming a hidden test file, the /tests mount, a test file path, or a $VARIABLE (which
     in SWE-gen's test.sh expands to the copied hidden tests). None if no runner is found.
     """
-    for raw in test_sh.splitlines():
+    for raw in re.sub(r"\\\n", " ", test_sh).splitlines():  # join `\` continuations first
         line = raw.strip()
         if not line or line.startswith("#"):
             continue

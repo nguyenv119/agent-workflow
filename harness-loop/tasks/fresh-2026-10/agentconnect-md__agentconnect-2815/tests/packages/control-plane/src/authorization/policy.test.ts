@@ -1,0 +1,433 @@
+import { describe, it, expect } from 'vitest'
+import {
+  AuthorizationAction,
+  can,
+  canView,
+  canEdit,
+  canManageSharing,
+  canChangeSessionVisibility,
+  canContinueSession,
+  canViewSession,
+  identitySetOf,
+  visibilityWhere,
+  type SessionViewable,
+  type Shareable,
+  type ViewCtx
+} from './policy.js'
+import type { OrgMemberRole } from '../persistence/ports.js'
+
+// ── fixtures ──────────────────────────────────────────────────────────────────
+const CREATOR = 'user_creator'
+const GRANTEE = 'user_grantee'
+const OTHER = 'user_other'
+
+const ctx = (userId: string, role: OrgMemberRole): ViewCtx => ({ userId, role })
+
+const orgVisible: Shareable = { visibility: 'org', sharedWith: [] }
+const restricted: Shareable = { visibility: 'restricted', sharedWith: [GRANTEE] }
+const emptyRestricted: Shareable = { visibility: 'restricted', sharedWith: [] }
+
+describe('canView', () => {
+  it('org-visible resource is visible to every role, granted or not', () => {
+    expect(canView(orgVisible, ctx(OTHER, 'viewer'))).toBe(true)
+    expect(canView(orgVisible, ctx(OTHER, 'collaborator'))).toBe(true)
+    expect(canView(orgVisible, ctx(OTHER, 'owner'))).toBe(true)
+  })
+
+  it('restricted resource hides from every non-grantee collaborator and viewer', () => {
+    expect(canView(restricted, ctx(OTHER, 'collaborator'))).toBe(false)
+    expect(canView(restricted, ctx(OTHER, 'viewer'))).toBe(false)
+  })
+
+  it('restricted resource is visible to an unshared organization owner (owner exception)', () => {
+    expect(canView(restricted, ctx(OTHER, 'owner'))).toBe(true)
+  })
+
+  it('restricted resource is visible to a shared member (any role)', () => {
+    expect(canView(restricted, ctx(GRANTEE, 'collaborator'))).toBe(true)
+    expect(canView(restricted, ctx(GRANTEE, 'viewer'))).toBe(true)
+  })
+
+  it('an invalid empty restricted resource fails closed for every role but owner', () => {
+    expect(canView(emptyRestricted, ctx(OTHER, 'collaborator'))).toBe(false)
+    expect(canView(emptyRestricted, ctx(GRANTEE, 'collaborator'))).toBe(false)
+    expect(canView(emptyRestricted, ctx(OTHER, 'owner'))).toBe(true)
+  })
+})
+
+describe('canEdit', () => {
+  it('viewer never edits — even when the resource is visible to them', () => {
+    expect(canEdit(orgVisible, ctx(OTHER, 'viewer'))).toBe(false)
+    expect(canEdit(restricted, ctx(GRANTEE, 'viewer'))).toBe(false) // visible but read-only
+  })
+
+  it('owner edits every resource, shared with them or not', () => {
+    expect(canEdit(orgVisible, ctx(OTHER, 'owner'))).toBe(true)
+    expect(canEdit(restricted, ctx(GRANTEE, 'owner'))).toBe(true)
+    expect(canEdit(restricted, ctx(OTHER, 'owner'))).toBe(true)
+  })
+
+  it('collaborator edits iff they can view', () => {
+    expect(canEdit(orgVisible, ctx(OTHER, 'collaborator'))).toBe(true)
+    expect(canEdit(restricted, ctx(GRANTEE, 'collaborator'))).toBe(true)
+    expect(canEdit(restricted, ctx(OTHER, 'collaborator'))).toBe(false) // can't even see it
+  })
+})
+
+describe('canManageSharing (§13.3)', () => {
+  it('is identical to canEdit', () => {
+    const resources = [orgVisible, restricted]
+    const roles: OrgMemberRole[] = ['owner', 'collaborator', 'viewer']
+    const users = [GRANTEE, OTHER]
+    for (const r of resources) {
+      for (const role of roles) {
+        for (const u of users) {
+          const c = ctx(u, role)
+          expect(canManageSharing(r, c)).toBe(canEdit(r, c))
+        }
+      }
+    }
+  })
+
+  it('lets a shared collaborator re-share, but never a viewer', () => {
+    expect(canManageSharing(restricted, ctx(GRANTEE, 'collaborator'))).toBe(true)
+    expect(canManageSharing(restricted, ctx(GRANTEE, 'viewer'))).toBe(false)
+    expect(canManageSharing(orgVisible, ctx(OTHER, 'collaborator'))).toBe(true)
+  })
+
+  it('lets a collaborator manage sharing for an org-visible resource', () => {
+    const collaborator = ctx(OTHER, 'collaborator')
+    expect(canEdit(orgVisible, collaborator)).toBe(true)
+    expect(canManageSharing(orgVisible, collaborator)).toBe(true)
+  })
+})
+
+describe('identitySetOf', () => {
+  it('is exactly the console identity today (identity linking grows it later)', () => {
+    expect(identitySetOf(ctx(OTHER, 'collaborator'))).toEqual(new Set([`user:${OTHER}`]))
+  })
+})
+
+describe('can — organization role actions', () => {
+  it('keeps ordinary writes available to collaborators and owners but not viewers', () => {
+    expect(can(ctx(OTHER, 'viewer'), { action: AuthorizationAction.OrganizationWrite })).toBe(false)
+    expect(can(ctx(OTHER, 'collaborator'), { action: AuthorizationAction.OrganizationWrite })).toBe(true)
+    expect(can(ctx(OTHER, 'owner'), { action: AuthorizationAction.OrganizationWrite })).toBe(true)
+  })
+
+  it.each([AuthorizationAction.OrganizationManage, AuthorizationAction.UsageAttributeAll])(
+    'keeps %s owner-only',
+    (action) => {
+      expect(can(ctx(OTHER, 'viewer'), { action })).toBe(false)
+      expect(can(ctx(OTHER, 'collaborator'), { action })).toBe(false)
+      expect(can(ctx(OTHER, 'owner'), { action })).toBe(true)
+    }
+  )
+
+  it('lets every role leave while keeping removal of another member owner-only', () => {
+    for (const role of ['viewer', 'collaborator', 'owner'] as const) {
+      expect(
+        can(ctx(OTHER, role), {
+          action: AuthorizationAction.OrganizationMembershipRemove,
+          targetUserId: OTHER
+        })
+      ).toBe(true)
+    }
+    expect(
+      can(ctx(OTHER, 'viewer'), {
+        action: AuthorizationAction.OrganizationMembershipRemove,
+        targetUserId: CREATOR
+      })
+    ).toBe(false)
+    expect(
+      can(ctx(OTHER, 'owner'), {
+        action: AuthorizationAction.OrganizationMembershipRemove,
+        targetUserId: CREATOR
+      })
+    ).toBe(true)
+  })
+})
+
+describe('canViewSession (session-visibility.md §5)', () => {
+  const owned = (visibility: SessionViewable['visibility'], ownerIdentity: string | null): SessionViewable => ({
+    visibility,
+    ownerIdentity
+  })
+  const idsOf = (c: ViewCtx) => identitySetOf(c)
+
+  it('org session is visible to every role, owner-match or not', () => {
+    const s = owned('org', `user:${CREATOR}`)
+    expect(canViewSession(s, ctx(OTHER, 'viewer'), idsOf(ctx(OTHER, 'viewer')))).toBe(true)
+    expect(canViewSession(s, ctx(OTHER, 'collaborator'), idsOf(ctx(OTHER, 'collaborator')))).toBe(true)
+    expect(canViewSession(s, ctx(OTHER, 'owner'), idsOf(ctx(OTHER, 'owner')))).toBe(true)
+  })
+
+  it('org session with no recorded owner (automation) stays org-visible', () => {
+    expect(canViewSession(owned('org', null), ctx(OTHER, 'viewer'), idsOf(ctx(OTHER, 'viewer')))).toBe(true)
+  })
+
+  it('private session is visible to its identity-matched owner, any role', () => {
+    const s = owned('private', `user:${CREATOR}`)
+    expect(canViewSession(s, ctx(CREATOR, 'collaborator'), idsOf(ctx(CREATOR, 'collaborator')))).toBe(true)
+    expect(canViewSession(s, ctx(CREATOR, 'viewer'), idsOf(ctx(CREATOR, 'viewer')))).toBe(true)
+  })
+
+  it('private session hides from every non-matching viewer — org owners included', () => {
+    // A private session is a DM-grade transcript, and role grants no access.
+    const s = owned('private', `user:${CREATOR}`)
+    expect(canViewSession(s, ctx(OTHER, 'collaborator'), idsOf(ctx(OTHER, 'collaborator')))).toBe(false)
+    expect(canViewSession(s, ctx(OTHER, 'viewer'), idsOf(ctx(OTHER, 'viewer')))).toBe(false)
+    expect(canViewSession(s, ctx(OTHER, 'owner'), idsOf(ctx(OTHER, 'owner')))).toBe(false)
+  })
+
+  it('matches a linked platform identity once the identity set carries it', () => {
+    const s = owned('private', 'slack:T024BE7LD:U0123ABCD')
+    const c = ctx(OTHER, 'collaborator')
+    // Pre-linking: the platform owner is an owner-orphan for this viewer.
+    expect(canViewSession(s, c, idsOf(c))).toBe(false)
+    // Post-linking (§7): the set grows; the stored ownerIdentity already matches.
+    const linked = new Set([...idsOf(c), 'slack:T024BE7LD:U0123ABCD'])
+    expect(canViewSession(s, c, linked)).toBe(true)
+  })
+
+  it('a null-owner private session is visible to no one — fail closed', () => {
+    // Unlike a §2 owner-orphan (a stored-but-unmatched platform tuple, which
+    // identity linking §7 lights up retroactively), a null owner has nothing
+    // to match — no role, org owners included, can read it without a
+    // repair/backfill first.
+    const s = owned('private', null)
+    expect(canViewSession(s, ctx(CREATOR, 'collaborator'), idsOf(ctx(CREATOR, 'collaborator')))).toBe(false)
+    expect(canViewSession(s, ctx(OTHER, 'viewer'), idsOf(ctx(OTHER, 'viewer')))).toBe(false)
+    expect(canViewSession(s, ctx(OTHER, 'owner'), idsOf(ctx(OTHER, 'owner')))).toBe(false)
+  })
+
+  it('uses the fixed external scope and current provider decision without an owner bypass', () => {
+    const s: SessionViewable = {
+      visibility: 'external',
+      ownerIdentity: null,
+      externalProvider: 'slack',
+      externalScopeId: 'scope-1',
+      externalResolution: 'settled',
+      classifiedPolicyRev: 3n
+    }
+    const externalAccess = {
+      policies: [{ provider: 'slack', readFenceRev: 3n }],
+      allowedScopes: [{ id: 'scope-1', aclRevision: 1n }],
+      decisionAt: new Date()
+    }
+    expect(canViewSession(s, ctx(OTHER, 'viewer'), idsOf(ctx(OTHER, 'viewer')), externalAccess)).toBe(true)
+    expect(
+      canViewSession(s, ctx(OTHER, 'owner'), idsOf(ctx(OTHER, 'owner')), {
+        ...externalAccess,
+        allowedScopes: []
+      })
+    ).toBe(false)
+  })
+
+  it('keeps a provider-bound p2p session owner-only through exact identity', () => {
+    const owner = ctx(CREATOR, 'collaborator')
+    const session: SessionViewable = {
+      visibility: 'private',
+      ownerIdentity: 'feishu:lark:cli_custom:on_owner',
+      externalProvider: 'feishu',
+      externalScopeId: 'scope-1',
+      externalResolution: 'settled'
+    }
+    expect(canViewSession(session, owner, new Set([...idsOf(owner), session.ownerIdentity!]))).toBe(true)
+    expect(canViewSession(session, ctx(OTHER, 'owner'), idsOf(ctx(OTHER, 'owner')))).toBe(false)
+  })
+
+  it('fails closed for unresolved external rows and pre-fence candidates', () => {
+    const principal = ctx(OTHER, 'collaborator')
+    const snapshot = {
+      policies: [{ provider: 'slack', readFenceRev: 4n }],
+      allowedScopes: [{ id: 'scope-1', aclRevision: 1n }],
+      decisionAt: new Date()
+    }
+    expect(
+      canViewSession(
+        {
+          visibility: 'external',
+          ownerIdentity: null,
+          externalProvider: 'slack',
+          externalScopeId: 'scope-1',
+          externalResolution: 'pending',
+          classifiedPolicyRev: 4n
+        },
+        principal,
+        idsOf(principal),
+        snapshot
+      )
+    ).toBe(false)
+    expect(
+      canViewSession(
+        {
+          visibility: 'org',
+          ownerIdentity: null,
+          externalProvider: 'slack',
+          externalScopeId: null,
+          externalResolution: 'pending',
+          classifiedPolicyRev: 3n
+        },
+        principal,
+        idsOf(principal),
+        snapshot
+      )
+    ).toBe(false)
+  })
+})
+
+describe('canChangeSessionVisibility', () => {
+  const session = (
+    visibility: SessionViewable['visibility'],
+    ownerIdentity: string | null,
+    thread: string | null = null
+  ): SessionViewable => ({
+    visibility,
+    ownerIdentity,
+    thread
+  })
+
+  it('denies an organization owner reclassifying a session they do not own, org-visible or not', () => {
+    const owner = ctx(OTHER, 'owner')
+    expect(canChangeSessionVisibility(session('org', `user:${CREATOR}`), owner, identitySetOf(owner))).toBe(false)
+    expect(canChangeSessionVisibility(session('private', `user:${CREATOR}`), owner, identitySetOf(owner))).toBe(false)
+  })
+
+  it('follows identity ownership for every role', () => {
+    for (const role of ['owner', 'collaborator', 'viewer'] as const) {
+      const principal = ctx(CREATOR, role)
+      expect(
+        canChangeSessionVisibility(session('private', `user:${CREATOR}`), principal, identitySetOf(principal))
+      ).toBe(true)
+      expect(canChangeSessionVisibility(session('org', `user:${CREATOR}`), principal, identitySetOf(principal))).toBe(
+        true
+      )
+    }
+  })
+
+  it('a null-owner session is re-classifiable by no one — fail closed', () => {
+    const owner = ctx(OTHER, 'owner')
+    expect(canChangeSessionVisibility(session('org', null), owner, identitySetOf(owner))).toBe(false)
+    expect(canChangeSessionVisibility(session('private', null), owner, identitySetOf(owner))).toBe(false)
+  })
+
+  it('refuses an append session even to its recorded owner (channel-session-mode.md §9)', () => {
+    for (const role of ['owner', 'collaborator', 'viewer'] as const) {
+      const principal = ctx(CREATOR, role)
+      expect(
+        canChangeSessionVisibility(
+          session('org', `user:${CREATOR}`, 'append:1700000000000'),
+          principal,
+          identitySetOf(principal)
+        )
+      ).toBe(false)
+    }
+    // A platform thread in the same channel stays the first sender's to reclassify.
+    const principal = ctx(CREATOR, 'collaborator')
+    expect(
+      canChangeSessionVisibility(
+        session('org', `user:${CREATOR}`, '1700000000.000100'),
+        principal,
+        identitySetOf(principal)
+      )
+    ).toBe(true)
+  })
+
+  it('treats an unread thread coordinate as append — fail closed', () => {
+    const principal = ctx(CREATOR, 'owner')
+    expect(
+      canChangeSessionVisibility(
+        { visibility: 'org', ownerIdentity: `user:${CREATOR}` },
+        principal,
+        identitySetOf(principal)
+      )
+    ).toBe(false)
+  })
+
+  it('never lets a human rewrite an externally bound audience', () => {
+    const principal = ctx(CREATOR, 'owner')
+    expect(
+      canChangeSessionVisibility(
+        {
+          visibility: 'external',
+          ownerIdentity: `user:${CREATOR}`,
+          externalProvider: 'slack',
+          externalScopeId: 'scope-1',
+          externalResolution: 'settled'
+        },
+        principal,
+        identitySetOf(principal)
+      )
+    ).toBe(false)
+  })
+})
+
+describe('canContinueSession (webchat-cross-integration-continuation.md §5.1)', () => {
+  const owned = (visibility: SessionViewable['visibility'], ownerIdentity: string | null): SessionViewable => ({
+    visibility,
+    ownerIdentity
+  })
+  const idsOf = (c: ViewCtx) => identitySetOf(c)
+
+  it('org session: collaborators and owners may continue; viewers never', () => {
+    const s = owned('org', `user:${CREATOR}`)
+    expect(canContinueSession(s, ctx(OTHER, 'viewer'), idsOf(ctx(OTHER, 'viewer')))).toBe(false)
+    expect(canContinueSession(s, ctx(OTHER, 'collaborator'), idsOf(ctx(OTHER, 'collaborator')))).toBe(true)
+    expect(canContinueSession(s, ctx(OTHER, 'owner'), idsOf(ctx(OTHER, 'owner')))).toBe(true)
+  })
+
+  it('private session: owner-identity AND a writing role — viewers refused even for their own', () => {
+    const s = owned('private', `user:${CREATOR}`)
+    expect(canContinueSession(s, ctx(CREATOR, 'collaborator'), idsOf(ctx(CREATOR, 'collaborator')))).toBe(true)
+    // The viewer role is refused uniformly (continuation posts through the org's
+    // bot) — matching the verify-time gate so a minted composer can always dial.
+    expect(canContinueSession(s, ctx(CREATOR, 'viewer'), idsOf(ctx(CREATOR, 'viewer')))).toBe(false)
+    expect(canContinueSession(s, ctx(OTHER, 'owner'), idsOf(ctx(OTHER, 'owner')))).toBe(false)
+    expect(canContinueSession(s, ctx(OTHER, 'collaborator'), idsOf(ctx(OTHER, 'collaborator')))).toBe(false)
+  })
+
+  it('private session with no recorded owner is continuable by no one', () => {
+    const s = owned('private', null)
+    expect(canContinueSession(s, ctx(CREATOR, 'owner'), idsOf(ctx(CREATOR, 'owner')))).toBe(false)
+  })
+
+  it('external-provider session requires the ordinary session-view policy to admit the caller', () => {
+    const s: SessionViewable = {
+      visibility: 'external',
+      ownerIdentity: null,
+      externalProvider: 'slack',
+      externalScopeId: 'scope-1',
+      externalResolution: 'settled'
+    }
+    // No external-access snapshot ⇒ not viewable ⇒ not continuable, any role.
+    expect(canContinueSession(s, ctx(OTHER, 'owner'), idsOf(ctx(OTHER, 'owner')))).toBe(false)
+    const snapshot = {
+      policies: [{ provider: 'slack', readFenceRev: null }],
+      allowedScopes: [{ id: 'scope-1' }],
+      decisionAt: new Date()
+    } as never
+    expect(canContinueSession(s, ctx(OTHER, 'collaborator'), idsOf(ctx(OTHER, 'collaborator')), snapshot)).toBe(true)
+    expect(canContinueSession(s, ctx(OTHER, 'viewer'), idsOf(ctx(OTHER, 'viewer')), snapshot)).toBe(false)
+  })
+})
+
+describe('visibilityWhere', () => {
+  it('is empty (unfiltered) for an owner — the owner exception, mirroring canView', () => {
+    expect(visibilityWhere(ctx(OTHER, 'owner'))).toEqual({})
+  })
+
+  it('is empty (unfiltered) for an undefined viewer — internal / daemon-facing callers', () => {
+    expect(visibilityWhere(undefined)).toEqual({})
+  })
+
+  it('is the canView disjunction for collaborators and viewers', () => {
+    expect(visibilityWhere(ctx(GRANTEE, 'collaborator'))).toEqual({
+      OR: [{ visibility: 'org' }, { sharedWith: { has: GRANTEE } }]
+    })
+    // viewers filter identically to collaborators — the row filter is view-based
+    expect(visibilityWhere(ctx(GRANTEE, 'viewer'))).toEqual({
+      OR: [{ visibility: 'org' }, { sharedWith: { has: GRANTEE } }]
+    })
+  })
+})

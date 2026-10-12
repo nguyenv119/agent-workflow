@@ -1,0 +1,84 @@
+{
+  "set": "fresh-2026-10",
+  "source": "swegen-2026-10",
+  "tasks": [
+    {
+      "id": "ikalus1988__misakanet-3062",
+      "harbor_path": "fresh-2026-10/ikalus1988__misakanet-3062",
+      "repo": "Ikalus1988/MisakaNet",
+      "pr": 3062,
+      "merged_at": "2026-10-08T16:23:57Z",
+      "language": "python",
+      "kind": "bugfix",
+      "workdir": "/app/src",
+      "test_command": "python -m pytest -v -p no:cacheprovider",
+      "title": "fix(sync): the two paths disagreed about the same labelled issue (#3012)",
+      "screen": false
+    },
+    {
+      "id": "stuffanthings__qbit_manage-1401",
+      "harbor_path": "fresh-2026-10/stuffanthings__qbit_manage-1401",
+      "repo": "StuffAnThings/qbit_manage",
+      "pr": 1401,
+      "merged_at": "2026-10-11T16:14:35Z",
+      "language": "python",
+      "kind": "bugfix",
+      "workdir": "/app/src",
+      "test_command": "/opt/venv/bin/python -m pytest -v -p no:cacheprovider",
+      "title": "fix: return validation error instead of exiting on unsupported qBittorrent version",
+      "screen": false
+    },
+    {
+      "id": "agentconnect-md__agentconnect-2815",
+      "harbor_path": "fresh-2026-10/agentconnect-md__agentconnect-2815",
+      "repo": "agentconnect-md/agentconnect",
+      "pr": 2815,
+      "merged_at": "2026-10-07T03:26:22Z",
+      "language": "typescript",
+      "kind": "bugfix",
+      "workdir": "/app/src",
+      "test_command": "pnpm exec vitest run --config vitest.local.config.ts --project unit",
+      "title": "fix(control-plane): refuse visibility changes on append sessions",
+      "screen": false
+    },
+    {
+      "id": "chrisbenincasa__tunarr-2230",
+      "harbor_path": "fresh-2026-10/chrisbenincasa__tunarr-2230",
+      "repo": "chrisbenincasa/tunarr",
+      "pr": 2230,
+      "merged_at": "2026-10-07T01:03:45Z",
+      "language": "typescript",
+      "kind": "bugfix",
+      "workdir": "/app/src",
+      "test_command": "pnpm exec vitest run --typecheck.tsconfig tsconfig.test.json --coverage.enabled=false --reporter=verbose --silent=false",
+      "title": "fix(scanner): keep scanning local episodes with bad NFOs or codec-less subtitles",
+      "screen": false
+    },
+    {
+      "id": "basicmachines-co__basic-memory-1735",
+      "harbor_path": "fresh-2026-10/basicmachines-co__basic-memory-1735",
+      "repo": "basicmachines-co/basic-memory",
+      "pr": 1735,
+      "merged_at": "2026-10-10T23:53:18Z",
+      "language": "python",
+      "kind": "bugfix",
+      "workdir": "/app/src",
+      "test_command": "/opt/venv/bin/python -m pytest -v -p no:cacheprovider --no-cov",
+      "title": "fix(core): embed accepted writes once, after the file is materialized",
+      "screen": false
+    },
+    {
+      "id": "gentleman-programming__gentle-shell-2120",
+      "harbor_path": "fresh-2026-10/gentleman-programming__gentle-shell-2120",
+      "repo": "Gentleman-Programming/gentle-shell",
+      "pr": 2120,
+      "merged_at": "2026-10-11T23:43:01Z",
+      "language": "typescript",
+      "kind": "feature",
+      "workdir": "/app/src",
+      "test_command": "node --experimental-strip-types --test",
+      "title": "feat(installer): note a missing Git before consent, never as a blocker",
+      "screen": false
+    }
+  ]
+}

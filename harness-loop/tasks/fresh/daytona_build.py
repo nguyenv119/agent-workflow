@@ -36,8 +36,27 @@ SANDBOX_PREFIXES = ("SWEGEN_", "ANTHROPIC_DEFAULT_")
 # Set inside the sandbox regardless of the host. The sandbox runs as root, and Claude Code
 # refuses --dangerously-skip-permissions as root unless told it is inside a sandbox.
 SANDBOX_FIXED = {"IS_SANDBOX": "1"}
-CPUS, MEMORY_GB, DISK_GB = 4, 8, 10  # Daytona's per-sandbox caps
+# 5 GiB leaves room for one other 4 GiB sandbox under the org's 10 GiB memory cap.
+CPUS, MEMORY_GB, DISK_GB = 4, 5, 10
 POLL_SECONDS = 30
+# A create refused for the org's memory cap (another run holds it) is retried, never
+# forced: the driver only ever deletes the sandbox it created itself.
+CAPACITY_ERROR = "memory limit exceeded"
+CAPACITY_RETRY_SECONDS, CAPACITY_WAIT_SECONDS = 60, 1800
+
+
+def create_when_free(create, sleep=time.sleep, retry=CAPACITY_RETRY_SECONDS, wait=CAPACITY_WAIT_SECONDS):
+    """Call create(), retrying while Daytona refuses for lack of org memory; give up after wait s."""
+    waited = 0
+    while True:
+        try:
+            return create()
+        except Exception as e:  # the SDK raises DaytonaBadRequestError; matched on its text
+            if CAPACITY_ERROR not in str(e).lower() or waited >= wait:
+                raise
+            print(f"daytona_build: org memory cap reached, retrying in {retry}s", file=sys.stderr)
+            sleep(retry)
+            waited += retry
 
 
 def sandbox_env(env):
@@ -124,10 +143,10 @@ def main(argv=None, env=os.environ):
     start = time.time()
     sb = None
     try:
-        sb = daytona.create(CreateSandboxFromImageParams(
+        sb = create_when_free(lambda: daytona.create(CreateSandboxFromImageParams(
             image=image(), resources=Resources(cpu=CPUS, memory=MEMORY_GB, disk=DISK_GB),
             ttl_minutes=a.cc_timeout // 60 + 90, labels={"purpose": "swegen-create"}),
-            timeout=1800)
+            timeout=1800))
         return build(sb, a.repo, a.pr, a.cc_timeout, sandbox_env(env), a.out)
     finally:
         if sb is not None:

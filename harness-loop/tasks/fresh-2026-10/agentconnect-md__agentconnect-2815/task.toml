@@ -1,0 +1,31 @@
+# SWE-gen wrote network_mode = "no-network". Opened to "public" so the exam's agent
+# can reach its model API, like the other exam sets (harness-loop/tasks/README.md).
+schema_version = "1.4"
+artifacts = []
+
+[metadata]
+difficulty = "medium"
+category = "bugfix"
+tags = [ "typescript", "backend", "authorization",]
+
+[verifier]
+timeout_sec = 600.0
+collect = []
+
+[verifier.env]
+
+[agent]
+timeout_sec = 600.0
+
+[environment]
+network_mode = "public"
+build_timeout_sec = 600.0
+os = "linux"
+cpus = 1
+memory_mb = 2048
+storage_mb = 10240
+mcp_servers = []
+
+[environment.env]
+
+[solution.env]

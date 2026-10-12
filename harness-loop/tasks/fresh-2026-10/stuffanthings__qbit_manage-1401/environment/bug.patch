@@ -1,0 +1,159 @@
+diff --git a/modules/qbittorrent.py b/modules/qbittorrent.py
+index cd00c38..714a694 100755
+--- a/modules/qbittorrent.py
++++ b/modules/qbittorrent.py
+@@ -16,7 +16,6 @@ from modules import util
+ from modules.qbit_error_handler import handle_qbit_api_errors
+ from modules.util import Failed
+ from modules.util import TorrentMessages
+-from modules.util import UnsupportedVersion
+ from modules.util import list_in_text
+ 
+ logger = util.logger
+@@ -81,10 +80,8 @@ class Qbt:
+                 else:
+                     self.config.notify(ex, "Qbittorrent")
+                     logger.print_line(ex, "CRITICAL")
+-                    raise UnsupportedVersion(ex)
++                    sys.exit(1)
+             logger.info("Qbt Connection Successful")
+-        except UnsupportedVersion:
+-            raise
+         except LoginFailed:
+             ex = "Qbittorrent Error: Failed to login. Invalid username/password or API key."
+             self.config.notify(ex, "Qbittorrent")
+diff --git a/modules/util.py b/modules/util.py
+index 9b8e229..3ebc003 100755
+--- a/modules/util.py
++++ b/modules/util.py
+@@ -895,12 +895,6 @@ class Failed(Exception):
+     pass
+ 
+ 
+-class UnsupportedVersion(Failed):
+-    """Exception raised when the qBittorrent version is outside the supported range."""
+-
+-    pass
+-
+-
+ def list_in_text(text, search_list, match_all=False):
+     """
+     Check if elements from a search list are present in a given text.
+diff --git a/modules/web_api.py b/modules/web_api.py
+index bb95d12..7094525 100755
+--- a/modules/web_api.py
++++ b/modules/web_api.py
+@@ -909,10 +909,6 @@ class WebAPI:
+             temp_args["time"] = now.strftime("%H:%M")
+             temp_args["time_obj"] = now
+             temp_args["run"] = True
+-            commands = processed_data.get("commands")
+-            # A commands section replaces env/CLI commands in a normal run, with missing keys defaulting to False.
+-            if isinstance(commands, dict):
+-                temp_args["skip_qb_version_check"] = str(commands.get("skip_qb_version_check")).lower() == "true"
+ 
+             try:
+                 logger.separator("Configuration Validation Check", space=False, border=False)
+diff --git a/qbit_manage.py b/qbit_manage.py
+index 2c4311f..2d8c3b5 100755
+--- a/qbit_manage.py
++++ b/qbit_manage.py
+@@ -401,7 +401,6 @@ from modules.core.tag_nohardlinks import TagNoHardLinks  # noqa
+ from modules.core.tags import Tags  # noqa
+ from modules.util import Failed  # noqa
+ from modules.util import GracefulKiller  # noqa
+-from modules.util import UnsupportedVersion  # noqa
+ from modules.web_api import CommandRequest  # noqa
+ 
+ 
+@@ -617,9 +616,6 @@ def start():
+                     is_running.value = False
+                 logger.info("Released lock for web API requests despite webhook error")
+     except Failed as ex:
+-        # One-shot runs exit non-zero; scheduled runs return so the scheduler thread keeps future runs.
+-        if run and isinstance(ex, UnsupportedVersion):
+-            sys.exit(1)
+         logger.stacktrace()
+         logger.print_line(ex, "CRITICAL")
+         logger.print_line("Exiting scheduled Run.", "CRITICAL")
+diff --git a/tests/test_web_api_validate_config.py b/tests/test_web_api_validate_config.py
+deleted file mode 100644
+index bd88f00..0000000
+--- a/tests/test_web_api_validate_config.py
++++ /dev/null
+@@ -1,75 +0,0 @@
+-"""Regression tests for WebAPI.validate_config with an unsupported qBittorrent version."""
+-
+-import asyncio
+-from unittest.mock import MagicMock
+-from unittest.mock import patch
+-
+-import pytest
+-
+-from modules.qbittorrent import Qbt
+-from modules.web_api import ConfigRequest
+-from modules.web_api import WebAPI
+-from tests.test_qbittorrent import make_qbt_client
+-from tests.test_qbittorrent import make_qbt_config
+-
+-PARAMS = {"host": "localhost:8080", "username": None, "password": None, "api_key": "key"}
+-
+-
+-@pytest.fixture
+-def api(tmp_path):
+-    (tmp_path / "config.yml").write_text("qbt:\n  host: localhost:8080\n")
+-    web_api = object.__new__(WebAPI)
+-    object.__setattr__(web_api, "config_path", tmp_path.resolve())
+-    object.__setattr__(web_api, "default_dir", str(tmp_path))
+-    object.__setattr__(web_api, "args", {"skip_qb_version_check": False})
+-    return web_api
+-
+-
+-def validate(api, data):
+-    return asyncio.run(api.validate_config("config.yml", ConfigRequest(data=data)))
+-
+-
+-@patch("modules.qbittorrent.Version.is_app_version_supported", return_value=False)
+-@patch("modules.qbittorrent.Qbt.get_torrents", return_value=[])
+-@patch("modules.qbittorrent.Client")
+-@patch("modules.qbittorrent.logger.print_line", create=True)
+-@patch("modules.qbittorrent.logger.secret", create=True)
+-def test_validate_returns_error_for_unsupported_version(_secret, _print_line, mock_client, _torrents, _supported, api):
+-    mock_client.return_value = make_qbt_client()
+-
+-    def build_config(default_dir, args):
+-        Qbt(make_qbt_config(), PARAMS)
+-
+-    with patch("modules.web_api.Config", side_effect=build_config):
+-        response = validate(api, {"qbt": {"host": "localhost:8080"}})
+-
+-    assert response.valid is False
+-    assert "only compatible with" in response.errors[0]
+-
+-
+-def test_validate_honors_skip_version_check_from_config_commands(api):
+-    seen = {}
+-
+-    def capture(default_dir, args):
+-        seen.update(args)
+-        return MagicMock()
+-
+-    with patch("modules.web_api.Config", side_effect=capture):
+-        response = validate(api, {"qbt": {"host": "localhost:8080"}, "commands": {"skip_qb_version_check": True}})
+-
+-    assert response.valid is True
+-    assert seen["skip_qb_version_check"] is True
+-
+-
+-def test_validate_commands_section_resets_server_skip_flag(api):
+-    api.args["skip_qb_version_check"] = True
+-    seen = {}
+-
+-    def capture(default_dir, args):
+-        seen.update(args)
+-        return MagicMock()
+-
+-    with patch("modules.web_api.Config", side_effect=capture):
+-        validate(api, {"qbt": {"host": "localhost:8080"}, "commands": {"dry_run": True}})
+-
+-    assert seen["skip_qb_version_check"] is False

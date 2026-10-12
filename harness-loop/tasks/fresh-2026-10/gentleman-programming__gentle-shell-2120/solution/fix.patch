@@ -1,0 +1,162 @@
+diff --git a/README.md b/README.md
+index 071cb2e6..6fa2b12e 100644
+--- a/README.md
++++ b/README.md
+@@ -341,7 +341,7 @@ It installs what is missing (Node.js, pnpm, Pi, Gentle Shell) and updates an exi
+ - **Latest release** (recommended): the published Gentle Shell with its pinned Gentle AI binary.
+ - **Latest main**: development builds of Gentle Shell and Gentle AI from the latest commit of `main`, built on your computer with Go. If your Go is missing, older or its version cannot be checked, the installer downloads its own pinned, verified Go only for that build.
+ 
+-An older Node.js or an incompatible pnpm (from mise, nvm, nvm-windows, fnm, Volta or Homebrew, for example) is left untouched: the installer uses its own pinned, verified copy and installs it under `$PNPM_HOME`, and the plan says so before you confirm; a version manager may still put your own version first in new terminals. This applies only to a new installation: with Gentle Shell already installed, an older Node.js or incompatible pnpm still blocks. On Windows, `bootstrap.cmd` also uses its own Node.js when it cannot verify where yours lives (an nvm-windows symlink or an fnm junction, for example), without running yours. A pnpm in the pnpm global bin directory (`$PNPM_HOME/bin`) is never replaced or downgraded: pnpm 11.1.1 or newer, pnpm 12 included, is used as it is, an older one blocks with the `pnpm self-update` command that updates it, and one whose version could not be checked is left as it is while the installer uses its own verified pnpm, which the plan says before you confirm. A working `npm` on your PATH (from Node.js, Homebrew, nvm, nvm-windows, fnm, mise, asdf or Volta, for example) is used as it is; the installer adds its own npm only when none works. On Windows it never runs `npm.cmd` or `pnpm.cmd` through a shell: it runs what a recognized shim runs, or the `.exe` itself, and treats any other shim as not usable. It also checks that no other account can change the pnpm home folder (`PNPM_HOME`), and never runs a pnpm from a folder another account can change (or one it cannot prove is pnpm, such as Corepack's `pnpm.cmd`): it uses its own verified pnpm instead and leaves yours as it is. When pnpm's default `%LOCALAPPDATA%\pnpm` fails that check and holds nothing yet, it uses `%USERPROFILE%\.pnpm` instead and `pnpm setup` saves it for new terminals; pnpm commands you run later still keep pnpm's configuration, cache and state under `%LOCALAPPDATA%`, an accepted risk the plan states. When that folder already holds files, or your own `PNPM_HOME` fails the check, it stops and names the folder, the account and its rights. The plan says so before you confirm. Your Node.js, npm, Go, Pi or npm-installed Gentle Shell are used as you already use them; when one lives in a folder another account can change, the plan names that folder, the account and its rights as a notice, without blocking. When a build needs Go (the main channel, or Windows) and yours is missing, older or its version cannot be checked, the installer downloads a pinned Go from go.dev, verifies its checksum and uses it only to build, from its own folder; your Go and PATH are left untouched, and the plan says so before you confirm. A release install on macOS or Linux never downloads Go. An existing Pi that meets the minimum is reused as it is. With pnpm 11, Gentle Shell may run a newer Pi than the installer's that pnpm puts next to it (always at least the minimum); the installer says which one when it finishes. An older Pi is updated to the version the installer installs, with the package manager that installed it (pnpm or npm); the plan shows the found and target versions before you confirm. An older Pi that neither manages (mise, Homebrew or a standalone binary, for example) is left untouched, and the installer adds its own Pi with pnpm, as when Pi is missing; Gentle Shell uses that one. Pi is never downgraded. An existing Gentle Shell is updated with the package manager that installed it (pnpm or npm); one it cannot attribute, such as an `npm link` of a source checkout, is left untouched and explained. No checkout dependencies are needed (`pnpm install` is not required). This is a preview: it is tested on Linux and in CI, while clean-machine runs on macOS and Windows are still being verified. Details: **[installation wizard](docs/install-wizard.md)**.
++An older Node.js or an incompatible pnpm (from mise, nvm, nvm-windows, fnm, Volta or Homebrew, for example) is left untouched: the installer uses its own pinned, verified copy and installs it under `$PNPM_HOME`, and the plan says so before you confirm; a version manager may still put your own version first in new terminals. This applies only to a new installation: with Gentle Shell already installed, an older Node.js or incompatible pnpm still blocks. On Windows, `bootstrap.cmd` also uses its own Node.js when it cannot verify where yours lives (an nvm-windows symlink or an fnm junction, for example), without running yours. A pnpm in the pnpm global bin directory (`$PNPM_HOME/bin`) is never replaced or downgraded: pnpm 11.1.1 or newer, pnpm 12 included, is used as it is, an older one blocks with the `pnpm self-update` command that updates it, and one whose version could not be checked is left as it is while the installer uses its own verified pnpm, which the plan says before you confirm. A working `npm` on your PATH (from Node.js, Homebrew, nvm, nvm-windows, fnm, mise, asdf or Volta, for example) is used as it is; the installer adds its own npm only when none works. On Windows it never runs `npm.cmd` or `pnpm.cmd` through a shell: it runs what a recognized shim runs, or the `.exe` itself, and treats any other shim as not usable. It also checks that no other account can change the pnpm home folder (`PNPM_HOME`), and never runs a pnpm from a folder another account can change (or one it cannot prove is pnpm, such as Corepack's `pnpm.cmd`): it uses its own verified pnpm instead and leaves yours as it is. When pnpm's default `%LOCALAPPDATA%\pnpm` fails that check and holds nothing yet, it uses `%USERPROFILE%\.pnpm` instead and `pnpm setup` saves it for new terminals; pnpm commands you run later still keep pnpm's configuration, cache and state under `%LOCALAPPDATA%`, an accepted risk the plan states. When that folder already holds files, or your own `PNPM_HOME` fails the check, it stops and names the folder, the account and its rights. The plan says so before you confirm. Your Node.js, npm, Go, Pi or npm-installed Gentle Shell are used as you already use them; when one lives in a folder another account can change, the plan names that folder, the account and its rights as a notice, without blocking. When a build needs Go (the main channel, or Windows) and yours is missing, older or its version cannot be checked, the installer downloads a pinned Go from go.dev, verifies its checksum and uses it only to build, from its own folder; your Go and PATH are left untouched, and the plan says so before you confirm. A release install on macOS or Linux never downloads Go. Git is not needed to install; when it is missing the plan says so before you confirm, with the command to install it, because code review, worktrees and repository features need it. An existing Pi that meets the minimum is reused as it is. With pnpm 11, Gentle Shell may run a newer Pi than the installer's that pnpm puts next to it (always at least the minimum); the installer says which one when it finishes. An older Pi is updated to the version the installer installs, with the package manager that installed it (pnpm or npm); the plan shows the found and target versions before you confirm. An older Pi that neither manages (mise, Homebrew or a standalone binary, for example) is left untouched, and the installer adds its own Pi with pnpm, as when Pi is missing; Gentle Shell uses that one. Pi is never downgraded. An existing Gentle Shell is updated with the package manager that installed it (pnpm or npm); one it cannot attribute, such as an `npm link` of a source checkout, is left untouched and explained. No checkout dependencies are needed (`pnpm install` is not required). This is a preview: it is tested on Linux and in CI, while clean-machine runs on macOS and Windows are still being verified. Details: **[installation wizard](docs/install-wizard.md)**.
+ 
+ ### Keep it up to date
+ 
+diff --git a/assets/install-wizard/wizard.js b/assets/install-wizard/wizard.js
+index 3f843a71..0d0cb9d1 100644
+--- a/assets/install-wizard/wizard.js
++++ b/assets/install-wizard/wizard.js
+@@ -202,6 +202,8 @@ export function planModel(view) {
+ 		blockers,
+ 		// S6: reused tools in folders another account can change; a notice, never a blocker.
+ 		notice: typeof view?.sharedFolders?.description === "string" ? text(view.sharedFolders.description) : null,
++		// A missing Git: noted before consent, never a blocker.
++		gitNotice: typeof view?.gitNotice?.description === "string" ? text(view.gitNotice.description) : null,
+ 		disclosures: [
+ 			{
+ 				id: "profile",
+@@ -509,6 +511,9 @@ export function renderPlan(doc, model, handlers) {
+ 	model.notice ? el(doc, "section", { class: "alert alert-warning", "aria-labelledby": "notice-title" },
+ 		el(doc, "h2", { id: "notice-title", class: "alert-title" }, el(doc, "span", { "aria-hidden": "true" }, "! "), "Tools in folders other accounts can change"),
+ 		el(doc, "p", {}, rich(doc, model.notice))) : null,
++	model.gitNotice ? el(doc, "section", { class: "alert alert-warning", "aria-labelledby": "git-notice-title" },
++		el(doc, "h2", { id: "git-notice-title", class: "alert-title" }, el(doc, "span", { "aria-hidden": "true" }, "! "), "Git not found"),
++		el(doc, "p", {}, rich(doc, model.gitNotice))) : null,
+ 	el(doc, "section", { class: "block", "aria-labelledby": "steps-title" },
+ 		el(doc, "h2", { id: "steps-title", class: "section-title" }, recovery ? "Setup steps" : updating || updatingPi ? "Update steps" : "Installation steps"),
+ 		el(doc, "ol", { class: "plan-steps" }, model.actions.map((action) => el(doc, "li", {},
+diff --git a/docs/install-wizard.md b/docs/install-wizard.md
+index 81b23168..039207e0 100644
+--- a/docs/install-wizard.md
++++ b/docs/install-wizard.md
+@@ -75,7 +75,8 @@ minimum OS versions, libc compatibility, artifact trust and elevation handling
+ remain to be verified in later units.
+ 
+ Probes are named `node`, `pnpm`, `pi`, `shell`, `gentleAi`, `go`, `globalBin`, and
+-`setup`. `collectInventory` has no default probes; the real implementations live
++`setup`, plus the optional advisory `git` (kept as `inventory.git` only when the
++probe answers) and Windows `folders`. `collectInventory` has no default probes; the real implementations live
+ in [`installer-probes.mjs`](#host-probes). Probes must use bounded read-only
+ checks, never launcher setup, postinstall, paid model requests, credential
+ inspection or home writes. The collector cannot enforce purity of
+@@ -260,6 +261,7 @@ the listing; truncated, nonzero, signalled or timed-out output is unknown.
+ | `gentleAi` | Absent without gentle-pi or without its package-native binary. Otherwise compatible only for this package version, a listed path that resolves inside PNPM_HOME and `verifyGentleAi` (default `packageNativeGentleAi`) success; anything else is unknown. |
+ | `go` | `go version` from the real PATH; `go1.22` normalizes to `1.22.0`; devel and release-candidate builds are unknown. |
+ | `folders` | Windows only, after the other probes: the commands `node`, `npm`, `go`, `pi` and `gentle-shell` resolve to on the real PATH, and what each one runs, walked in one Windows PowerShell launch (`verifyWindowsStorageMany`). Returns `{ node?, npm?, go?, pi?, shell? }` with the first failing path's finding per tool, or `null`. A walk that cannot finish is `null`, never a blocker ([reused tool folders](#reused-tool-folders)). |
++| `git` | Advisory only, for the standard and the bundled plan alike: `{ available }` from `git` on the real PATH, never run. On macOS `/usr/bin/git` is a shim that opens an install dialog without the Command Line Tools, so `xcode-select -p` (which never opens one) decides it; another Git first on PATH counts as it is. A missing Git adds a **Git not found** notice before consent (`gitNotice`) with the install command for the system (`sudo apt-get install -y git` on Debian or Ubuntu, `xcode-select --install`, `winget install --id Git.Git -e`). Installing does not need Git, and it is never a blocker; code review, worktrees and repository features do need it. |
+ | `globalBin` | `pnpmGlobalBin` over the real PATH; `writable` is write access on the nearest existing ancestor of `$PNPM_HOME/bin` (itself included). A non-directory ancestor is not writable. |
+ | `setup` | `false` when gentle-pi is absent. `{ available: true, recoverable: true }` for the pinned stack this pnpm installed (see [Setup recovery](#setup-recovery)), using the runner's `recoverableStackRoot`. Unknown otherwise, because an existing Shell's setup readiness has no read-only evidence. |
+ 
+@@ -1043,7 +1045,7 @@ HTML).
+ | Screen | What the user sees |
+ | --- | --- |
+ | Check | Shown while `GET /api/progress?after=0` and `GET /api/plan` run. A running installation resumes the Install screen; a finished one shows its outcome instead of a new plan. |
+-| Review | Each fixed action with its description, the `profileChange` and `persistence` disclosures (state as text: "Will change", "No change"), on Windows a **Tools in folders other accounts can change** notice when the plan records one ([reused tool folders](#reused-tool-folders)), one consent checkbox and **Install Gentle Shell** (for a setup recovery, "Finish setting up Gentle Shell" and **Complete setup**). Without the checkbox no request is sent; the error is announced and focus moves to the checkbox. Preflight blockers replace the plan with their guidance, **Check again** and **Close installer**. |
++| Review | Each fixed action with its description, the `profileChange` and `persistence` disclosures (state as text: "Will change", "No change"), on Windows a **Tools in folders other accounts can change** notice when the plan records one ([reused tool folders](#reused-tool-folders)), a **Git not found** notice when Git is missing (never a blocker), one consent checkbox and **Install Gentle Shell** (for a setup recovery, "Finish setting up Gentle Shell" and **Complete setup**). Without the checkbox no request is sent; the error is announced and focus moves to the checkbox. Preflight blockers replace the plan with their guidance, **Check again** and **Close installer**. |
+ | Install | Expected runner steps (`expectedSteps`) with a text status (Done, In progress, Pending, Failed, Blocked, Not run), a `<progress>` bar and a terminal-style log of `{ seq, step, status, reason }` entries. |
+ | Done | `ready`: run `gentle-shell`. `terminal-action-required`: open a new terminal, then run `gentle-shell`. `blocked`/`failed`: the host's guidance, the reason or failed step, the steps that finished and the log. A failed step with a detail also shows it under **Last error from** its label: `gentle-shell setup`, `pnpm setup`, `the Go download`, `pnpm add -g` (`install-global`), `the Gentle Shell main install`, `the Gentle AI main build` or `the Gentle Shell update`, as one plain text node (backticks stay literal). Every outcome offers **Close installer** (`POST /api/shutdown`). |
+ 
+diff --git a/scripts/installer-preflight.mjs b/scripts/installer-preflight.mjs
+index f7165217..952c1361 100644
+--- a/scripts/installer-preflight.mjs
++++ b/scripts/installer-preflight.mjs
+@@ -107,6 +107,11 @@ export async function collectInventory({ platform, arch, probes = {}, pnpmHome }
+ 			inventory[name] = { available: null };
+ 		}
+ 	}
++	// Optional, advisory only (the plan notes a missing Git): kept only from a probe that answered.
++	if (probes.git) {
++		const git = await Promise.resolve().then(() => probes.git()).catch(() => null);
++		if (plainRecord(git) && typeof git.available === "boolean") inventory.git = { available: git.available };
++	}
+ 	if (platform === "win32" && probes.folders) {
+ 		const folders = await Promise.resolve().then(() => probes.folders()).catch(() => null);
+ 		if (plainRecord(folders) && !("available" in folders) && Object.keys(folders).length > 0) inventory.folders = folders;
+diff --git a/scripts/installer-probes.mjs b/scripts/installer-probes.mjs
+index d3397cd2..a8f019b5 100644
+--- a/scripts/installer-probes.mjs
++++ b/scripts/installer-probes.mjs
+@@ -520,6 +520,16 @@ export function createProbes({ platform, env, run, fs, home, verifyGentleAi = pa
+ 			const version = exactVersion(await output(go, ["version"], user, deadlines.version), GO_VERSION);
+ 			return version ? { available: true, version, usable: true } : unknown();
+ 		},
++		// Not needed to install; review, worktrees and repository features use it.
++		// Git itself is never run: on macOS /usr/bin/git is a shim that opens an
++		// install dialog without the Command Line Tools, so only `xcode-select -p`
++		// (which never opens one) decides whether that shim is real Git.
++		async git() {
++			const git = await lookPath("git", user, platform, fs);
++			if (!git) return absent();
++			if (platform !== "darwin" || git !== "/usr/bin/git") return { available: true };
++			return { available: succeeded(await run("/usr/bin/xcode-select", ["-p"], { env: user, deadlineMs: deadlines.version })) };
++		},
+ 		async globalBin() {
+ 			if (!globalBin) return unknown();
+ 			// Nearest existing ancestor (or the directory itself); nothing is created.
+diff --git a/scripts/installer-server.mjs b/scripts/installer-server.mjs
+index 3d1c14ff..92b3225e 100644
+--- a/scripts/installer-server.mjs
++++ b/scripts/installer-server.mjs
+@@ -395,6 +395,19 @@ function privateHomeDescription(home) {
+ 		"pnpm's default configuration, cache and state under %LOCALAPPDATA%, which pnpm offers no safe persistent setting to move. This is an accepted risk.";
+ }
+ 
++// A missing Git (never a blocker): installing does not need it, repository features do.
++const gitInstall = Object.freeze({
++	darwin: "`xcode-select --install` (Apple's Command Line Tools)",
++	win32: "`winget install --id Git.Git -e`",
++	linux: "your package manager, for example `sudo apt-get install -y git` on Debian or Ubuntu",
++});
++function gitNoticeView(inventory) {
++	if (inventory?.git?.available !== false) return null;
++	const install = gitInstall[inventory.platform] ?? gitInstall.linux;
++	return { description: "Git was not found on this computer. Gentle Shell installs and starts without it, but code review, worktrees and other " +
++		`repository features need it. Install it with ${install}, then open a new terminal. This is not a blocker.` };
++}
++
+ // S6 notice: reused tools whose folders another account can change (never a blocker).
+ const folderTools = Object.freeze({ node: "Node.js", npm: "npm", go: "Go", pi: "Pi", shell: "Gentle Shell" });
+ function sharedFoldersView(plan) {
+@@ -434,7 +447,7 @@ function bundledDescription(action, bundled) {
+ 	}
+ }
+ /** The bundled plan's view: the same shape as planView's, with `bundled: true`. */
+-function bundledView(planId, plan) {
++function bundledView(planId, plan, inventory) {
+ 	const bundled = plan.bundled;
+ 	const [root, bin, file, line] = [plainText(bundled.root), plainText(bundled.bin), plainText(bundled.path?.file), plainText(bundled.path?.line)];
+ 	const kind = bundled.path?.kind;
+@@ -453,6 +466,7 @@ function bundledView(planId, plan) {
+ 		blockers: [],
+ 		profileChange: { changesProfile: ["symlink", "profile", "registry"].includes(kind), command: null, binDir: bin, description: profile },
+ 		sharedFolders: null,
++		gitNotice: gitNoticeView(inventory),
+ 		persistence: {
+ 			tools: ["node", "npm", "pnpm", ...(go ? ["go"] : [])],
+ 			pnpmHome: root,
+@@ -463,7 +477,7 @@ function bundledView(planId, plan) {
+ }
+ 
+ function planView(planId, { inventory, plan }) {
+-	if (plainObject(plan.bundled)) return bundledView(planId, plan);
++	if (plainObject(plan.bundled)) return bundledView(planId, plan, inventory);
+ 	const ids = plan.actions.map((action) => action.id);
+ 	const binDir = typeof inventory?.globalBin?.path === "string" ? inventory.globalBin.path : null;
+ 	// A private PNPM_HOME (S6) is always persisted by `pnpm setup` (the runner's persist-path).
+@@ -502,6 +516,7 @@ function planView(planId, { inventory, plan }) {
+ 				: "Your PATH already contains the pnpm global bin directory; no shell profile or PATH change is planned.",
+ 		},
+ 		sharedFolders: sharedFoldersView(plan),
++		gitNotice: gitNoticeView(inventory),
+ 		persistence: {
+ 			tools,
+ 			pnpmHome,
