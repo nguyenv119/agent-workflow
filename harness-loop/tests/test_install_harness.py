@@ -751,6 +751,38 @@ class SkipbaseTest(unittest.TestCase):
         self.assertNotIn(".claude/hooks/save.sh",
                          (self.target / ".claude/HARNESS_MANIFEST").read_text().splitlines())
 
+    def test_settings_lines_apply_to_an_addon_settings_override(self):
+        """
+        When the add-on ships its own settings.json it replaces the base one,
+        and the opt-outs must apply to that installed file, not the base copy.
+        """
+        # GIVEN an add-on settings.json with its own compact window
+        (self.addon / "settings.json").write_text(json.dumps({"autoCompactWindow": 1, "keep": True}))
+        # WHEN installed opting out of that key
+        self.install("setting autoCompactWindow\n")
+        # THEN the installed file is the add-on's, minus the key
+        self.assertEqual(self.settings(), {"keep": True})
+
+    def test_settings_lines_with_a_symlinked_settings_file_are_refused(self):
+        """
+        A symlinked settings.json is skipped (never written through), so its
+        opt-outs could not take effect; installing anyway would leave the
+        opted-out hooks live while reporting success. Refuse instead, and leave
+        the file behind the link untouched.
+        """
+        # GIVEN target/.claude/settings.json is a symlink to a file elsewhere
+        real = self.tmp / "real-settings.json"
+        real.write_text(json.dumps(SETTINGS))
+        (self.target / ".claude").mkdir(parents=True)
+        (self.target / ".claude/settings.json").symlink_to(real)
+        before = real.read_bytes()
+        # WHEN installed with a setting line / THEN exit 2 naming the symlink, file unchanged
+        result = self.install("setting autoCompactWindow\n", check=False)
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("symlink", result.stderr)
+        self.assertEqual(real.read_bytes(), before)
+        self.assertFalse((self.target / ".claude/HARNESS_MANIFEST").exists())
+
     def test_entries_that_match_nothing_or_do_not_parse_are_refused_before_writing(self):
         """
         Fail closed, like .installignore: a typo or a stale entry (the base

@@ -33,12 +33,13 @@ when the opt-outs do. One entry per line (blank lines and `#` comments ignored):
                            installed; add-on files there still are
   setting <a.b.c>          delete this dotted key from the installed settings.json
   hook <Event> <matcher>   delete the hooks.<Event> groups whose "matcher" equals
-                           <matcher> (`-` = groups with no matcher); an Event left
+                           <matcher> (`-` = groups with no "matcher" key); an Event left
                            with no groups is deleted
 
 Fail closed: an unknown keyword, a malformed line, a path that is absolute,
 holds `..` or matches no base file, a missing key, a hook entry matching no
-group, or a setting/hook entry with no installed settings.json all exit 2
+group, or a setting/hook entry with no installed settings.json (or one that
+is a symlink in the target, so it would be skipped) all exit 2
 before anything is written.
 
 A previous manifest blocks a reinstall (exit 2) unless --force, which deletes
@@ -225,7 +226,8 @@ def install(argv):
     if settings_ops:
         if SETTINGS not in addon_by_rel and SETTINGS not in {m.name for m in members}:
             die(f"{SKIP_FILE} has setting/hook lines but no {SETTINGS} is installed")
-        data = json.loads(source_bytes(SETTINGS))
+        raw = source_bytes(SETTINGS)
+        data = json.loads(raw) if raw is not None else None
         if not isinstance(data, dict):
             die(f"{SETTINGS} is not a JSON object")
         data = apply_settings_ops(data, settings_ops)
@@ -256,6 +258,8 @@ def install(argv):
         link = first_symlink(target, rel)
         if link and rel in (VERSION, MANIFEST):
             die(f"refusing to write {rel} through a symlink: {link}")
+        if link and rel == SETTINGS and new_settings is not None:
+            die(f"{SKIP_FILE} has setting/hook lines but {SETTINGS} is a symlink ({link}); they cannot be applied")
         if link:
             linked.setdefault(link, []).append(rel)
     for rel in planned:
