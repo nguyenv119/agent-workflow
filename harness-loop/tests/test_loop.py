@@ -300,22 +300,31 @@ class RoundOpensPR(LoopTestCase):
         # GIVEN a booked main run, WHEN the manifest's set changes and a round runs, THEN main is re-examined
         self.assert_fresh_main_after(manifest={"set": "other", "tasks": [{"id": "t1", "screen": True}]})
 
-    def test_reused_main_run_under_other_exam_settings_drops_the_round_and_is_retired(self):
+    def assert_stale_main_retired(self, env, field):
+        """Book a main run made under other exam settings, run two rounds: drop, retire, re-run main."""
+        self.r.base_run(env=env)
+        first, second = self.r.round(), self.r.round()
+        self.assertEqual(first.returncode, 0, first.stderr)
+        self.assertEqual(self.r.history()[0]["outcome"], "dropped")
+        self.assertIn(field, self.r.history()[0]["reason"])
+        self.assertEqual(self.kinds(), ["candidate", "baseline", "candidate"])
+        self.assertEqual(second.returncode, 0, second.stderr)
+        self.assertEqual(len([c for c in self.r.gh_calls() if "body" in c]), 1)
+
+    def test_reused_main_run_with_another_model_drops_the_round_and_is_retired(self):
         """
         A reused main run made with another model drops the round before any PR (its verdict would
         be wrong), and the next round examines main afresh instead of reusing it again.
         """
-        # GIVEN a booked main run made under another model
-        self.r.base_run(env={"FAKE_EXAM_MODEL": "old"})
-        # WHEN two stub rounds run
-        first, second = self.r.round(), self.r.round()
-        # THEN the first is dropped without a PR, and the second re-runs main
-        self.assertEqual(first.returncode, 0, first.stderr)
-        self.assertEqual(self.r.history()[0]["outcome"], "dropped")
-        self.assertIn("model", self.r.history()[0]["reason"])
-        self.assertEqual(self.kinds(), ["candidate", "baseline", "candidate"])
-        self.assertEqual(second.returncode, 0, second.stderr)
-        self.assertEqual(len([c for c in self.r.gh_calls() if "body" in c]), 1)
+        # GIVEN a booked main run made under another model, WHEN two rounds run,
+        # THEN the first is dropped without a PR and the second re-runs main
+        self.assert_stale_main_retired({"FAKE_EXAM_MODEL": "old"}, "model")
+
+    def test_reused_main_run_with_another_per_try_cap_drops_the_round_and_is_retired(self):
+        """A reused main run made with another per-try cap is retired the same way: the cap moves scores."""
+        # GIVEN a booked main run made under another cap, WHEN two rounds run,
+        # THEN the first is dropped without a PR and the second re-runs main
+        self.assert_stale_main_retired({"FAKE_EXAM_CAP": "3.5"}, "max_budget_usd")
 
     def test_unbooked_main_run_is_not_reused(self):
         """A sealed main run that spend.jsonl does not name (one an improver could forge) is never reused."""

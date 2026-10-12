@@ -746,16 +746,16 @@ def cmd_round(args):
             base_run = run_exam(base_sha, manifest, "baseline", per_run, n)
             before["main screen run"] = hash_tree(base_run)
         cand_run = run_exam(cand, manifest, "candidate", per_run, n)
+        changes = tampered(before, snapshot(branch, base_run), ignore_pycache=True, skip_state=("spend.jsonl",))
+        if changes:
+            restore_state(before["state"])
+            return finish("dropped", "tamper during screen: " + "; ".join(changes))
         b_meta, c_meta = (json.loads((Path(r) / "run.json").read_text()) for r in (base_run, cand_run))
         differ = [k for k in ("model", "max_budget_usd", "tries") if b_meta.get(k) != c_meta.get(k)]
         if differ:  # a reused main run made under other exam settings would give a wrong verdict
             book("exam-baseline-stale", 0, n, Path(base_run).name)  # find_base_run skips it from now on
             return finish("dropped", f"main run {rel_home(base_run)} differs from the candidate in "
                                      f"{', '.join(differ)}; the next round re-runs main")
-        changes = tampered(before, snapshot(branch, base_run), ignore_pycache=True, skip_state=("spend.jsonl",))
-        if changes:
-            restore_state(before["state"])
-            return finish("dropped", "tamper during screen: " + "; ".join(changes))
         stats = compare(base_run, cand_run, "--screen-rule")
         verdict = stats["screen"]
         row["screen"] = {"base_run": rel_home(base_run), "cand_run": rel_home(cand_run),
