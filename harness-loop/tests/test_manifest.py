@@ -197,6 +197,27 @@ class ManifestTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "t1.*test_state.py"):
             manifest.load(p)
 
+    def test_build_from_pr_hidden_file_under_tests_files_is_rejected(self):
+        """
+        build_from_pr.py stores hidden tests at tests/files/<repo path> and
+        test.sh copies them over the repo, so the agent would run them as
+        <repo path>. The leak check must strip the files/ prefix or it misses
+        every such task.
+        """
+        # GIVEN a build_from_pr-style task whose hidden test is tests/files/src/app.test.ts
+        self.cache_hidden("files/src/app.test.ts", test_sh="cp -a \"$TESTS_DIR/files/.\" .\n")
+        p = self.write([row(test_command="npx vitest run src/app.test.ts")])
+        # WHEN loaded THEN the repo path is named as leaked
+        with self.assertRaisesRegex(ValueError, "t1.*names hidden test file.*src/app.test.ts"):
+            manifest.load(p)
+
+    def test_leaked_lists_named_hidden_paths_sorted(self):
+        """leaked() is the one leak rule build_from_pr.py and load() share."""
+        # GIVEN / WHEN a command naming two of three hidden paths
+        got = manifest.leaked("run b/x.ts ./a/y.ts c", {"a/y.ts", "b/x.ts", "z.ts"})
+        # THEN exactly those two, sorted
+        self.assertEqual(got, ["a/y.ts", "b/x.ts"])
+
     def test_test_command_naming_another_file_accepted(self):
         """
         A command naming a different file passes even when the hidden tests

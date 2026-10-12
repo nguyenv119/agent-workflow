@@ -103,13 +103,14 @@ def _read(path):
     return path.read_text().strip() if path.is_file() else None
 
 
-def write_result(agent_logs, bead, harness_commit):
+def write_result(agent_logs, bead, harness_commit, harness_version=None):
     """Write <agent_logs>/exam/result.json (+ transcript.jsonl) after the run.
 
     agent_logs is Harbor's downloaded agent dir: claude-code.txt (stream-json),
     sessions/projects/<slug>/<session_id>.jsonl (transcripts) and exam/ (what
     setup_task.sh and finish_task.sh wrote). status: ok on a normal finish,
-    budget_cut when --max-budget-usd stopped it, else error.
+    budget_cut when --max-budget-usd stopped it, else error. harness_version is
+    the .claude/HARNESS_VERSION this trial installed (run_exam checks it).
     """
     agent_logs = Path(agent_logs)
     exam = agent_logs / "exam"
@@ -126,6 +127,7 @@ def write_result(agent_logs, bead, harness_commit):
         "branch": _read(exam / "branch.txt") or None,
         "origin_url": _read(exam / "origin_url.txt"),
         "harness_commit": harness_commit,
+        "harness_version": harness_version,
         "status": STATUS_BY_SUBTYPE.get(stream["subtype"], "error"),
         "subtype": stream["subtype"],
         "total_cost_usd": stream["total_cost_usd"],

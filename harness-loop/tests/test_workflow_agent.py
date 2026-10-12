@@ -218,6 +218,15 @@ class WriteResultTest(unittest.TestCase):
         # WHEN / THEN it is not counted
         self.assertFalse(trial_export.write_result(logs, "b", "c")["exam_no_pr_line"])
 
+    def test_harness_version_is_recorded(self):
+        """run_exam compares each try's installed HARNESS_VERSION with the preflight's."""
+        # GIVEN / WHEN a result written with the installed version
+        version = {"commit": "a" * 40, "addon": "/addon", "addon_sha256": "f" * 64}
+        logs = self.agent_logs([])
+        trial_export.write_result(logs, "b", "a" * 40, version)
+        # THEN exam/result.json carries it
+        self.assertEqual(json.loads((logs / "exam/result.json").read_text())["harness_version"], version)
+
     def test_missing_session_file_leaves_transcript_null(self):
         """A trial whose session file was not downloaded must say so, not crash."""
         # GIVEN an init line naming a session with no file

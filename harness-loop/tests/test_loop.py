@@ -376,6 +376,227 @@ class RoundOpensPR(LoopTestCase):
         self.assertEqual([(r["round"], r["usd"]) for r in rows], [(1, 10.0), (1, 10.0)])
 
 
+SIDE = {"t1": [1, 3.0], "t2": [1, 3.0], "t3": [0, 3.0]}
+SPEC_SIDE_PASS = {**SPEC_PASS, "side-baseline": SIDE, "side-candidate": SIDE}
+SPEC_SIDE_FAIL = {**SPEC_PASS, "side-baseline": SIDE, "side-candidate": {**SIDE, "t2": [0, 3.0]}}
+
+
+class RoundSideCheck(LoopTestCase):
+    def side_round(self, spec, *extra, env=None):
+        """A stub round with a $10 side check on a private set named `secretset`."""
+        self.addon = self.r.tmp / "addon"
+        self.addon.mkdir(exist_ok=True)
+        self.private = self.r.tmp / "private"
+        self.private.mkdir(exist_ok=True)
+        self.side = self.private / "side.json"
+        self.side.write_text('{"set": "secretset"}\n')
+        return self.r.round("--sidecheck", str(self.side), "--sidecheck-addon", str(self.addon),
+                            "--sidecheck-budget-usd", "10", *extra,
+                            env={"FAKE_EXAM_SPEC": json.dumps(spec), **(env or {})})
+
+    def test_screen_pass_runs_side_check_with_addon_and_adds_guard_line(self):
+        """
+        After a screen pass, main and the candidate sit the whole side set (no
+        --screen filter) with the add-on and env passed to run_exam, and the
+        score block gets one guard line. Without it a change that wins on public
+        tasks but breaks the private repo would merge unseen.
+        """
+        # GIVEN a candidate that ties main on the side check
+        # WHEN a round with --sidecheck runs
+        p = self.side_round(SPEC_SIDE_PASS, "--sidecheck-env", "daytona")
+        # THEN two side runs got --addon and --env and no --screen
+        self.assertEqual(p.returncode, 0, p.stderr)
+        side = [c for c in self.r.exam_calls() if "--addon" in c]
+        self.assertEqual([c[c.index("--kind") + 1] for c in side], ["baseline", "candidate"])
+        for c in side:
+            self.assertEqual((c[c.index("--addon") + 1], c[c.index("--env") + 1], c[c.index("--tasks") + 1]),
+                             (str(self.addon), "daytona", str(self.side)))
+            self.assertNotIn("--screen", c)
+        # AND the block holds the side line in score_line's shape; the PR is ready and queued
+        body = [c for c in self.r.gh_calls() if "body" in c][0]["body"]
+        block = body.split(loop.SCORES_OPEN)[1].split(loop.SCORES_CLOSE)[0]
+        self.assertIn(f"side check (3 tasks x 1): baseline main {self.r.base_sha[:7]} solved 2/3 $9.00 | candidate ", block)
+        self.assertIn("solved 2/3 $9.00 | env=daytona guard=pass", block)
+        args = [c for c in self.r.gh_calls() if c["args"][:2] == ["pr", "create"]][0]["args"]
+        self.assertNotIn("--draft", args)
+        self.assertEqual(self.r.history()[0]["outcome"], "queued")
+        self.assertEqual(self.r.history()[0]["sidecheck"]["guard"], "pass")
+
+    def test_side_runs_never_land_in_the_loop_runs_dir(self):
+        """
+        The improver reads $HARNESS_LOOP_HOME/runs/ and writes public PRs, so
+        side runs (named after the private set) go under the side manifest's
+        own loop-home, and the set name never reaches runs/, the PR,
+        history.jsonl or spend.jsonl.
+        """
+        # GIVEN / WHEN a round with --sidecheck on set `secretset`
+        self.assertEqual(self.side_round(SPEC_SIDE_PASS).returncode, 0)
+        # THEN both side runs are under <manifest dir>/loop-home/runs and none under the loop home
+        side_runs = sorted(d.name for d in (self.private / "loop-home/runs").iterdir())
+        self.assertEqual(len(side_runs), 2)
+        self.assertTrue(all("secretset" in d for d in side_runs))
+        self.assertFalse([d for d in (self.r.home / "runs").iterdir() if "secretset" in d.name])
+        # AND the set name is in no PR body, history row or ledger row
+        bodies = json.dumps(self.r.gh_calls())
+        for text in (bodies, (self.r.home / "history.jsonl").read_text(), (self.r.home / "spend.jsonl").read_text()):
+            self.assertNotIn("secretset", text)
+
+    def test_side_runs_are_booked_in_the_loop_ledger(self):
+        """Side runs cost money, so they are booked (unnamed) in the weekly ledger like any exam."""
+        # GIVEN / WHEN a round with a side check ($9 per side run in the fake)
+        self.assertEqual(self.side_round(SPEC_SIDE_PASS).returncode, 0)
+        # THEN the ledger has two sidecheck rows
+        rows = [json.loads(line) for line in (self.r.home / "spend.jsonl").read_text().splitlines()]
+        self.assertEqual([(r["kind"], r["usd"]) for r in rows if r["kind"].startswith("sidecheck")],
+                         [("sidecheck-baseline", 9.0), ("sidecheck-candidate", 9.0)])
+
+    def test_screen_runs_keep_the_screen_budget(self):
+        """The side budget is the side runs' own; it never raises the screen runs' caps."""
+        # GIVEN --budget-usd 30 (default) and a $10 side check
+        # WHEN the round runs
+        self.assertEqual(self.side_round(SPEC_SIDE_PASS).returncode, 0)
+        # THEN screen runs get 30/2 each and side runs 10/2 each
+        caps = [(("side" if "--addon" in c else "screen"), c[c.index("--budget-usd") + 1]) for c in self.r.exam_calls()]
+        self.assertEqual(caps, [("screen", "15.00"), ("screen", "15.00"), ("side", "5.00"), ("side", "5.00")])
+
+    def test_candidate_solving_fewer_side_tasks_opens_draft_and_is_not_queued(self):
+        """
+        The side check is a guard: a candidate that solves fewer side tasks than
+        main gets a draft `[side check fail]` PR and stays out of the queue, so
+        monthly never promotes it.
+        """
+        # GIVEN a candidate that loses one side task
+        # WHEN the round runs
+        p = self.side_round(SPEC_SIDE_FAIL)
+        # THEN draft, side-check-fail title, guard=fail line, not queued
+        self.assertEqual(p.returncode, 0, p.stderr)
+        args = [c for c in self.r.gh_calls() if c["args"][:2] == ["pr", "create"]][0]["args"]
+        self.assertIn("--draft", args)
+        self.assertTrue(args[args.index("--title") + 1].startswith("[side check fail] "))
+        self.assertIn("guard=fail", args[args.index("--body") + 1])
+        self.assertFalse((self.r.home / "queue.json").exists())
+        self.assertEqual(self.r.history()[0]["outcome"], "side-fail")
+
+    def test_budget_cut_side_run_never_passes_the_guard(self):
+        """
+        A side run cut short by budget sat only some tasks; main solving fewer
+        because it stopped early must not wave the candidate through.
+        """
+        # GIVEN main's side run is cut short and solves fewer than the candidate
+        spec = {**SPEC_PASS, "side-baseline": {"t1": [1, 3.0]}, "side-candidate": SIDE}
+        # WHEN the round runs
+        p = self.side_round(spec, env={"FAKE_EXAM_INCOMPLETE": "side-baseline"})
+        # THEN the guard fails, marked cut short, and the round is not queued
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertEqual(self.r.history()[0]["sidecheck"]["guard"], "fail")
+        self.assertIn("guard=fail (cut short)", json.dumps(self.r.gh_calls()))
+        self.assertEqual(self.r.history()[0]["outcome"], "side-fail")
+
+    def test_history_written_during_side_check_is_dropped_and_restored(self):
+        """A history row forged while the side check runs is caught by the second tamper check and removed."""
+        # GIVEN an exam wrapper that forges a loop history row only on side runs
+        wrap = self.r.script("exam.sh", f"""\
+            case " $* " in *" --addon "*) echo '{{"round": 99, "outcome": "merged"}}' >> "{self.r.home}/history.jsonl";; esac
+            exec {sys.executable} {FIXTURES / 'fake_run_exam.py'} "$@"
+            """)
+        # WHEN a round with --sidecheck runs
+        p = self.side_round(SPEC_SIDE_PASS, env={"LOOP_RUN_EXAM": str(wrap)})
+        # THEN dropped for tamper during side check; the only row is loop.py's own
+        row = self.assertDropped(p, "tamper during side check")
+        self.assertEqual(row["round"], 1)
+
+    def test_screen_fail_skips_side_check(self):
+        """A candidate that already failed the screen is not paid for again on the side check."""
+        # GIVEN a screen-failing candidate
+        spec = {**SPEC_FAIL, "side-baseline": SIDE, "side-candidate": SIDE}
+        # WHEN the round runs with --sidecheck
+        p = self.side_round(spec)
+        # THEN no side run happened and the outcome is screen-fail
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertFalse([c for c in self.r.exam_calls() if "--addon" in c])
+        self.assertEqual(self.r.history()[0]["outcome"], "screen-fail")
+
+    def test_sidecheck_without_addon_is_refused(self):
+        """A side check without its add-on would run the private tasks against a bare harness."""
+        # GIVEN / WHEN --sidecheck alone
+        p = self.r.round("--sidecheck", str(self.r.manifest))
+        # THEN refused before any round starts
+        self.assertEqual(p.returncode, 2)
+        self.assertIn("--sidecheck-addon", p.stderr)
+        self.assertEqual(self.r.history(), [])
+
+    def test_side_budget_counts_toward_the_weekly_cap(self):
+        """The round's budget check includes the side check, so it cannot take the week past the cap."""
+        # GIVEN $15 spent this week: 15 + 30 (exam) fits the $50 cap, 15 + 30 + 10 (side check) does not
+        self.r.ledger((1, 15.0))
+        # WHEN a round with a $10 side check starts
+        p = self.side_round(SPEC_SIDE_PASS)
+        # THEN refused before anything runs
+        self.assertNotEqual(p.returncode, 0)
+        self.assertEqual(self.r.exam_calls(), [])
+
+    def test_side_runs_inside_an_unignored_addon_folder_are_refused(self):
+        """
+        A side manifest kept inside the add-on puts loop-home/runs there too;
+        unless .installignore covers it, main's side runs would be installed
+        into the candidate's sandbox and change the add-on hash mid-run.
+        """
+        # GIVEN a side manifest inside the add-on, with and without an ignore line for its folder
+        addon = self.r.tmp / "addon2"
+        (addon / "private").mkdir(parents=True)
+        (addon / "private/side.json").write_text('{"set": "secretset"}\n')
+        args = ("--sidecheck", str(addon / "private/side.json"), "--sidecheck-addon", str(addon),
+                "--sidecheck-budget-usd", "10")
+        spec = {"FAKE_EXAM_SPEC": json.dumps(SPEC_SIDE_PASS)}
+        # WHEN the round runs without the ignore line / THEN refused before any round starts
+        p = self.r.round(*args, env=spec)
+        self.assertEqual(p.returncode, 2)
+        self.assertIn(".installignore", p.stderr)
+        self.assertEqual(self.r.history(), [])
+        # AND with `private/` in .installignore it runs, with the side runs under private/loop-home
+        (addon / ".installignore").write_text("private/\n")
+        p = self.r.round(*args, env=spec)
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertEqual(len(list((addon / "private/loop-home/runs").iterdir())), 2)
+
+    def test_side_runs_under_the_loop_home_are_refused(self):
+        """A side manifest kept under $HARNESS_LOOP_HOME would put private side runs where the improver reads."""
+        # GIVEN a side manifest inside the loop's own home
+        (self.r.home / "private").mkdir(parents=True, exist_ok=True)
+        side = self.r.home / "private/side.json"
+        side.write_text('{"set": "secretset"}\n')
+        (self.r.tmp / "addon3").mkdir()
+        # WHEN the round runs
+        p = self.r.round("--sidecheck", str(side), "--sidecheck-addon", str(self.r.tmp / "addon3"),
+                         "--sidecheck-budget-usd", "10", env={"FAKE_EXAM_SPEC": json.dumps(SPEC_SIDE_PASS)})
+        # THEN it is refused before any round starts
+        self.assertEqual(p.returncode, 2)
+        self.assertIn("improver reads", p.stderr)
+        self.assertEqual(self.r.history(), [])
+        self.assertEqual(self.r.exam_calls(), [])
+
+    def test_sync_records_a_merged_side_fail_pr(self):
+        """A side-fail draft PR that is later merged or closed is recorded by sync like any other PR."""
+        # GIVEN a side-fail round, and GitHub saying its PR closed
+        self.assertEqual(self.side_round(SPEC_SIDE_FAIL).returncode, 0)
+        # WHEN sync runs
+        p = self.r.loop("sync", env={"FAKE_GH_STATE": "CLOSED"})
+        # THEN the row is closed
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertEqual(self.r.history()[0]["outcome"], "closed")
+
+    def test_monthly_keeps_the_side_check_line(self):
+        """monthly rewrites the score block; the side check line must survive the rewrite."""
+        # GIVEN a queued round that passed the side check
+        self.assertEqual(self.side_round(SPEC_SIDE_PASS).returncode, 0)
+        # WHEN monthly runs
+        p = self.r.loop("monthly", "--budget-usd", "10")
+        # THEN the rewritten block still holds the guard line
+        self.assertEqual(p.returncode, 0, p.stderr)
+        edit = [c for c in self.r.gh_calls() if c["args"][:2] == ["pr", "edit"]][-1]
+        self.assertIn("env=docker guard=pass", edit["body"].split(loop.SCORES_OPEN)[1])
+
+
 class RoundChecksDrop(LoopTestCase):
     def test_change_under_harness_loop_is_dropped_without_gh(self):
         """A commit touching harness-loop/ is dropped before any screen or gh call."""

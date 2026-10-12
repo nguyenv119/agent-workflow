@@ -103,3 +103,14 @@ if `ANTHROPIC_API_KEY`, `CLAUDE_CODE_OAUTH_TOKEN`, `ANTHROPIC_AUTH_TOKEN` or any
 `AWS_ADMIN_*` variable is set.
 The places the shim patches are listed in `PATCH_TARGETS`; it stops with "update
 PATCH_TARGETS" if a SWE-gen release moves one.
+
+## Build a task from a merged PR
+
+`build_from_pr.py` turns one merged (squash) PR of a local git repo into a Harbor task whose hidden
+tests are that PR's own test files: the environment is a tarball of the merge commit's parent minus
+those tests (and any `--exclude` paths; a remaining `.env`/`.env.*` is refused), `solution/fix.patch`
+is the PR's non-test diff, and `tests/test.sh` copies the merged tests over the workdir and runs
+`--test-command` (reward 1 iff it exits 0). `--manifest <file>` adds or replaces the task's row in that
+manifest file, with the visible command only. Network keys are opt-in (`--allow-host` for an agent allowlist,
+`--verifier-no-network`), because some sandbox providers/tiers reject any per-sandbox network policy.
+Run `build_from_pr.py --help` for every flag.

@@ -158,7 +158,13 @@ phase_repo() {
       git rm -q --cached CLAUDE.md
       rm -f CLAUDE.md
     fi
-    if [ -n "$(git ls-files .claude)" ]; then git mv .claude .claude-repo; pointers+=(".claude-repo/"); fi
+    # mv, not git mv: renaming a directory from a lower overlayfs layer fails with EXDEV
+    # (Daytona images); mv falls back to copy + delete.
+    if [ -n "$(git ls-files .claude)" ]; then
+      mv .claude .claude-repo
+      git add -A -- .claude .claude-repo
+      pointers+=(".claude-repo/")
+    fi
     if [ -n "$(git ls-files AGENTS.md)" ]; then git mv AGENTS.md AGENTS.repo.md; pointers+=("AGENTS.repo.md"); fi
     tar -xzf "$tarball"
 
