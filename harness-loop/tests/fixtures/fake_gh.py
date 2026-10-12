@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Fake `gh` for loop.py tests: logs each call (argv, plus the --body-file text) to $FAKE_GH_LOG.
+"""Fake `gh` for loop.py tests: logs each call (argv, plus the --body / --body-file text) to $FAKE_GH_LOG.
 
 `pr create` prints a PR url; `pr view` prints {"state": $FAKE_GH_STATE, "body": the last
 body sent for that PR}. Everything else prints nothing.
@@ -10,6 +10,8 @@ import sys
 
 args = sys.argv[1:]
 rec = {"args": args}
+if "--body" in args:
+    rec["body"] = args[args.index("--body") + 1]
 if "--body-file" in args:
     with open(args[args.index("--body-file") + 1]) as fh:
         rec["body"] = fh.read()

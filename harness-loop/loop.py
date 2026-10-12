@@ -5,12 +5,13 @@
                   [--improver-budget-usd Y]
     loop.py monthly [--budget-usd X]
     loop.py sync
-    loop.py guard --base <ref> --cand <ref>
+    loop.py guard <commit> [--base <ref>]
 
 round: make worktree $HARNESS_LOOP_HOME/wt/<n> on branch harness-loop/<n> off origin/main;
 write rounds/<n>/message.txt (paths only); hash, in this process's memory only, the main
 screen run it will reuse, history.jsonl, queue.json, spend.jsonl, and this checkout's state
-(git status, HEAD, every ref but the round's, every file under harness-loop/); run the
+(git status, HEAD, every ref but the round's, every file under harness-loop/, the shared
+.git config/hooks/info and the user's git config); run the
 improver (default: `claude -p --model opus` on Bedrock, see IMPROVER_ENV); re-check all of it
 and drop the round on any change; run the checks (one commit; only .claude/** or AGENTS.md;
 no EXAM_MODE; Exam mode section untouched; the gate guard; leak scan; proposal.md with an
@@ -21,8 +22,8 @@ Screen fail: draft PR titled "[screen fail] ...". The loop never merges.
 
 monthly: full exam (--tries 2, no --screen) on main twice and each queued branch; compare.py
 --margin-from; rewrites each PR's score block (screen + full line, verdict). sync: reads PR
-states with gh and records merged/closed. guard: the gate guard on any two commits (exit 1 on
-rejection).
+states with gh and records merged/closed. guard: the round's gate guard on <commit>^..<commit>
+(exit 1 and "rejected: weakens gates" on rejection).
 
 Outcomes in history.jsonl: queued (screen pass, PR open), screen-fail (draft PR), dropped (a
 check failed), rejected (the gate guard: the change weakens a gate, reviewer or test),
@@ -72,8 +73,9 @@ EXAM_WORDS = re.compile(r"EXAM_MODE|exam mode", re.I)
 EXAMPLE_LEAK = re.compile(r"Neon|NEON_|pnpm|turbo|vitest|VITEST|rtk |PGlite|Trigger\.dev|Vercel|race-|svc-", re.I)
 TRY_PATH = re.compile(r"(?<![\w/.~-])((?:runs/|~/\.claude/tries/agent-workflow/)[^\s`'\"<>()\[\],;]+)")
 # The improver gets Bedrock only: never an Anthropic API key, OAuth token or admin AWS key.
-SCRUB_ENV = re.compile(r"^(ANTHROPIC_API_KEY|ANTHROPIC_AUTH_TOKEN|ANTHROPIC_BASE_URL|CLAUDE_CODE_OAUTH_TOKEN"
-                       r"|AWS_ADMIN_.*|AWS_PROFILE)$")
+SCRUB_ENV = re.compile(r"^(ANTHROPIC_BASE_URL|AWS_ADMIN_.*|AWS_PROFILE"
+                       r"|.*(TOKEN|SECRET|KEY|PASSWORD|CREDENTIAL).*)$", re.I)
+BEDROCK_ENV = {"AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN", "AWS_BEARER_TOKEN_BEDROCK"}
 
 # Gate guard (Long, 12 Oct): a change may add or sharpen checks, never remove or weaken one.
 GATE_WORDS = re.compile(r"\b(tests?|testing|test-runner|test-first|gates?|reviews?|reviewers?|reviewing"
@@ -196,6 +198,16 @@ def hash_tree(root):
     return out
 
 
+def git_config_state():
+    """Hashes of what can change how git diffs or pushes: the shared .git config/hooks/info, user config."""
+    common = Path(git("rev-parse", "--path-format=absolute", "--git-common-dir").strip())
+    out = {f".git/{k}": v for k, v in hash_tree(common).items() if k.split("/")[0] in ("config", "hooks", "info")}
+    for f in (Path.home() / ".gitconfig", Path.home() / ".config/git/config"):
+        if f.is_file():
+            out[str(f)] = hashlib.sha256(f.read_bytes()).hexdigest()
+    return out
+
+
 def snapshot(own_branch, base_run):
     refs = [line for line in git("for-each-ref", "--format=%(refname) %(objectname)").splitlines()
             if not line.startswith(f"refs/heads/{own_branch} ")]
@@ -204,6 +216,7 @@ def snapshot(own_branch, base_run):
         "loop checkout: HEAD": git("rev-parse", "HEAD"),
         "loop checkout: refs": refs,
         "loop checkout: harness-loop files": hash_tree(LOOP_DIR),
+        "git config, hooks or info": git_config_state(),
         "main screen run": hash_tree(base_run) if base_run else None,
         "state": {name: (HOME / name).read_bytes() if (HOME / name).is_file() else None for name in STATE_FILES},
     }
@@ -240,7 +253,7 @@ def restore_state(saved):
 def parse_diff(text):
     """Files of a `git diff -M` unified diff: {old, new, status A|M|D|R, mode, lines: [(+|-, lineno, text)]}."""
     files, cur, in_hunk, o, n = [], None, False, 0, 0
-    for line in text.splitlines():
+    for line in text.split("\n"):  # not splitlines(): \x0c, \u2028 etc. would cut a line in two
         if line.startswith("diff --git "):
             m = re.match(r"diff --git a/(.*) b/(.*)$", line)
             cur = {"old": m[1], "new": m[2], "status": "M", "mode": False, "lines": []}
@@ -296,7 +309,7 @@ def hook_commands(text):
 def weakening(line):
     """True if an added line tells an agent to skip, shorten, sample or bypass a gate."""
     rest = NEGATED_WEAKEN.sub(" ", line)
-    return bool((WEAKEN.search(rest) and GATE_WORDS.search(rest)) or NO_RUN.search(line) or FEWER.search(line))
+    return bool("disableallhooks" in line.lower() or (WEAKEN.search(rest) and GATE_WORDS.search(rest)) or NO_RUN.search(line) or FEWER.search(line))
 
 
 def gate_guard(diff_text, old_text, new_text):
@@ -325,7 +338,8 @@ def gate_guard(diff_text, old_text, new_text):
                 if GATE_WORDS.search(t) or GATE_WORDS.search(head):
                     reasons.append(f"(b) removes or rewrites {old}:{ln} ({head or 'top'}): {t.strip()[:80]}")
         if old == ".claude/settings.json":
-            before, after = hook_commands(old_text(old)), hook_commands(new_text(f["new"]))
+            before = hook_commands(old_text(old))
+            after = set() if f["status"] == "D" else hook_commands(new_text(f["new"]))
             if before and after is not None:
                 reasons += [f"(a) drops hook entry {ev} {cmd}" for ev, _, cmd in sorted(before - after)]
         reasons += [f"(c) {f['new']}:{ln}: {t.strip()[:100]}" for kind, ln, t in f["lines"]
@@ -334,7 +348,7 @@ def gate_guard(diff_text, old_text, new_text):
 
 
 def guard_commits(base, cand, repo=AW_ROOT):
-    diff = git("diff", "-M", "--no-color", "--no-ext-diff", base, cand, cwd=repo)
+    diff = git("diff", "-M", "--no-color", "--no-ext-diff", "--no-textconv", "--text", base, cand, cwd=repo)
 
     def at(ref):
         def read(path):
@@ -423,7 +437,7 @@ def run_checks(base, cand, proposal, private, existing=None):
     out = []
     count = int(git("rev-list", "--count", f"{base}..{cand}"))
     out.append(("one commit", count == 1, f"{count} commits"))
-    files = parse_diff(git("diff", "-M", "--no-color", "--no-ext-diff", base, cand))
+    files = parse_diff(git("diff", "-M", "--no-color", "--no-ext-diff", "--no-textconv", "--text", base, cand))
     paths = sorted({p for f in files for p in (f["old"], f["new"])})
     bad = [p for p in paths if not ALLOWED_PATH.match(p) or "EXAM_MODE" in p]
     out.append(("allowed paths", not bad, ", ".join(bad) or f"{len(paths)} path(s)"))
@@ -489,7 +503,11 @@ def compare(a, b, *extra):
 
 
 def find_base_run(base_sha, manifest):
-    """Newest complete, sealed main screen run at base_sha on this manifest, or None."""
+    """Newest complete, sealed main screen run at base_sha on this manifest that this script booked, or None.
+
+    Booked = named in an exam-baseline row of spend.jsonl, which the improver cannot write (it is
+    hashed and restored every round), so a run dir the improver forged is never reused."""
+    booked = {r.get("note") for r in read_jsonl(HOME / "spend.jsonl") if r.get("kind") == "exam-baseline"}
     found = []
     for meta_f in (HOME / "runs").glob("*/run.json"):
         try:
@@ -498,7 +516,8 @@ def find_base_run(base_sha, manifest):
             continue
         if (meta.get("harness_commit") == base_sha and meta.get("manifest") == str(Path(manifest).resolve())
                 and meta.get("screen") and meta.get("agent") == "workflow" and meta.get("kind") == "baseline"
-                and meta.get("status") == "complete" and (meta_f.parent / "summary.sha256").is_file()):
+                and meta.get("status") == "complete" and (meta_f.parent / "summary.sha256").is_file()
+                and meta_f.parent.name in booked):
             found.append((meta_f.stat().st_mtime, meta_f.parent))
     return max(found)[1] if found else None
 
@@ -554,7 +573,7 @@ def improver_settings(round_dir):
 
 
 def improver_env(round_dir, default):
-    env = {k: v for k, v in os.environ.items() if not SCRUB_ENV.match(k)}
+    env = {k: v for k, v in os.environ.items() if k in BEDROCK_ENV or not SCRUB_ENV.match(k)}
     env.update(HARNESS_LOOP_ROUND_DIR=str(round_dir), HARNESS_LOOP_HOME=str(HOME))
     if default:
         env["CLAUDE_CONFIG_DIR"] = str(round_dir / "claude-config")  # no user settings, memory or plugins
@@ -581,11 +600,11 @@ def run_improver(argv, wt, round_dir, env):
             code = proc.wait(timeout=IMPROVER_TIMEOUT_S)
         except subprocess.TimeoutExpired:
             code = "timeout"
-        try:
-            os.killpg(proc.pid, signal.SIGKILL)
-        except (ProcessLookupError, PermissionError):
-            pass
-        if code == "timeout":
+        finally:  # also on Ctrl-C: never leave a paid improver running
+            try:
+                os.killpg(proc.pid, signal.SIGKILL)
+            except (ProcessLookupError, PermissionError):
+                pass
             proc.wait()
     cost = None
     for line in (round_dir / "improver-transcript.jsonl").read_text(errors="replace").splitlines():
@@ -653,9 +672,11 @@ def cmd_round(args):
         if not default:
             improver_settings(round_dir)
         before, existing = snapshot(branch, base_run), existing_dirs()
+        row["improver_cost_usd"] = "running"
         code, cost = run_improver(argv, wt, round_dir, improver_env(round_dir, default))
         changes = tampered(before, snapshot(branch, base_run))
         restore_state(before["state"])
+        row["improver_cost_usd"] = None
         if default:
             row["improver_cost_usd"] = cost if cost is not None else args.improver_budget_usd
             book("improver", row["improver_cost_usd"], n, "" if cost is not None else "cost unknown: booked at cap")
@@ -717,10 +738,11 @@ def cmd_round(args):
         body_f = round_dir / "pr-body.md"
         body_f.write_text(body + "\n")
         title = f"harness-loop round {n}: {(row['idea'] or 'no idea line')[:70]}"
-        git("push", "-q", "origin", f"refs/heads/{branch}:refs/heads/{branch}")
+        git("-c", "core.hooksPath=/dev/null", "push", "-q", "--no-verify", "origin",
+            f"refs/heads/{branch}:refs/heads/{branch}")
         gh = ["gh", "pr", "create", "--repo", GH_REPO, "--head", branch, "--base", "main",
               "--title", ("[screen fail] " if verdict != "pass" else "") + title,
-              "--body-file", str(body_f), "--label", label] + (["--draft"] if verdict != "pass" else [])
+              "--body", body + "\n", "--label", label] + (["--draft"] if verdict != "pass" else [])
         url = subprocess.run(gh, capture_output=True, text=True, check=True).stdout.strip().splitlines()[-1]
         row["pr"] = int(url.rstrip("/").rsplit("/", 1)[1])
         if verdict == "pass":
@@ -728,7 +750,11 @@ def cmd_round(args):
                                          "manifest": str(manifest), "pr": row["pr"]}])
         print(f"PR {url} (label {label}){', queued' if verdict == 'pass' else ', draft (screen fail)'}")
         return finish("queued" if verdict == "pass" else "screen-fail", keep_branch=True)
-    except Exception as e:  # noqa: BLE001 - every started round gets a history row
+    except BaseException as e:  # every started round gets a history row, Ctrl-C included
+        if row["improver_cost_usd"] == "running":  # interrupted mid-improver: its cost is unknown
+            row["improver_cost_usd"] = args.improver_budget_usd if default else None
+            if default:
+                book("improver", args.improver_budget_usd, n, "interrupted: booked at cap")
         finish("error", f"{e.__class__.__name__}: {e}", keep_branch=row["cand_sha"] is not None)
         raise
 
@@ -739,7 +765,8 @@ def gh_json(*args):
 
 
 def cmd_monthly(args):
-    queue = read_queue()
+    queue = [q for q in read_queue() if gh_json("pr", "view", str(q["pr"]), "--json", "state")["state"] == "OPEN"]
+    write_queue(queue)  # a merged or closed PR is never re-examined
     if not queue:
         print("monthly: nothing queued")
         return
@@ -774,7 +801,7 @@ def cmd_monthly(args):
                                         q["base_sha"], q["cand_sha"], 1, f"screen={screen['verdict']}"))
             lines.append(score_line("full", stats, main_sha, q["cand_sha"], tries_of(b),
                                     f"diff={stats['diff']} margin={stats['margin']} verdict={stats['verdict']}"))
-            body = gh_json("pr", "view", str(q["pr"]), "--json", "body,state")["body"]
+            body = gh_json("pr", "view", str(q["pr"]), "--json", "body")["body"]
             new = re.sub(re.escape(SCORES_OPEN) + r".*?" + re.escape(SCORES_CLOSE), lambda _: scores_block(*lines),
                          body, count=1, flags=re.S)
             if new == body:
