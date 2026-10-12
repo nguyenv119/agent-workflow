@@ -302,14 +302,20 @@ class RunExamTest(unittest.TestCase):
         self.assertEqual((run / "summary.sha256").read_text(), compare.listing(run))
 
     def test_budget_counts_runs_in_flight(self):
-        """At concurrency 2 the second start must count the first, still-running run."""
-        # GIVEN two tasks, concurrency 2 and a $29 budget (first estimate $15)
-        m = self.manifest({"t1": 2, "t2": 2})
-        # WHEN run_exam runs (0 + 1 x 15 <= 29 starts t1; 0 + 2 x 15 > 29 stops t2)
-        self.run_exam("--tasks", m, "--budget-usd", 29, "--concurrency", 2)
-        # THEN only one try ran and the run is incomplete
+        """
+        A start counts the runs still in flight; when that would cross the budget it
+        waits for one to finish and re-checks with the real cost, stopping only when
+        nothing is in flight.
+        """
+        # GIVEN four $8 tasks, concurrency 4 and a $30 budget (first estimate $15)
+        m = self.manifest({"t1": 2, "t2": 2, "t3": 2, "t4": 2})
+        # WHEN run_exam runs: t1, t2 start (0 + 2 x 15 = 30); t3 waits, then starts at
+        # 8 + 2 x 8 or 16 + 8; t4 never fits (32 > 30). Not counting in-flight runs
+        # would start all 4; stopping instead of waiting would run only 2.
+        self.run_exam("--tasks", m, "--budget-usd", 30, "--concurrency", 4)
+        # THEN exactly three tries ran and the run is incomplete
         run = self.only_run()
-        self.assertEqual(len(self.results(run)), 1)
+        self.assertEqual(len(self.results(run)), 3)
         self.assertEqual(json.loads((run / "run.json").read_text())["status"], "incomplete")
 
     def test_missing_bead_branch_is_recorded(self):

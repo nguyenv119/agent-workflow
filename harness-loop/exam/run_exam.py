@@ -227,6 +227,8 @@ def schedule(ctx, jobs):
                 spent = sum(r["cost_usd"] for r in done)
                 est = statistics.fmean(r["cost_usd"] for r in done) if done else first
                 if spent + est * (len(pending) + 1) > args.budget_usd:
+                    if pending:  # wait for a run in flight, then re-check with its real cost
+                        break
                     print(f"run_exam: budget stop: spent ${spent:.2f} + {len(pending) + 1} x ${est:.2f} "
                           f"> ${args.budget_usd}; {len(queue)} run(s) not started", file=sys.stderr)
                     ctx["not_started"] = len(queue)
