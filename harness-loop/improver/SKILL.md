@@ -22,8 +22,9 @@ Your message lists the paths you need: `skill`, `worktree` (your branch, already
    and full scores, outcome, reason). Then try folders, failures first: under `runs/`
    (`<run>/<task>/try-<n>/`: `result.json`, `note.md`, `gates.txt`, `diff.patch`,
    `transcript.jsonl`, and `inner/` with the harness's own saved tries) and under `tries/`
-   (`<bead>/try-<n>/`, the same files minus `result.json`; a try may have `transcript.missing`). Read raw transcripts, not just notes: find the step where
-   the run went wrong and which harness file told the agent to do what it did.
+   (`<bead>/try-<n>/`, the same files minus `result.json`; a try may have
+   `transcript.missing`). Read raw transcripts, not just notes: find the step where the run
+   went wrong and which harness file told the agent to do what it did.
    Use only runs whose `run.json` has `kind` of `baseline`, `candidate` or `pick` and a `set`
    that names a manifest in `harness-loop/tasks/`. Skip `harm` and `controls` runs (they fail
    on purpose) and any run of another set (it may hold private code).
@@ -34,14 +35,16 @@ Your message lists the paths you need: `skill`, `worktree` (your branch, already
    Forbidden: `harness-loop/**`, `CLAUDE.md`, product code, the exam tasks, history or run
    records, other branches, merging, pushing, `gh`, any `.gitattributes`. Forbidden too: any
    added, changed or deleted line, in any file, containing `EXAM_MODE` or the words "exam
-   mode", and any edit to the coordinator's "Exam mode" section. A harness that behaves differently when examined cheats.
+   mode", and any edit to the coordinator's "Exam mode" section. A harness that behaves
+   differently when examined cheats.
 5. **No leaks.** Never copy a task name, repo name, private path, code or text from a try
    folder into the change, the commit message or any `proposal.md` line except the Evidence
    paths (say "one task" or "three tries", never its name). Cite try folders only in
    `proposal.md`'s Evidence, and only as `runs/...` (relative to the loop home) or
    `~/.claude/tries/agent-workflow/...` (with a literal `~`). The script scans the change,
-   the commit message and `proposal.md`: no absolute paths, and tool names (a test runner, a package manager) only on a line that
-   says "e.g.".
+   the commit message and `proposal.md`: no absolute paths, and the words in `EXAMPLE_LEAK`
+   in `harness-loop/loop.py` (tool and service names, and fragments, e.g. `race-`, that
+   match inside any word) only on a line that says "e.g.".
 6. **Generalize.** No task-specific or repo-specific hints. The test: would this help a
    developer working on many unfamiliar repos? No parameter tweaks (a count, a timeout, a
    threshold) without a new mechanism behind them.
@@ -54,7 +57,8 @@ Your message lists the paths you need: `skill`, `worktree` (your branch, already
    test-first phases. No line telling any agent to skip, shorten, sample, bypass, defer or
    make optional any of them, and no rewording that has that effect. You may add a check; you
    may not take one away. The script rejects such a change unscreened, and its exact rule is
-   the `gate_guard` docstring in your worktree's `harness-loop/loop.py`. In practice:
+   `gate_guard` plus the `WEAKEN`, `NEGATED_WEAKEN`, `FEWER` and `NO_RUN` patterns in your
+   worktree's `harness-loop/loop.py`. In practice:
    - In a reviewer, test-runner, standards or hook file, only ADD lines.
    - In any other `.md`, never edit or delete a line (even a blank one) that mentions, or sits
      under a heading that mentions, a test, gate, review, acceptance, lint, typecheck, verify,
@@ -63,6 +67,8 @@ Your message lists the paths you need: `skill`, `worktree` (your branch, already
      skip/omit/ignore/disable/bypass/sample/loosen/relax/waive pass only right after "never"
      or "do not"; "optional", and "never/do not/without/avoid" followed by run, write, wait,
      spawn or call, are always rejected there.
+   - Never put "only", "just" or "a single" before a test, gate, review or acceptance noun,
+     or "push/merge/commit/open before the <gate> passes", even to tighten a check.
 9. **Always produce a change.** "The current harness is already optimal" is not an answer.
    One mechanism per change; keep the diff small enough that its effect can be traced.
 
@@ -81,8 +87,10 @@ Your message lists the paths you need: `skill`, `worktree` (your branch, already
 5. Find the pattern shared by two or more tries. That is the evidence for your idea.
 6. Write the change in the file and section the map names for that step. Prefer a few added
    lines inside an existing section over a new section (rule 8: add, do not rewrite). A new
-   `SKILL.md` needs `name:` and `description:` frontmatter; a touched hook must pass `bash -n`. Keep YAML frontmatter intact.
-7. Re-read your diff (`git status` and `git diff HEAD`). Check it against rules 4, 5, 6 and 8 line by line.
+   `SKILL.md` needs `name:` and `description:` frontmatter; a touched hook must pass
+   `bash -n`. Keep YAML frontmatter intact.
+7. Re-read your diff (`git status` and `git diff HEAD`). Check it against rules 4, 5, 6 and 8
+   line by line.
 8. Commit once: `git add .claude AGENTS.md && git commit -m "<one line: the mechanism>"`. Then
    `git log --oneline origin/main..HEAD` must show exactly one commit.
 9. Write `<round_dir>/proposal.md` (format below). Then stop. Do not summarize in chat.
@@ -100,5 +108,5 @@ Risk: <what this could break or cost; for a repeated idea, what is different>
 ```
 
 All five fields are required; `Evidence:` needs at least two try folders that exist and that
-you opened by their full path. The one-line notes stay in the loop home; the public PR shows only the
-paths, with task folder names masked.
+you opened by their full path. The one-line notes stay in the loop home; the public PR shows
+only the paths, with task folder names masked.
