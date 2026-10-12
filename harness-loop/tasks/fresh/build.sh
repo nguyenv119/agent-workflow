@@ -6,10 +6,11 @@
 #
 # 1. Prints the candidate count and estimated cost, and stops unless --confirm-budget
 #    is at least the estimate. Nothing is spent before this.
-# 2. Checks swegen, docker, GEMINI_API_KEY_DEV and the AWS key + region. GITHUB_TOKEN is
+# 2. Checks the daytona SDK, DAYTONA_API_KEY, GEMINI_API_KEY_DEV and the AWS key + region. GITHUB_TOKEN is
 #    optional (SWE-gen's PR fetch works unauthenticated, 60 GitHub calls/hour, ~11 per task).
-# 3. Per candidate (the first --limit N, default all): `swegen create` through
-#    swegen_shim.py, in a scratch folder, under `env -i` with only an allowlisted env.
+# 3. Per candidate (the first --limit N, default all): daytona_build.py runs
+#    `swegen create` through swegen_shim.py in a throwaway Daytona sandbox (see there),
+#    itself started from a scratch folder under `env -i` with only an allowlisted env.
 #    SWE-gen exits non-zero unless its own nop=0 / oracle=1 validation passes; only
 #    passing ids go to passed.txt. Ids already in passed.txt / failed.txt are skipped.
 #    After each task its cost (measured from the log, else elapsed x --usd-per-hour) is
@@ -20,11 +21,12 @@ set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 TASKS="$(dirname "$HERE")"
-SHIM="$HERE/swegen_shim.py"
+DRIVER="$HERE/daytona_build.py"
 CANDIDATES=""
 LIMIT=""
 PER_TASK_USD=12
 USD_PER_HOUR=13.5
+DAYTONA_USD_PER_HOUR=0.34   # 4 CPU x $0.0504 + 8 GiB x $0.0162, rounded up
 CC_TIMEOUT=3200
 BUDGET=""
 
@@ -57,18 +59,20 @@ python3 "$HERE/collect.py" plan "$CANDIDATES" --per-task-usd "$PER_TASK_USD" \
 
 # 2. Tools and credentials, all before any paid work.
 CODE=4
-command -v swegen >/dev/null 2>&1 \
-  || die "swegen is not installed. Installing it (uv pip install swegen) needs Long's OK."
-command -v docker >/dev/null 2>&1 || die "docker is required by swegen create"
+python3 -c "import daytona" 2>/dev/null \
+  || die "the daytona SDK is missing: install harness-loop/tasks/fresh/requirements.txt into the venv on PATH"
+[ -n "${DAYTONA_API_KEY:-}" ] || die "set DAYTONA_API_KEY (each task runs in its own Daytona sandbox)"
 [ -n "${GEMINI_API_KEY_DEV:-}" ] || die "set GEMINI_API_KEY_DEV (the instruction writer runs on Gemini)"
 for v in AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_REGION; do
   [ -n "${!v:-}" ] || die "set $v (the build session runs on Bedrock)"
 done
 CODE=2
 
-# The only env the SWE-gen child sees. Its Claude session runs with permission checks
-# off, so nothing else (admin keys, other tokens, personal logins) may reach it.
+# The only env the per-task driver sees. SWE-gen's Claude session runs with permission
+# checks off on untrusted repo text, so it runs in a Daytona sandbox, never here, and the
+# driver forwards only daytona_build.SANDBOX_ENV into it (DAYTONA_API_KEY stays here).
 CHILD_ENV=(
+  "DAYTONA_API_KEY=$DAYTONA_API_KEY"
   "PATH=$PATH" "HOME=$HOME" "TMPDIR=${TMPDIR:-/tmp}"
   "OPENAI_BASE_URL=${OPENAI_BASE_URL:-https://generativelanguage.googleapis.com/v1beta/openai/}"
   "OPENAI_API_KEY=$GEMINI_API_KEY_DEV"
@@ -83,7 +87,7 @@ CHILD_ENV=(
 [ -n "${GITHUB_TOKEN:-}" ] && CHILD_ENV+=("GITHUB_TOKEN=$GITHUB_TOKEN")
 while IFS= read -r v; do
   case "$v" in SWEGEN_LLM_MODEL|SWEGEN_CLAUDE_MODEL) ;; *) CHILD_ENV+=("$v=${!v}") ;; esac
-done < <(compgen -e | grep '^SWEGEN_' || true)
+done < <(compgen -e | grep -E '^(SWEGEN_|ANTHROPIC_DEFAULT_[A-Z]+_MODEL$|ANTHROPIC_SMALL_FAST_MODEL$)' || true)
 
 LIST="$(python3 "$HERE/collect.py" list "$CANDIDATES" ${LIMIT:+--limit "$LIMIT"})" \
   || die "collect.py list failed"
@@ -94,7 +98,8 @@ mkdir -p "$OUT"
 touch "$OUT/passed.txt" "$OUT/failed.txt" "$OUT/spend.tsv"
 WORK="$(mktemp -d "$OUT/work.XXXXXX")"
 cd "$WORK"
-SPENT=0
+# The budget covers the whole build set: start from what earlier runs already spent.
+SPENT="$(python3 -c "import sys; print(round(sum(float(l.split('\t')[1]) for l in open(sys.argv[1]) if l.strip()), 2))" "$OUT/spend.tsv")"
 while read -r id repo pr; do
   [ -n "$id" ] || continue
   if grep -qxF "$id" "$OUT/passed.txt" "$OUT/failed.txt"; then
@@ -105,15 +110,15 @@ while read -r id repo pr; do
   fi
   echo "== $id ($repo#$pr)"
   start=$SECONDS
-  if env -i "${CHILD_ENV[@]}" python3 "$SHIM" create --repo "$repo" --pr "$pr" \
-       --output "$OUT/$id" --state-dir "$OUT/.swegen" --cc-timeout "$CC_TIMEOUT" </dev/null \
-       >"$OUT/$id.log" 2>&1; then
+  if env -i "${CHILD_ENV[@]}" python3 "$DRIVER" --repo "$repo" --pr "$pr" \
+       --out "$OUT/$id" --cc-timeout "$CC_TIMEOUT" </dev/null >"$OUT/$id.log" 2>&1; then
     echo "$id" >>"$OUT/passed.txt"; result=passed
   else
     echo "$id" >>"$OUT/failed.txt"; result="failed (see $OUT/$id.log)"
   fi
   COST="$(python3 "$HERE/collect.py" cost "$OUT/$id.log" \
-    --seconds "$((SECONDS - start))" --usd-per-hour "$USD_PER_HOUR")" || die "collect.py cost failed"
+    --seconds "$((SECONDS - start))" --usd-per-hour "$USD_PER_HOUR" \
+    --daytona-usd-per-hour "$DAYTONA_USD_PER_HOUR")" || die "collect.py cost failed"
   read -r usd how <<<"$COST"
   printf '%s\t%s\t%s\n' "$id" "$usd" "$how" >>"$OUT/spend.tsv"
   SPENT="$(python3 -c "import sys; print(round(float(sys.argv[1]) + float(sys.argv[2]), 2))" "$SPENT" "$usd")"

@@ -71,29 +71,30 @@ class BuildShGateTest(Tmp):
         self.assertEqual(r.returncode, collect.PLAN_REFUSED)
         self.assertIn("below the estimate", r.stdout)
 
-    def test_exits_clearly_when_swegen_missing(self):
+    def test_exits_clearly_when_daytona_sdk_missing(self):
         """
-        With the budget confirmed but swegen not installed, build.sh stops with
-        a message saying so (exit 4), and writes no build output.
+        With the budget confirmed but the daytona SDK not installed, build.sh
+        stops with a message saying so (exit 4), and writes no build output.
         """
-        # GIVEN 1 candidate and a sufficient budget, and no swegen on PATH
+        # GIVEN 1 candidate and a sufficient budget, and no daytona module
         p = self.candidates([cand()])
         # WHEN build.sh runs
         r = self.build("--candidates", str(p), "--per-task-usd", "5", "--confirm-budget", "5")
         # THEN it says swegen is missing
         self.assertEqual(r.returncode, 4, r.stdout + r.stderr)
         self.assertIn("budget $5.00 confirmed", r.stdout)
-        self.assertIn("swegen is not installed", r.stderr)
+        self.assertIn("daytona SDK is missing", r.stderr)
 
 
 class BuildShLoopTest(Tmp):
-    """build.sh past the gate, with fake swegen/docker and a python3 wrapper that stands in
-    for swegen_shim.py: it records the child's env and cwd and prints a cost line."""
+    """build.sh past the gate, with a fake daytona module and a python3 wrapper that stands
+    in for daytona_build.py: it records the driver's env and cwd and prints a cost line."""
 
     PARENT_ENV = {
         "GITHUB_TOKEN": "gh-test", "GEMINI_API_KEY_DEV": "gem-test",
         "AWS_ACCESS_KEY_ID": "AKIATEST", "AWS_SECRET_ACCESS_KEY": "secret-test", "AWS_REGION": "us-east-1",
-        "SWEGEN_EXTRA": "kept",
+        "SWEGEN_EXTRA": "kept", "DAYTONA_API_KEY": "dt-test",
+        "ANTHROPIC_DEFAULT_OPUS_MODEL": "opus-id", "ANTHROPIC_SMALL_FAST_MODEL": "haiku-id",
         # planted: none of these may reach the child
         "AWS_ADMIN_X": "admin-test", "ANTHROPIC_AUTH_TOKEN": "auth-test", "ANTHROPIC_API_KEY": "key-test",
         "CLAUDE_CODE_OAUTH_TOKEN": "oauth-test", "GEMINI_API_KEY_PROD": "prod-test",
@@ -104,19 +105,19 @@ class BuildShLoopTest(Tmp):
         bin_dir.mkdir(exist_ok=True)
         calls = self.dir / "calls"
         calls.mkdir(exist_ok=True)
-        for tool in ("swegen", "docker"):
-            (bin_dir / tool).write_text("#!/bin/sh\nexit 0\n")
-            (bin_dir / tool).chmod(0o755)
+        (self.dir / "pylib" / "daytona").mkdir(parents=True, exist_ok=True)
+        (self.dir / "pylib" / "daytona" / "__init__.py").write_text("")
         wrapper = bin_dir / "python3"
         wrapper.write_text(
             "#!/bin/bash\n"
-            'case "$1" in */swegen_shim.py)\n'
+            'case "$1" in */daytona_build.py)\n'
             f'  n=$(ls "{calls}" | wc -l | tr -d " "); env > "{calls}/$n.env"; pwd > "{calls}/$n.cwd"\n'
             f'  echo "total_cost_usd: {cost}"; exit 1 ;;\n'
             "esac\n"
             f'exec "{sys.executable}" "$@"\n')
         wrapper.chmod(0o755)
         env = {"PATH": f"{bin_dir}:/usr/bin:/bin", "HOME": str(self.dir),
+               "PYTHONPATH": str(self.dir / "pylib"),
                **{k: v for k, v in self.PARENT_ENV.items() if k not in drop}}
         r = subprocess.run(["bash", str(FRESH / "build.sh"), "--tasks-dir", str(self.dir), *args],
                            capture_output=True, text=True, env=env)
@@ -145,6 +146,9 @@ class BuildShLoopTest(Tmp):
         self.assertEqual(child["GITHUB_TOKEN"], "gh-test")
         self.assertEqual(child["CLAUDE_CODE_USE_BEDROCK"], "1")
         self.assertEqual(child["SWEGEN_EXTRA"], "kept")
+        self.assertEqual(child["DAYTONA_API_KEY"], "dt-test")  # the driver keeps it out of the sandbox
+        self.assertEqual(child["ANTHROPIC_DEFAULT_OPUS_MODEL"], "opus-id")
+        self.assertEqual(child["ANTHROPIC_SMALL_FAST_MODEL"], "haiku-id")
         self.assertNotIn("ANTHROPIC_MODEL", child)
         self.assertNotIn("AWS_SESSION_TOKEN", child)
         # AND it ran from a scratch folder under the cache, not the caller's cwd
@@ -189,7 +193,8 @@ class BuildShLoopTest(Tmp):
     def test_missing_credentials_stop_before_any_task(self):
         """The Gemini key and the AWS key + region are required up front."""
         p = self.candidates([cand()])
-        for var in ("GEMINI_API_KEY_DEV", "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_REGION"):
+        for var in ("GEMINI_API_KEY_DEV", "DAYTONA_API_KEY", "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY",
+                    "AWS_REGION"):
             with self.subTest(var=var):
                 # GIVEN the var unset
                 # WHEN build.sh runs with a confirmed budget
@@ -200,7 +205,32 @@ class BuildShLoopTest(Tmp):
                 self.assertEqual(envs, [])
 
 
+class SandboxEnvTest(unittest.TestCase):
+    def test_only_model_routing_and_bedrock_gemini_keys_enter_the_sandbox(self):
+        """
+        The sandboxed SWE-gen gets the Bedrock key, the Gemini key and model ids;
+        never the Daytona key, admin keys, logins or anything else.
+        """
+        import daytona_build
+        # GIVEN the driver's env, with secrets that must stay out
+        env = {**BuildShLoopTest.PARENT_ENV, "OPENAI_API_KEY": "gem-test", "OPENAI_BASE_URL": "u",
+               "SWEGEN_LLM_MODEL": "g", "CLAUDE_CODE_USE_BEDROCK": "1", "HOME": "/Users/x",
+               "PATH": "/x", "AWS_SESSION_TOKEN": ""}
+        # WHEN filtered for the sandbox
+        got = daytona_build.sandbox_env(env)
+        # THEN exactly the allowlist (empty values dropped)
+        self.assertEqual(sorted(got), sorted([
+            "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_REGION", "OPENAI_API_KEY", "OPENAI_BASE_URL",
+            "CLAUDE_CODE_USE_BEDROCK", "GITHUB_TOKEN", "SWEGEN_LLM_MODEL", "SWEGEN_EXTRA",
+            "ANTHROPIC_DEFAULT_OPUS_MODEL", "ANTHROPIC_SMALL_FAST_MODEL"]))
+
+
 class CostTest(unittest.TestCase):
+    def test_sandbox_time_is_added_to_the_session_cost(self):
+        """Daytona time counts against the budget too."""
+        log = "swegen_shim: total_cost_usd: 4.0\ndaytona_seconds: 3600\n"
+        self.assertEqual(collect.cost(log, 3600, 13.5, 0.34), (4.34, "measured"))
+
     def test_measured_cost_is_summed_from_the_log(self):
         """Every total_cost_usd reported in the log counts (JSON or key=value form)."""
         log = 'x\n{"type": "result", "total_cost_usd": 3.5}\nResultMessage(total_cost_usd=1.25)\n'

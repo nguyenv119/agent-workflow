@@ -10,7 +10,9 @@ Upstream SWE-gen hardwires two things we replace:
   SDK sends those calls to Gemini instead (model from SWEGEN_LLM_MODEL).
 - claude-opus-4-8 for the Claude Code session that writes the Dockerfile and test.sh.
   That one is a literal `ClaudeAgentOptions(model="claude-opus-4-8")`, so the shim
-  wraps ClaudeAgentOptions in that module (model from SWEGEN_CLAUDE_MODEL).
+  wraps ClaudeAgentOptions in that module (model from SWEGEN_CLAUDE_MODEL). It also
+  wraps that module's `query` to print each session's total_cost_usd to stderr, which
+  SWE-gen does not report and build.sh uses as the task's measured cost.
 
 Every place patched is listed in PATCH_TARGETS. If a SWE-gen upgrade moves one, the
 shim fails loudly ("nothing to patch") instead of silently calling the old model.
@@ -35,6 +37,7 @@ PATCH_TARGETS = (
     ("swegen.create.claude_code_runner", "claude-opus-4-8", "SWEGEN_CLAUDE_MODEL", True),
 )
 OPTIONS_CLASS = "ClaudeAgentOptions"  # callable whose literal model= kwarg is rewritten
+QUERY_FUNC = "query"                  # claude_agent_sdk.query as imported there; cost logged
 ENTRY_POINT = "swegen"                # console_scripts name of SWE-gen's CLI
 
 # Env the build needs: calls must go to Gemini and Bedrock, never OpenAI or a personal login.
@@ -103,6 +106,16 @@ def _wrap_options(cls, old, new):
     return options
 
 
+def _wrap_query(query):
+    async def logged(*args, **kwargs):
+        async for message in query(*args, **kwargs):
+            cost = getattr(message, "total_cost_usd", None)
+            if cost is not None:
+                print(f"swegen_shim: total_cost_usd: {cost}", file=sys.stderr, flush=True)
+            yield message
+    return logged
+
+
 def apply(targets=PATCH_TARGETS, env=os.environ):
     """Import each target module and rebind `old` to env[var]. Returns patch counts.
 
@@ -133,6 +146,10 @@ def apply(targets=PATCH_TARGETS, env=os.environ):
             if options is None:
                 raise ShimError(f"{name} has no {OPTIONS_CLASS}: update PATCH_TARGETS")
             setattr(module, OPTIONS_CLASS, _wrap_options(options, old, new))
+            query = getattr(module, QUERY_FUNC, None)
+            if query is None:
+                raise ShimError(f"{name} has no {QUERY_FUNC}: update PATCH_TARGETS")
+            setattr(module, QUERY_FUNC, _wrap_query(query))
             n += 1
         if n == 0:
             raise ShimError(f"nothing to patch in {name} for {old!r}: update PATCH_TARGETS")

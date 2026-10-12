@@ -5,9 +5,10 @@
       covers the estimate; exit 3 otherwise (nothing is spent).
   collect.py list CANDIDATES [--limit N]
       One "id repo pr" line per candidate, for build.sh's loop.
-  collect.py cost LOG --seconds S --usd-per-hour R
-      One task's cost as "<usd> measured" (sum of total_cost_usd in the log) or, when the
-      log has none, "<usd> elapsed" (S / 3600 x R). build.sh adds it to a running total.
+  collect.py cost LOG --seconds S --usd-per-hour R [--daytona-usd-per-hour D]
+      One task's cost as "<usd> measured" (sum of total_cost_usd in the log, plus the
+      log's daytona_seconds x D) or, when the log has no session cost, "<usd> elapsed"
+      (S / 3600 x R). build.sh adds it to a running total.
   collect.py manifest CANDIDATES BUILD_DIR OUT.json
       Rows for every candidate listed in BUILD_DIR/passed.txt, validated by manifest.py
       (including its hidden-test leak check), written to OUT.json.
@@ -46,12 +47,16 @@ def load_candidates(path):
 COST = re.compile(r"""total_cost_usd['"]?\s*[:=]\s*([0-9]+(?:\.[0-9]+)?)""")
 
 
-def cost(log, seconds, usd_per_hour):
+SANDBOX = re.compile(r"daytona_seconds:\s*([0-9]+)")
+
+
+def cost(log, seconds, usd_per_hour, daytona_usd_per_hour=0.0):
     """(usd, how) for one task. Sums every reported total_cost_usd: overcounting a
     repeated report only stops the loop early, never late."""
     found = [float(x) for x in COST.findall(log)]
     if found:
-        return round(sum(found), 2), "measured"
+        sandbox = sum(int(x) for x in SANDBOX.findall(log)) / 3600 * daytona_usd_per_hour
+        return round(sum(found) + sandbox, 2), "measured"
     return round(seconds / 3600 * usd_per_hour, 2), "elapsed"
 
 
@@ -179,6 +184,7 @@ def main(argv=None):
     co.add_argument("log")
     co.add_argument("--seconds", type=float, required=True)
     co.add_argument("--usd-per-hour", type=float, required=True)
+    co.add_argument("--daytona-usd-per-hour", type=float, default=0.0)
     m = sub.add_parser("manifest")
     m.add_argument("candidates")
     m.add_argument("build_dir")
@@ -186,7 +192,7 @@ def main(argv=None):
     a = ap.parse_args(argv)
     if a.cmd == "cost":
         log = Path(a.log).read_text(errors="replace") if Path(a.log).is_file() else ""
-        print(*cost(log, a.seconds, a.usd_per_hour))
+        print(*cost(log, a.seconds, a.usd_per_hour, a.daytona_usd_per_hour))
         return 0
     cands = load_candidates(a.candidates)
     if getattr(a, "limit", None) is not None:

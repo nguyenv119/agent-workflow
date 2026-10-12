@@ -40,19 +40,30 @@ balanced across language x kind (bugfix if the PR or its issue has a bug-like la
 else feature). `build.sh` refuses to start until `--confirm-budget` covers the estimate,
 count x `--per-task-usd` (default $12). The estimate is not a cap: after each task
 `build.sh` adds that task's cost to a running total (in `cache/fresh-<YYYY-MM>/spend.tsv`)
-and starts no new task once the total reaches `--confirm-budget`. A task's cost is the
-`total_cost_usd` the Claude session reports in its log; if the log has none, it is elapsed
-time x `--usd-per-hour` (default $13.50/hour, i.e. $12 for SWE-gen's default 3200 s
-session timeout). It needs `swegen` and docker installed, and resumes a stopped run (ids
-in `passed.txt` / `failed.txt` there are skipped).
+and starts no new task once the total reaches `--confirm-budget`; the total includes
+earlier runs of the same month. A task's cost is the `total_cost_usd` the Claude session
+reports (the shim prints it) plus Daytona time at $0.34/hour; if the log has no session
+cost, it is elapsed time x `--usd-per-hour` (default $13.50/hour, i.e. $12 for SWE-gen's
+default 3200 s session timeout). Stopped runs resume: ids in `passed.txt` / `failed.txt`
+there are skipped.
 
-Before any paid work `build.sh` requires `GEMINI_API_KEY_DEV`, `AWS_ACCESS_KEY_ID`,
-`AWS_SECRET_ACCESS_KEY` and `AWS_REGION`. `GITHUB_TOKEN` is optional: SWE-gen's PR
+SWE-gen never runs on this machine. Its Claude Code session runs with permission checks
+off and reads untrusted repo and issue text, so `fresh/daytona_build.py` runs each
+`swegen create` in its own throwaway Daytona sandbox (Debian + docker + the pinned
+SWE-gen; SWE-gen's nop/oracle validation uses that docker), with a wall-clock TTL as a
+backstop, and deletes it afterwards, also on failure. Only `swegen_shim.py` is uploaded,
+and the SWE-gen process gets only the model ids, the Bedrock AWS key + region and the
+Gemini key (`daytona_build.SANDBOX_ENV`). Only the log and, for a passing task, the task
+folder come back, extracted as untrusted data.
+
+Before any paid work `build.sh` requires `DAYTONA_API_KEY` (stays on this machine),
+`GEMINI_API_KEY_DEV`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` and `AWS_REGION`, and
+the daytona SDK from `fresh/requirements.txt`. `GITHUB_TOKEN` is optional: SWE-gen's PR
 fetch works unauthenticated (GitHub allows 60 calls an hour; a task makes about 11). If
 you set it, use a fine-grained token with read-only access to public repositories only;
-`build.sh` never falls back to your `gh` login. SWE-gen's Claude session runs with permission checks off,
-so it is started under `env -i` with only those variables (plus `PATH`, `HOME`, `TMPDIR`,
-`AWS_SESSION_TOKEN` if set, and any `SWEGEN_*`), from a scratch folder under the cache.
+`build.sh` never falls back to your `gh` login. The driver itself starts under `env -i`
+with only those variables (plus `PATH`, `HOME`, `TMPDIR`, `AWS_SESSION_TOKEN` if set,
+`SWEGEN_*` and the `ANTHROPIC_DEFAULT_*_MODEL` / `ANTHROPIC_SMALL_FAST_MODEL` ids).
 
 SWE-gen is pinned in `fresh/requirements.txt` (0.1.1, commit 14e185f).
 Differences from upstream SWE-gen: `build.sh` runs it through `fresh/swegen_shim.py`.

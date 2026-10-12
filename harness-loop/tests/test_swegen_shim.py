@@ -57,6 +57,16 @@ FILES = {
 
         def other_options():
             return ClaudeAgentOptions(model="claude-haiku-4-5")
+
+        class ResultMessage:
+            total_cost_usd = 2.75
+
+        async def query(prompt, options):
+            yield "assistant text"
+            yield ResultMessage()
+
+        async def run():
+            return [m async for m in query(prompt="p", options=None)]
         ''',
 }
 
@@ -155,6 +165,23 @@ class ShimTest(unittest.TestCase):
         # THEN the build session gets the Bedrock Opus id, the cwd is kept, the other is untouched
         self.assertEqual((opts.model, opts.cwd), ("global.anthropic.claude-opus-5-5", "/w"))
         self.assertEqual(other.model, "claude-haiku-4-5")
+
+    def test_session_cost_is_printed(self):
+        """
+        SWE-gen never reports what its Claude session cost; the shim prints each
+        result's total_cost_usd so build.sh can add it to the running total.
+        """
+        import asyncio
+        # GIVEN the shim applied
+        swegen_shim.apply(self.targets(), ENV)
+        runner = self.mod("create.claude_code_runner")
+        # WHEN the runner iterates its session
+        err = io.StringIO()
+        with redirect_stderr(err):
+            messages = asyncio.run(runner.run())
+        # THEN every message still arrives and the cost line is printed
+        self.assertEqual(len(messages), 2)
+        self.assertIn("swegen_shim: total_cost_usd: 2.75", err.getvalue())
 
     def test_missing_model_env_fails(self):
         """No silent fallback to gpt-5.5 when the replacement model is unset."""
