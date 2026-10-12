@@ -87,7 +87,9 @@ Before any paid work `build.sh` requires `DAYTONA_API_KEY` (stays on this machin
 the daytona SDK from `fresh/requirements.txt`. `GITHUB_TOKEN` is optional: SWE-gen's PR
 fetch works unauthenticated (GitHub allows 60 calls an hour; a task makes about 11). If
 you set it, use a fine-grained token with read-only access to public repositories only;
-`build.sh` never falls back to your `gh` login. The driver itself starts under `env -i`
+`build.sh` never falls back to your `gh` login. The AWS key goes into the sandbox, where
+the build session can read it, so use an IAM user allowed only `bedrock:InvokeModel*` on
+the model ids above; no key with wider rights. The driver itself starts under `env -i`
 with only those variables (plus `PATH`, `HOME`, `TMPDIR`, `AWS_SESSION_TOKEN` if set,
 `SWEGEN_*` and the `ANTHROPIC_DEFAULT_*_MODEL` / `ANTHROPIC_SMALL_FAST_MODEL` ids).
 

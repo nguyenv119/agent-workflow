@@ -112,7 +112,7 @@ class BuildShLoopTest(Tmp):
             "#!/bin/bash\n"
             'case "$1" in */daytona_build.py)\n'
             f'  n=$(ls "{calls}" | wc -l | tr -d " "); env > "{calls}/$n.env"; pwd > "{calls}/$n.cwd"\n'
-            f'  echo "total_cost_usd: {cost}"; exit 1 ;;\n'
+            f'  echo "cost_report: total_cost_usd: {cost}"; exit 1 ;;\n'
             "esac\n"
             f'exec "{sys.executable}" "$@"\n')
         wrapper.chmod(0o755)
@@ -164,9 +164,9 @@ class BuildShLoopTest(Tmp):
         # WHEN build.sh runs with a $30 budget
         r, envs, _ = self.build("--candidates", str(p), "--per-task-usd", "10",
                                 "--confirm-budget", "30", cost=20)
-        # THEN only 2 tasks start ($20, then $40 >= $30 stops the loop)
+        # THEN only 2 tasks start ($20, then $40 + a worst case over $30 stops the loop)
         self.assertEqual(len(envs), 2, r.stdout + r.stderr)
-        self.assertIn("stopping: spent $40.0 of the $30 budget", r.stdout)
+        self.assertIn("stopping: spent $40.0; another task could cost up to $8.64, over the $30 budget", r.stdout)
         spend = (self.dir / "cache/fresh-2026-10/spend.tsv").read_text().splitlines()
         self.assertEqual([l.split("\t")[1:] for l in spend], [["20.0", "measured"]] * 2)
 
@@ -272,16 +272,79 @@ class CapacityRetryTest(unittest.TestCase):
         self.assertEqual(sleeps, [10, 10, 10])
 
 
+class CostReportTest(unittest.TestCase):
+    def test_only_this_runs_tagged_lines_are_forwarded(self):
+        """
+        The SWE-gen log is untrusted (it holds the session transcript); only the
+        shim's lines with this run's random tag become cost reports.
+        """
+        import daytona_build
+        log = ("swegen_shim[abc123]: session_start\nswegen_shim[abc123]: total_cost_usd: 2.5\n"
+               "swegen_shim[zzz]: total_cost_usd: 0\nswegen_shim: total_cost_usd: 0\n"
+               "  swegen_shim[abc123]: total_cost_usd: 0\n")
+        self.assertEqual(daytona_build.cost_reports(log, "abc123"),
+                         ["cost_report: session_start", "cost_report: total_cost_usd: 2.5"])
+        self.assertEqual(daytona_build.cost_reports(log, ""), [])
+
+
+class DeleteOwnTest(unittest.TestCase):
+    def test_only_this_runs_sandbox_is_deleted_when_create_failed(self):
+        """
+        If create() fails after the sandbox exists, it is found by this run's
+        unique label; another run's sandbox is never deleted.
+        """
+        import sys as _sys
+        import types
+        import daytona_build
+
+        class FakeDaytona:
+            def __init__(self, boxes):
+                self.boxes, self.deleted = boxes, []
+            def list(self, query):
+                return self.boxes
+            def delete(self, sb):
+                self.deleted.append(sb)
+
+        mine = types.SimpleNamespace(labels={"swegen-run": "abc"})
+        other = types.SimpleNamespace(labels={"swegen-run": "zzz"})
+        fake = types.ModuleType("daytona")
+        fake.ListSandboxesQuery = lambda labels: labels
+        old = _sys.modules.get("daytona")
+        _sys.modules["daytona"] = fake
+        try:
+            # GIVEN a list that (wrongly) returns another run's sandbox too
+            d = FakeDaytona([mine, other])
+            # WHEN this run cleans up with no sandbox handle
+            daytona_build.delete_own(d, None, {"swegen-run": "abc"})
+        finally:
+            _sys.modules.pop("daytona") if old is None else _sys.modules.__setitem__("daytona", old)
+        # THEN only its own sandbox is deleted
+        self.assertEqual(d.deleted, [mine])
+        # AND a known handle is deleted directly
+        d2 = FakeDaytona([])
+        daytona_build.delete_own(d2, other, {"swegen-run": "abc"})
+        self.assertEqual(d2.deleted, [other])
+
+
 class CostTest(unittest.TestCase):
     def test_sandbox_time_is_added_to_the_session_cost(self):
         """Daytona time counts against the budget too."""
-        log = "swegen_shim: total_cost_usd: 4.0\ndaytona_seconds: 3600\n"
+        log = "cost_report: session_start\ncost_report: total_cost_usd: 4.0\ndaytona_seconds: 3600\n"
         self.assertEqual(collect.cost(log, 3600, 13.5, 0.34), (4.34, "measured"))
 
     def test_measured_cost_is_summed_from_the_log(self):
-        """Every total_cost_usd reported in the log counts (JSON or key=value form)."""
-        log = 'x\n{"type": "result", "total_cost_usd": 3.5}\nResultMessage(total_cost_usd=1.25)\n'
+        """Every cost_report line counts; look-alike text from elsewhere does not."""
+        log = ('cost_report: total_cost_usd: 3.5\ncost_report: total_cost_usd: 1.25\n'
+               '{"type": "result", "total_cost_usd": 0}\nswegen_shim: total_cost_usd: 0\n')
         self.assertEqual(collect.cost(log, 600, 13.5), (4.75, "measured"))
+
+    def test_session_cut_off_without_cost_is_charged_elapsed(self):
+        """
+        SWE-gen's timeout ends a session with no result message, so no cost is
+        reported for it; a start without a matching cost means the elapsed estimate.
+        """
+        log = "cost_report: session_start\ncost_report: session_start\ncost_report: total_cost_usd: 1.0\n"
+        self.assertEqual(collect.cost(log, 3600, 13.5), (13.5, "elapsed"))
 
     def test_elapsed_time_when_log_has_no_cost(self):
         """With no reported cost the task is charged elapsed hours x rate."""
@@ -382,6 +445,30 @@ class TestCommandTest(unittest.TestCase):
         # THEN none match
         self.assertFalse([h for h in self.HIDDEN for t in toks if collect.manifest._names(t, h)])
 
+    def test_selection_flags_and_their_values_are_dropped(self):
+        """
+        `-k widget` or `--deselect x` names hidden tests by pattern; the flag and
+        its value both go, and a dangling `--` goes with them.
+        """
+        # GIVEN runners that select tests by name
+        # WHEN extracted / THEN no selector survives
+        self.assertEqual(self.cmd("pytest -q -k 'widget and not slow' --deselect tests/x.py::t\n"), "pytest -q")
+        self.assertEqual(self.cmd("pnpm test -- --testNamePattern=policy\n"), "pnpm test")
+
+    def test_hidden_file_named_by_stem_or_module_is_dropped(self):
+        """A hidden file can also be named by its dotted module or its bare file stem."""
+        # GIVEN a unittest module path and a jest stem pattern
+        # WHEN extracted / THEN neither name survives
+        self.assertEqual(self.cmd("python -m unittest tests.test_widget\n"), "python -m unittest")
+        self.assertEqual(self.cmd("npx jest test_widget\n"), "npx jest")
+
+    def test_shell_test_builtin_is_not_a_runner(self):
+        """`test -f x` is the shell's check, not a test runner; the real runner after it is taken."""
+        # GIVEN a guard line before the runner
+        sh = "test -f package.json || exit 1\nnpm test\n"
+        # WHEN extracted / THEN the npm runner is returned
+        self.assertEqual(self.cmd(sh), "npm test")
+
 
 SWEGEN_TOML = """[metadata]
 difficulty = "medium"
@@ -428,6 +515,28 @@ class OpenNetworkTest(unittest.TestCase):
         # AND a longer limit is kept
         longer = SWEGEN_TOML.replace("[agent]\ntimeout_sec = 600.0", "[agent]\ntimeout_sec = 3600.0")
         self.assertEqual(collect.tomllib.loads(collect.raise_agent_timeout(longer))["agent"]["timeout_sec"], 3600.0)
+
+    def test_missing_agent_timeout_is_added(self):
+        """With no timeout_sec, Harbor's default would apply; the 1800 s limit is written in."""
+        # GIVEN an [agent] section without a limit, and a toml with no [agent] at all
+        for text in ("[agent]\nuser = 'x'\n", "[environment]\ncpus = 2\n"):
+            # WHEN raised / THEN the agent gets 1800 s and the rest is kept
+            cfg = collect.tomllib.loads(collect.raise_agent_timeout(text))
+            self.assertEqual(cfg["agent"]["timeout_sec"], 1800.0)
+        self.assertEqual(cfg["environment"]["cpus"], 2)
+
+    def test_publish_refuses_a_task_with_symlinks(self):
+        """Build output is untrusted; a symlink copied into the repo could point anywhere."""
+        with tempfile.TemporaryDirectory() as d:
+            # GIVEN a built task holding a symlink
+            src = Path(d, "task")
+            src.mkdir()
+            (src / "task.toml").write_text(SWEGEN_TOML)
+            (src / "leak").symlink_to("/etc/hosts")
+            # WHEN published / THEN it is refused and nothing is written
+            with self.assertRaisesRegex(ValueError, "symlinks: leak"):
+                collect.publish(src, Path(d, "out"))
+            self.assertFalse(Path(d, "out").exists())
 
     def test_toml_without_network_mode_is_unchanged(self):
         # GIVEN a task.toml that sets no network mode (Harbor's default is public)

@@ -110,8 +110,11 @@ while read -r id repo pr; do
   if grep -qxF "$id" "$OUT/passed.txt" "$OUT/failed.txt"; then
     echo "skip $id (already built)"; continue
   fi
-  if python3 -c "import sys; sys.exit(float(sys.argv[1]) < float(sys.argv[2]))" "$SPENT" "$BUDGET"; then
-    echo "stopping: spent \$$SPENT of the \$$BUDGET budget"; break
+  # Start a task only if even its worst case fits: the session cap plus the sandbox's longest life.
+  WORST="$(python3 -c "import sys; print(round(float(sys.argv[1]) + (int(sys.argv[2]) + 3600) / 3600 * float(sys.argv[3]), 2))" \
+    "$CC_MAX_USD" "$CC_TIMEOUT" "$DAYTONA_USD_PER_HOUR")"
+  if python3 -c "import sys; sys.exit(float(sys.argv[1]) + float(sys.argv[2]) <= float(sys.argv[3]))" "$SPENT" "$WORST" "$BUDGET"; then
+    echo "stopping: spent \$$SPENT; another task could cost up to \$$WORST, over the \$$BUDGET budget"; break
   fi
   echo "== $id ($repo#$pr)"
   start=$SECONDS

@@ -48,6 +48,7 @@ SETTING_TARGETS = (
 OPTIONS_CLASS = "ClaudeAgentOptions"  # callable whose literal model= kwarg is rewritten
 QUERY_FUNC = "query"                  # claude_agent_sdk.query as imported there; cost logged
 BUDGET_ENV = "SWEGEN_CLAUDE_MAX_BUDGET_USD"  # optional per-session cap, passed as max_budget_usd
+LOG_TAG_ENV = "SWEGEN_LOG_TAG"  # random per run; tags the cost-report lines
 ENTRY_POINT = "swegen"                # console_scripts name of SWE-gen's CLI
 
 # Env the build needs: calls must go to Gemini and Bedrock, never OpenAI or a personal login.
@@ -112,8 +113,9 @@ def _wrap_options(cls, old, new, max_budget_usd=None):
     def options(*args, **kwargs):
         if kwargs.get("model") == old:
             kwargs["model"] = new
-            if max_budget_usd is not None:
-                kwargs.setdefault("max_budget_usd", max_budget_usd)
+            if max_budget_usd is not None:  # ours, or a lower one SWE-gen already set
+                given = kwargs.get("max_budget_usd")
+                kwargs["max_budget_usd"] = max_budget_usd if given is None else min(given, max_budget_usd)
         return cls(*args, **kwargs)
     return options
 
@@ -138,12 +140,20 @@ def _max_budget(env, cls):
     return usd
 
 
+def _report(what, env=os.environ):
+    """One cost-report line, tagged with SWEGEN_LOG_TAG so the driver can tell it from
+    repo or transcript text that merely looks like one."""
+    tag = env.get(LOG_TAG_ENV, "")
+    print(f"swegen_shim{f'[{tag}]' if tag else ''}: {what}", file=sys.stderr, flush=True)
+
+
 def _wrap_query(query):
     async def logged(*args, **kwargs):
+        _report("session_start")  # a start with no cost after it means the session was cut off
         async for message in query(*args, **kwargs):
             cost = getattr(message, "total_cost_usd", None)
             if cost is not None:
-                print(f"swegen_shim: total_cost_usd: {cost}", file=sys.stderr, flush=True)
+                _report(f"total_cost_usd: {cost}")
             yield message
     return logged
 
@@ -200,7 +210,7 @@ def apply(targets=PATCH_TARGETS, env=os.environ):
 def load_cli(name=ENTRY_POINT):
     found = entry_points(group="console_scripts", name=name)
     if not found:
-        raise ShimError(f"{name} is not installed (pip/uv install swegen needs Long's OK first)")
+        raise ShimError(f"{name} is not installed (install it from tasks/fresh/requirements.txt)")
     return next(iter(found)).load()
 
 

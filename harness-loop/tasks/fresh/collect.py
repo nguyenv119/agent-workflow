@@ -49,8 +49,10 @@ def load_candidates(path):
     return json.loads(Path(path).read_text())["candidates"]
 
 
-# The Claude session's result reports its cost as total_cost_usd (JSON or repr form).
-COST = re.compile(r"""total_cost_usd['"]?\s*[:=]\s*([0-9]+(?:\.[0-9]+)?)""")
+# daytona_build.py forwards the shim's tagged reports from the untrusted SWE-gen log as
+# `cost_report:` lines; nothing else in the log counts.
+COST = re.compile(r"^cost_report: total_cost_usd: ([0-9]+(?:\.[0-9]+)?)\s*$", re.M)
+STARTS = re.compile(r"^cost_report: session_start\s*$", re.M)
 
 
 SANDBOX = re.compile(r"daytona_seconds:\s*([0-9]+)")
@@ -58,12 +60,13 @@ SANDBOX = re.compile(r"daytona_seconds:\s*([0-9]+)")
 
 def cost(log, seconds, usd_per_hour, daytona_usd_per_hour=0.0):
     """(usd, how) for one task. Sums every reported total_cost_usd: overcounting a
-    repeated report only stops the loop early, never late."""
+    repeated report only stops the loop early, never late. A session that started but
+    reported no cost (cut off by SWE-gen's timeout) makes it the elapsed estimate."""
     found = [float(x) for x in COST.findall(log)]
-    if found:
+    if found and len(STARTS.findall(log)) <= len(found):
         sandbox = sum(int(x) for x in SANDBOX.findall(log)) / 3600 * daytona_usd_per_hour
         return round(sum(found) + sandbox, 2), "measured"
-    return round(seconds / 3600 * usd_per_hour, 2), "elapsed"
+    return round(max(seconds / 3600 * usd_per_hour, sum(found)), 2), "elapsed"
 
 
 def plan(cands, per_task_usd, budget=None):
@@ -107,12 +110,50 @@ def _segments(line):
     return [s for s in segs if s]
 
 
-def _hidden(tok, hidden):
+# Flags whose value selects tests by name or pattern; flag and value are both dropped.
+SELECT_FLAGS = {"-k", "-t", "-g", "--grep", "--deselect", "--testPathPattern", "--testNamePattern",
+                "--test-name-pattern", "--testPathPatterns", "--test-path-pattern"}
+PM = re.compile(r"^(?:\S+/)?(?:npm|pnpm|yarn|bun)\b")  # a bare `test` is a runner only behind these
+
+
+def _hidden_names(hidden):
+    """Ways a hidden test file can be named on a command line besides its path: its file
+    name without extensions (policy.test.ts -> policy) and its dotted module path."""
+    out = set()
+    for h in hidden:
+        stem = Path(h).name.split(".")[0]
+        if len(stem) >= 4:
+            out.add(stem)
+        if h.endswith(".py"):
+            out.add(h[:-3].replace("/", "."))
+    return out
+
+
+def _hidden(tok, hidden, names=frozenset()):
     tok = tok.split("=")[-1].split("::")[0]
     tok = tok[2:] if tok.startswith("./") else tok
     test_file = is_test_path(tok) and "." in Path(tok).name  # a file, not a tests/ folder
     return ("$" in tok or tok == "/tests" or tok.startswith("/tests/") or test_file
-            or any(manifest._names(tok, h) for h in hidden))
+            or any(manifest._names(tok, h) for h in hidden)
+            or any(n in tok for n in names))
+
+
+def _visible(words, hidden):
+    """words minus hidden test names and test-selecting flags (with their values)."""
+    names, kept, skip = _hidden_names(hidden), [], False
+    for w in words:
+        if skip:
+            skip = False
+            continue
+        flag = w.split("=", 1)[0]
+        if flag in SELECT_FLAGS:
+            skip = "=" not in w  # `-k expr` drops the next word too; `--grep=x` is one word
+            continue
+        if not kept or not _hidden(w, hidden, names):  # never drop the runner itself
+            kept.append(w)
+    while kept and kept[-1] == "--":
+        kept.pop()
+    return kept
 
 
 def test_command(test_sh, hidden):
@@ -128,10 +169,10 @@ def test_command(test_sh, hidden):
             continue
         for seg in _segments(line):
             words = [w for w in seg if not re.fullmatch(r"[A-Za-z_]\w*=\S*", w)]  # env prefixes
-            if not words or not RUNNER.match(" ".join(words)):
-                continue
-            kept = [w for w in words if not _hidden(w, hidden)]
-            return shlex.join(kept)
+            m = RUNNER.match(" ".join(words)) if words else None
+            if not m or (m.group(1) == "test" and not PM.match(words[0])):
+                continue  # the shell's own `test -f x` is not a test runner
+            return shlex.join(_visible(words, hidden))
     return None
 
 
@@ -184,6 +225,9 @@ def raise_agent_timeout(toml_text, seconds=AGENT_TIMEOUT_SEC):
     def bump(m):
         return m.group(1) + (str(seconds) if float(m.group(2)) < seconds else m.group(2))
     text = AGENT_TIMEOUT.sub(bump, toml_text, count=1)
+    if "timeout_sec" not in tomllib.loads(text).get("agent", {}):  # Harbor's default would apply
+        text = (re.sub(r"^\[agent\]\s*$", f"[agent]\ntimeout_sec = {seconds}", text, count=1, flags=re.M)
+                if re.search(r"^\[agent\]\s*$", text, re.M) else text + f"\n[agent]\ntimeout_sec = {seconds}\n")
     got = tomllib.loads(text).get("agent", {}).get("timeout_sec")
     if got is not None and float(got) < seconds:
         raise ValueError(f"[agent] timeout_sec is still {got}")
@@ -193,9 +237,12 @@ def raise_agent_timeout(toml_text, seconds=AGENT_TIMEOUT_SEC):
 def publish(tdir, dest):
     """Copy one built task folder to dest (replaced if present), network opened, agent time raised."""
     dest = Path(dest)
+    links = sorted(p.relative_to(tdir).as_posix() for p in Path(tdir).rglob("*") if p.is_symlink())
+    if links:  # untrusted output: a link could point anywhere once copied
+        raise ValueError(f"{tdir}: refusing to publish a task with symlinks: {', '.join(links)}")
     if dest.exists():
         shutil.rmtree(dest)
-    shutil.copytree(tdir, dest, symlinks=True)  # never follow links in untrusted output
+    shutil.copytree(tdir, dest)
     toml = dest / "task.toml"
     toml.write_text(raise_agent_timeout(open_network(toml.read_text())))
     return dest

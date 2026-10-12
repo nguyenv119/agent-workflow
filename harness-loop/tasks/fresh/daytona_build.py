@@ -22,6 +22,7 @@ import shlex
 import sys
 import tarfile
 import time
+import uuid
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -93,6 +94,16 @@ def run(sb, cmd, timeout=600):
     return r.result
 
 
+def cost_reports(log, tag):
+    """The shim's cost lines from an untrusted SWE-gen log, as `cost_report: ...` lines.
+
+    Only lines carrying this run's random tag count, so repo or transcript text that
+    looks like a cost line cannot lower the measured spend."""
+    prefix = f"swegen_shim[{tag}]: "
+    return [f"cost_report: {line[len(prefix):].strip()}" for line in log.splitlines()
+            if tag and line.startswith(prefix)]
+
+
 def build(sb, repo, pr, cc_timeout, env, out):
     run(sb, "mkdir -p /work")
     sb.fs.upload_file(SHIM.read_bytes(), "/work/swegen_shim.py")
@@ -116,9 +127,8 @@ def build(sb, repo, pr, cc_timeout, env, out):
     out.mkdir(parents=True, exist_ok=True)
     log = sb.fs.download_file("/work/log") or b""
     (out.parent / f"{out.name}.swegen.log").write_bytes(log)
-    for line in log.decode(errors="replace").splitlines():  # session costs, for build.sh
-        if "total_cost_usd" in line:
-            print(line, file=sys.stderr)
+    for line in cost_reports(log.decode(errors="replace"), env.get("SWEGEN_LOG_TAG", "")):
+        print(line, file=sys.stderr)  # session costs, for build.sh
     if rc is None:
         print("daytona_build: SWE-gen did not finish before the deadline", file=sys.stderr)
         return 124
@@ -140,18 +150,35 @@ def main(argv=None, env=os.environ):
     from daytona import CreateSandboxFromImageParams, Daytona, DaytonaConfig, Resources
 
     daytona = Daytona(DaytonaConfig(api_key=env["DAYTONA_API_KEY"]))
+    run_id = uuid.uuid4().hex
+    labels = {"purpose": "swegen-create", "swegen-run": run_id}
     start = time.time()
     sb = None
     try:
         sb = create_when_free(lambda: daytona.create(CreateSandboxFromImageParams(
             image=image(), resources=Resources(cpu=CPUS, memory=MEMORY_GB, disk=DISK_GB),
-            ttl_minutes=a.cc_timeout // 60 + 90, labels={"purpose": "swegen-create"}),
-            timeout=1800))
-        return build(sb, a.repo, a.pr, a.cc_timeout, sandbox_env(env), a.out)
+            ttl_minutes=a.cc_timeout // 60 + 90, labels=labels), timeout=1800))
+        return build(sb, a.repo, a.pr, a.cc_timeout, {**sandbox_env(env), "SWEGEN_LOG_TAG": run_id}, a.out)
     finally:
-        if sb is not None:
-            daytona.delete(sb)
         print(f"daytona_seconds: {round(time.time() - start)}", file=sys.stderr)
+        delete_own(daytona, sb, labels)
+
+
+def delete_own(daytona, sb, labels):
+    """Delete this run's sandbox. If create() failed after the sandbox existed (e.g. it
+    never started), find it by this run's unique label; never touch any other sandbox."""
+    if sb is not None:
+        daytona.delete(sb)
+        return
+    try:
+        from daytona import ListSandboxesQuery
+        found = list(daytona.list(ListSandboxesQuery(labels=labels)))
+    except Exception as e:
+        print(f"daytona_build: could not list sandboxes to clean up: {e}", file=sys.stderr)
+        return
+    for s in found:
+        if (getattr(s, "labels", None) or {}).get("swegen-run") == labels["swegen-run"]:
+            daytona.delete(s)
 
 
 if __name__ == "__main__":
