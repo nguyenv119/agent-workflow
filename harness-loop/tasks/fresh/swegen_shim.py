@@ -36,6 +36,13 @@ PATCH_TARGETS = (
     # ClaudeAgentOptions(..., model="claude-opus-4-8") inside the build-session runner
     ("swegen.create.claude_code_runner", "claude-opus-4-8", "SWEGEN_CLAUDE_MODEL", True),
 )
+# Module settings read at call time, raised for Gemini: its thinking tokens count toward
+# max_completion_tokens (4096 left 150 for the answer and failed the parse), and a
+# thinking model can need longer than 90 s.   (module, name, value SWE-gen ships, ours)
+SETTING_TARGETS = (
+    ("swegen.create.task_instruction", "MAX_COMPLETION_TOKENS", 4096, 32768),
+    ("swegen.create.task_instruction", "OPENAI_API_TIMEOUT", 90.0, 600.0),
+)
 OPTIONS_CLASS = "ClaudeAgentOptions"  # callable whose literal model= kwarg is rewritten
 QUERY_FUNC = "query"                  # claude_agent_sdk.query as imported there; cost logged
 ENTRY_POINT = "swegen"                # console_scripts name of SWE-gen's CLI
@@ -116,6 +123,14 @@ def _wrap_query(query):
     return logged
 
 
+def apply_settings(targets=SETTING_TARGETS):
+    for name, attr, old, new in targets:
+        module = importlib.import_module(name)
+        if getattr(module, attr, None) != old:
+            raise ShimError(f"{name}.{attr} is no longer {old!r}: update SETTING_TARGETS")
+        setattr(module, attr, new)
+
+
 def apply(targets=PATCH_TARGETS, env=os.environ):
     """Import each target module and rebind `old` to env[var]. Returns patch counts.
 
@@ -170,6 +185,8 @@ def main(argv=None, env=os.environ, targets=PATCH_TARGETS, entry=ENTRY_POINT):
         check_env(env)
         cli = load_cli(entry)
         counts = apply(targets, env)
+        if targets is PATCH_TARGETS:
+            apply_settings()
     except ShimError as e:
         sys.exit(f"swegen_shim: {e}")
     print("swegen_shim: patched " + ", ".join(f"{m} x{n}" for m, n in counts.items()), file=sys.stderr)

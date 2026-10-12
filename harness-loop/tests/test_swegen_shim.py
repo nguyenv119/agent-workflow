@@ -183,6 +183,22 @@ class ShimTest(unittest.TestCase):
         self.assertEqual(len(messages), 2)
         self.assertIn("swegen_shim: total_cost_usd: 2.75", err.getvalue())
 
+    def test_settings_raised_and_drift_refused(self):
+        """
+        Gemini's thinking tokens count toward max_completion_tokens, so the
+        shim raises it; if SWE-gen changes the shipped value it must stop.
+        """
+        import importlib
+        name = f"{self.pkg}.create.task_instruction"
+        mod = importlib.import_module(name)
+        mod.LIMIT = 4096
+        # WHEN the setting matches what SWE-gen ships, THEN it is raised
+        swegen_shim.apply_settings(((name, "LIMIT", 4096, 32768),))
+        self.assertEqual(mod.LIMIT, 32768)
+        # WHEN it no longer matches, THEN the shim refuses
+        with self.assertRaisesRegex(swegen_shim.ShimError, "SETTING_TARGETS"):
+            swegen_shim.apply_settings(((name, "LIMIT", 4096, 32768),))
+
     def test_missing_model_env_fails(self):
         """No silent fallback to gpt-5.5 when the replacement model is unset."""
         # GIVEN an env without SWEGEN_LLM_MODEL
