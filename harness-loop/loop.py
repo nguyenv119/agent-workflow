@@ -80,8 +80,17 @@ GATE_WORDS = re.compile(r"\b(tests?|testing|test-runner|test-first|gates?|review
                         r"|acceptance|lint|linting|typecheck|verif\w*|coverage|quality|hooks?)\b", re.I)
 WEAKEN = re.compile(r"\b(skip\w*|shorten\w*|sampl\w*|bypass\w*|omit\w*|disabl\w*|ignor\w*|optional\w*"
                     r"|loosen\w*|relax\w*|waive\w*)\b", re.I)
-NEGATED_WEAKEN = re.compile(r"\b(?:never|not|no|cannot|don't|must not)\s+(?:\w+\s+){0,2}?"
-                            r"(?:skip|shorten|sampl|bypass|omit|disabl|ignor|loosen|relax|waive)\w*", re.I)
+_WEAK = r"(?:skip|shorten|sampl|bypass|omit|disabl|ignor|loosen|relax|waive)\w*"
+NEGATED_WEAKEN = re.compile(r"\b(?:never|not|no|cannot|don't|must not)\s+(?:\w+\s+){0,2}?" + _WEAK
+                            + r"|\b" + _WEAK + r"\b[^.;]{0,40}?\b(?:is|are)\s+(?:never|not)\s+"
+                            r"(?:allowed|permitted|acceptable)\b", re.I)
+_GATE_NOUN = r"(?:reviewers?|reviews?|gates?|tests?|test-runner|acceptance)"
+# ponytail: phrase lists, not understanding; a reworded weakening can still slip past (the
+# improver skill's hard rule 8 and human review of every PR are the backstop).
+FEWER = re.compile(r"\b(?:only|just|a single)\s+(?:one\s+|a\s+)?" + _GATE_NOUN + r"\b"
+                   r"|\binstead of (?:all |the )?(?:three|3|every)\b"
+                   r"|(?<!not )(?<!never )(?<!n't )\b(?:push|merge|commit|open)\w*\s+before\s+(?:the\s+)?"
+                   r"(?:\w+\s+)?" + _GATE_NOUN + r"\s+(?:finish|pass|complete|report|return)\w*", re.I)
 NO_RUN = re.compile(r"\b(?:do not|don't|never|no need to|without|stop|avoid)\s+(?:run|running|execute|executing"
                     r"|spawn|spawning|write|writing|wait|waiting|call|calling)\b(?:\W+\w+){0,2}?\W+"
                     + GATE_WORDS.pattern, re.I)
@@ -287,7 +296,7 @@ def hook_commands(text):
 def weakening(line):
     """True if an added line tells an agent to skip, shorten, sample or bypass a gate."""
     rest = NEGATED_WEAKEN.sub(" ", line)
-    return bool((WEAKEN.search(rest) and GATE_WORDS.search(rest)) or NO_RUN.search(line))
+    return bool((WEAKEN.search(rest) and GATE_WORDS.search(rest)) or NO_RUN.search(line) or FEWER.search(line))
 
 
 def gate_guard(diff_text, old_text, new_text):
@@ -361,14 +370,20 @@ def section(text, title):
     return "\n".join(out)
 
 
-def try_folders(text):
+def existing_dirs():
+    """Every dir under the two try roots, taken before the improver runs: a folder it creates is no evidence."""
+    return {Path(d).resolve() for root in (HOME / "runs", TRIES) for d, _, _ in os.walk(root)}
+
+
+def try_folders(text, existing=None):
     """(valid, invalid) try-folder citations: runs/... under $HARNESS_LOOP_HOME/runs or
-    ~/.claude/tries/agent-workflow/..., each an existing dir inside its root."""
+    ~/.claude/tries/agent-workflow/..., each an existing dir inside its root (and in `existing`, if given)."""
     valid, invalid = [], []
     for p in dict.fromkeys(m.rstrip(".:") for m in TRY_PATH.findall(text)):
         root, rest = (HOME / "runs", p[len("runs/"):]) if p.startswith("runs/") else (TRIES, p.split("agent-workflow/", 1)[1])
         target = (root / rest).resolve()
-        ok = target.is_dir() and target.is_relative_to(root.resolve()) and target != root.resolve()
+        ok = (target.is_dir() and target.is_relative_to(root.resolve()) and target != root.resolve()
+              and (existing is None or target in existing))
         (valid if ok else invalid).append(p)
     return valid, invalid
 
@@ -403,7 +418,7 @@ def load_check(cand):
         return bad
 
 
-def run_checks(base, cand, proposal, private):
+def run_checks(base, cand, proposal, private, existing=None):
     """[(name, ok, detail)] for every check. The gate guard's rows are named 'gate guard'."""
     out = []
     count = int(git("rev-list", "--count", f"{base}..{cand}"))
@@ -429,7 +444,7 @@ def run_checks(base, cand, proposal, private):
     hits = leak_hits(added + message.splitlines() + proposal.splitlines(), private)
     out.append(("leak scan", not hits, "leak: " + "; ".join(h.strip()[:80] for h in hits) if hits else ""))
     idea = re.search(r"^Idea:\s*\S", proposal, re.M)
-    valid, invalid = try_folders(proposal)
+    valid, invalid = try_folders(proposal, existing)
     ok = bool(proposal) and bool(idea) and len(valid) >= 2
     detail = ("no proposal.md" if not proposal else "no Idea: line" if not idea else
               f"{len(valid)} valid try folders (need 2){'; not found: ' + ', '.join(invalid) if invalid else ''}")
@@ -494,7 +509,7 @@ def tries_of(run):
 
 def score_line(kind, stats, base_sha, cand_sha, tries, tail):
     n = int(stats["n"])
-    return (f"{kind} ({n} tasks x {tries}): main {base_sha[:7]} solved {stats['solvedA']}/{n} ${float(stats['costA']):.2f}"
+    return (f"{kind} ({n} tasks x {tries}): baseline main {base_sha[:7]} solved {stats['solvedA']}/{n} ${float(stats['costA']):.2f}"
             f" | candidate {cand_sha[:7]} solved {stats['solvedB']}/{n} ${float(stats['costB']):.2f} | {tail}")
 
 
@@ -502,15 +517,24 @@ def scores_block(*lines):
     return "\n".join([SCORES_OPEN, *lines, SCORES_CLOSE])
 
 
+def mask_task(path):
+    """runs/<run>/<task>/try-N -> runs/<run>/task-<sha8>/try-N: the PR names no exam task (proposal.md keeps it)."""
+    parts = path.split("/")
+    if parts[0] == "runs" and len(parts) > 3:
+        parts[2] = "task-" + hashlib.sha256(parts[2].encode()).hexdigest()[:8]
+    return "/".join(parts)
+
+
 def proposal_for_body(proposal):
-    """proposal.md without its Evidence list (task names stay in the round dir) or any marker lines."""
+    """proposal.md with its Evidence list reduced to the cited paths (exam task dirs masked) and no marker lines."""
     out, skip = [], False
     proposal = re.sub(re.escape(SCORES_OPEN) + r".*?" + re.escape(SCORES_CLOSE), "", proposal, flags=re.S)
     for line in proposal.splitlines():
         if re.match(r"^[A-Z][\w ]*:", line):
             skip = line.startswith("Evidence:")
             if skip:
-                out.append(f"Evidence: {len(try_folders(proposal)[0])} try folders, cited in the round's proposal.md")
+                out.append("Evidence (task dirs masked; notes in the round's proposal.md):")
+                out += [f"  {mask_task(t)}" for t in try_folders(proposal)[0]]
                 continue
         if not skip and "harness-loop:scores" not in line:
             out.append(line)
@@ -628,7 +652,7 @@ def cmd_round(args):
         argv = improver_argv(args, msg, round_dir)
         if not default:
             improver_settings(round_dir)
-        before = snapshot(branch, base_run)
+        before, existing = snapshot(branch, base_run), existing_dirs()
         code, cost = run_improver(argv, wt, round_dir, improver_env(round_dir, default))
         changes = tampered(before, snapshot(branch, base_run))
         restore_state(before["state"])
@@ -646,7 +670,7 @@ def cmd_round(args):
         proposal = prop_f.read_text(errors="replace") if prop_f.is_file() else ""
         idea = re.search(r"^Idea:\s*(.+)$", proposal, re.M)
         row["idea"] = idea[1].strip() if idea else None
-        checks, files = run_checks(base_sha, cand, proposal, private)
+        checks, files = run_checks(base_sha, cand, proposal, private, existing)
         row["files"] = sorted({f["new"] if f["status"] != "D" else f["old"] for f in files})
         (round_dir / "checks.json").write_text(json.dumps([{"check": c, "ok": ok, "detail": d}
                                                            for c, ok, d in checks], indent=2) + "\n")
@@ -670,6 +694,8 @@ def cmd_round(args):
         cand_run = run_exam(cand, manifest, "candidate", per_run, n)
         changes = tampered(before, snapshot(branch, base_run), ignore_pycache=True, skip_state=("spend.jsonl",))
         if changes:
+            # spend.jsonl is kept: book() appended the exam's real cost to it during the screen
+            restore_state({k: v for k, v in before["state"].items() if k != "spend.jsonl"})
             return finish("dropped", "tamper during screen: " + "; ".join(changes))
         stats = compare(base_run, cand_run, "--screen-rule")
         verdict = stats["screen"]
@@ -731,6 +757,9 @@ def cmd_monthly(args):
         for q in items:
             b = run_exam(q["cand_sha"], manifest, "candidate", per_run, q["round"], screen=False, tries=2)
             stats = compare(a1, b, "--margin-from", str(a2))
+            cut = [rel_home(r) for r in (a1, a2, b) if json.loads((r / "run.json").read_text()).get("status") != "complete"]
+            if cut:  # a budget-cut run is a few tasks, not the full exam: no verdict from it
+                stats["verdict"] = "incomplete"
             full = {"main_run": rel_home(a1), "main_run_2": rel_home(a2), "cand_run": rel_home(b),
                     "main_sha": main_sha, "solved_base": int(stats["solvedA"]), "solved_cand": int(stats["solvedB"]),
                     "cost_base": float(stats["costA"]), "cost_cand": float(stats["costB"]), "n": int(stats["n"]),
@@ -756,9 +785,9 @@ def cmd_monthly(args):
                            check=True, capture_output=True, text=True)
             os.unlink(fh.name)
             update_history(q["round"], full=full)
-            print(f"monthly: round {q['round']} PR #{q['pr']}: {lines[-1]}")
-    done = {q["round"] for q in queue}
-    write_queue([q for q in read_queue() if q["round"] not in done])
+            write_queue([x for x in read_queue() if x["round"] != q["round"]])  # a rerun never pays for it again
+            print(f"monthly: round {q['round']} PR #{q['pr']}: {lines[-1]}"
+                  + (f" (cut short: {', '.join(cut)})" if cut else ""))
 
 
 def cmd_sync(_args):
@@ -776,7 +805,7 @@ def cmd_sync(_args):
 
 
 def cmd_guard(args):
-    reasons, _ = guard_commits(args.base, args.cand)
+    reasons, _ = guard_commits(args.base or f"{args.commit}^", args.commit)
     for r in reasons:
         print(f"guard: {r}")
     if reasons:
@@ -798,9 +827,9 @@ def main(argv=None):
     m = sub.add_parser("monthly")
     m.add_argument("--budget-usd", type=float, default=DEFAULT_EXAM_BUDGET_USD)
     sub.add_parser("sync")
-    g = sub.add_parser("guard")
-    g.add_argument("--base", required=True)
-    g.add_argument("--cand", required=True)
+    g = sub.add_parser("guard", help="run the round's gate guard on one commit (exit 1 = rejected)")
+    g.add_argument("commit")
+    g.add_argument("--base", help="diff base (default: <commit>^)")
     args = ap.parse_args(argv)
     {"round": cmd_round, "monthly": cmd_monthly, "sync": cmd_sync, "guard": cmd_guard}[args.cmd](args)
 

@@ -3,7 +3,8 @@
 
 Writes a sealed, read-only run dir the way run_exam.py does, under
 $HARNESS_LOOP_HOME/runs/, from $FAKE_EXAM_SPEC: {"<kind>": {"<task>": [reward, cost]}}.
-Logs its argv to $FAKE_EXAM_LOG and prints run_exam's last line.
+Logs its argv to $FAKE_EXAM_LOG and prints run_exam's last line. $FAKE_EXAM_INCOMPLETE
+(space-separated kinds) marks those runs incomplete, as a budget stop would.
 """
 import argparse
 import json
@@ -35,6 +36,7 @@ while (runs / (base if n == 1 else f"{base}-{n}")).exists():
     n += 1
 run = runs / (base if n == 1 else f"{base}-{n}")
 total = 0.0
+status = "incomplete" if args.kind in os.environ.get("FAKE_EXAM_INCOMPLETE", "").split() else "complete"
 for task, (reward, cost) in spec.items():
     for t in range(1, args.tries + 1):
         d = run / task / f"try-{t}"
@@ -45,8 +47,8 @@ for task, (reward, cost) in spec.items():
 (run / "run.json").write_text(json.dumps({
     "run_id": run.name, "kind": args.kind, "harness_commit": args.harness, "screen": args.screen,
     "manifest": str(Path(args.tasks).resolve()), "agent": "workflow", "tries": args.tries,
-    "status": "complete", "max_budget_usd": 12.05}))
+    "status": status, "max_budget_usd": 12.05}))
 (run / "summary.json").write_text(json.dumps({"total_cost_usd": round(total, 4)}))
 compare.seal(run)
 subprocess.run(["chmod", "-R", "a-w", str(run)], check=True)
-print(f"run_exam: {run} complete solved=? cost=${total:.2f}")
+print(f"run_exam: {run} {status} solved=? cost=${total:.2f}")
