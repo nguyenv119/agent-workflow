@@ -38,7 +38,7 @@ class FakeEnvironment:
         self.execs, self.uploads = [], []
 
     async def exec(self, command, user=None, env=None, cwd=None, timeout_sec=None):
-        self.execs.append(SimpleNamespace(command=command, user=user))
+        self.execs.append(SimpleNamespace(command=command, user=user, cwd=cwd))
         out = ""
         if command.endswith("; pwd"):
             out = self.workdir + "\n"
@@ -222,6 +222,23 @@ class LifecycleTest(AgentCase):
             (cfg / ".claude.json").unlink()
             subprocess.run(["bash", "-c", trust_cmd(cfg / "new", "/r")], check=True)
             self.assertTrue(json.loads((cfg / "new" / ".claude.json").read_text())["projects"]["/r"]["hasTrustDialogAccepted"])
+
+    def test_workdir_kwarg_overrides_the_image_workdir_for_every_exec(self):
+        """
+        betterleaks' image WORKDIR is /app but its repo is /app/betterleaks;
+        setup, claude and finish must all use the repo, not the WORKDIR.
+        """
+        # GIVEN workdir=/app/betterleaks in a sandbox whose WORKDIR is /app
+        agent, env = self.make_agent(workdir="/app/betterleaks"), FakeEnvironment("/app")
+        # WHEN install and run execute
+        self.install(agent, env)
+        claude = mock.AsyncMock(side_effect=lambda i, e, c: agent.exec_as_agent(e, "claude"))
+        self.run_agent(agent, env, claude)
+        # THEN the repo phase used it and every exec (claude included) ran there
+        repo, = env.commands("setup_task.sh repo")
+        self.assertIn("repo /app/betterleaks ", repo.command)
+        self.assertEqual(env.commands("claude")[0].cwd, "/app/betterleaks")
+        self.assertEqual({e.cwd for e in env.execs}, {"/app/betterleaks"})
 
     def test_finish_runs_even_when_claude_fails(self):
         """

@@ -3,7 +3,7 @@
     PYTHONPATH=harness-loop/exam harbor run --agent workflow_agent:WorkflowAgent \\
       --path <task dir> --env daytona \\
       --agent-kwarg harness_commit=<sha> --agent-kwarg max_budget_usd=<usd> \\
-      [--agent-kwarg title=... test_command=... model_access=api model=...]
+      [--agent-kwarg title=... test_command=... workdir=... model_access=api model=...]
 
 Harbor's own ClaudeCode agent pipes the task text straight to `claude --print`,
 which tests plain Claude Code. This subclass keeps its install and stream-json
@@ -49,7 +49,7 @@ INSTALLER = EXAM_DIR.parent / "install_harness.py"
 REMOTE = PurePosixPath("/installed-agent/exam")
 # Kwargs this agent owns; ClaudeCode's option model rejects unknown ones.
 OWN_KWARGS = ("harness_commit", "harness_addon", "model_access", "model", "title",
-              "test_command", "run_name")
+              "test_command", "run_name", "workdir")
 # sandbox_env values Harbor's scrubber must know about (it only reads agent env).
 SECRET_KEYS = ("AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "ANTHROPIC_API_KEY")
 
@@ -78,7 +78,7 @@ def resolve_commit(ref):
 class WorkflowAgent(ClaudeCode):
     def __init__(self, logs_dir: Path, *args, harness_commit="HEAD", harness_addon=None,
                  model_access="bedrock", model=None, title=None, test_command=None,
-                 run_name=None, **kwargs):
+                 run_name=None, workdir=None, **kwargs):
         # Resolved now: the run records the sha that ran, and HEAD may move.
         self._harness_commit = resolve_commit(_text(harness_commit))
         self._harness_addon = _text(harness_addon)
@@ -87,7 +87,8 @@ class WorkflowAgent(ClaudeCode):
         self._test_command = _text(test_command) or ""
         self._run_name = _text(run_name) or Path(logs_dir).parent.name
         self._model = _text(model)
-        self._repo: str | None = None
+        # The repo dir; None = the image's WORKDIR (betterleaks' is /app, its repo /app/betterleaks).
+        self._repo: str | None = _text(workdir)
         self._bead: str | None = None
         super().__init__(logs_dir, *args, **kwargs)
         if not self._model and self.model_name:  # harbor -m provider/model
@@ -134,9 +135,13 @@ class WorkflowAgent(ClaudeCode):
     def _setup_cmd(*args) -> str:
         return "bash " + " ".join(shlex.quote(str(a)) for a in (REMOTE / "setup_task.sh", *args))
 
+    async def _exec(self, environment, command, user=None, env=None, cwd=None, timeout_sec=None):
+        # ClaudeCode launches claude without a cwd; default every exec to the
+        # repo so /work runs there even when it is not the image's WORKDIR.
+        return await super()._exec(environment, command, user=user, env=env,
+                                   cwd=cwd or self._repo, timeout_sec=timeout_sec)
+
     async def _workdir(self, environment: BaseEnvironment) -> str:
-        # claude is launched without a cwd, i.e. in the container workdir, so
-        # that is the only repo /work can see.
         if not self._repo:
             self._repo = (await self.exec_as_agent(environment, "pwd")).stdout.strip()
         return self._repo

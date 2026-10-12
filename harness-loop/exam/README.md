@@ -39,7 +39,9 @@ harness-loop/exam/trial_export.py finalize <trial dir>   # after verify: writes 
 
 Other kwargs: `harness_addon=<dir>` (passed to install_harness.py), `model=<id>` (overrides
 `ANTHROPIC_MODEL`), `run_name=<name>` (written to `.claude/EXAM_MODE`; default the trial name).
-The task repo is always the container's workdir, because Harbor starts `claude` there. Harbor
+`workdir=<manifest workdir>` names the task repo; without it the repo is the image's WORKDIR.
+They differ for betterleaks (WORKDIR `/app`, repo `/app/betterleaks`), so always pass it. Every
+exec, `claude` included, then runs in that directory. Harbor
 JSON-parses kwarg values, so the agent turns numbers and booleans back into text; pass
 `harness_commit` as a full 40-character sha, since a short all-digit one with an `e` in it would
 arrive as a float. The sha is resolved when the agent is built and recorded in `result.json`.
