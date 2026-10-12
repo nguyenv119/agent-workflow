@@ -1,0 +1,194 @@
+diff --git a/docs/designs/authorization-policy.md b/docs/designs/authorization-policy.md
+index 45f4dd76b..1038af948 100644
+--- a/docs/designs/authorization-policy.md
++++ b/docs/designs/authorization-policy.md
+@@ -56,16 +56,16 @@ interface ViewCtx {
+ 
+ The action vocabulary represents the distinct OSS policies that exist today:
+ 
+-| Action                      | Resource facts                                        | Baseline decision                                                  |
+-| --------------------------- | ----------------------------------------------------- | ------------------------------------------------------------------ |
+-| `organization.write`        | none                                                  | owner or collaborator                                              |
+-| `organization.manage`       | none                                                  | owner only                                                         |
+-| `usage.attribute.all`       | none                                                  | owner only; aggregate usage, independent of session content access |
+-| `resource.view`             | visibility, Selected audience                         | organization owner, org-visible, or explicitly selected            |
+-| `resource.edit`             | shareable resource                                    | visible and role is not viewer                                     |
+-| `resource.sharing.manage`   | shareable resource                                    | same as `resource.edit`                                            |
+-| `session.view`              | tier, owner identity, identity set, external access   | org-visible, identity-owned, or admitted by the external audience  |
+-| `session.visibility.change` | tier, owner identity, identity set, external provider | identity-owned and not provider-bound                              |
++| Action                      | Resource facts                                                           | Baseline decision                                                                                    |
++| --------------------------- | ------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------- |
++| `organization.write`        | none                                                                     | owner or collaborator                                                                                |
++| `organization.manage`       | none                                                                     | owner only                                                                                           |
++| `usage.attribute.all`       | none                                                                     | owner only; aggregate usage, independent of session content access                                   |
++| `resource.view`             | visibility, Selected audience                                            | organization owner, org-visible, or explicitly selected                                              |
++| `resource.edit`             | shareable resource                                                       | visible and role is not viewer                                                                       |
++| `resource.sharing.manage`   | shareable resource                                                       | same as `resource.edit`                                                                              |
++| `session.view`              | tier, owner identity, identity set, external access                      | org-visible, identity-owned, or admitted by the external audience                                    |
++| `session.visibility.change` | tier, owner identity, identity set, external provider, thread coordinate | identity-owned, not provider-bound, and not an `append` session (an unread coordinate counts as one) |
+ 
+ Membership removal uses the target-aware `organization.membership.remove`
+ action: every role may remove itself, while removing another member requires
+diff --git a/docs/designs/channel-session-mode.md b/docs/designs/channel-session-mode.md
+index 1a55b2711..15dd9f43d 100644
+--- a/docs/designs/channel-session-mode.md
++++ b/docs/designs/channel-session-mode.md
+@@ -555,7 +555,9 @@ conversation's long-lived session, and flipping it to `private` would move every
+ participant's messages into a session only that person can read and only that person can
+ continue from the console, with the privacy bit pushed to the daemon to exclude those
+ turns from memory capture. An `append` session's audience follows its conversation, so it
+-is not one person's to change.
++is not one person's to change. The `session.visibility.change` policy enforces this from
++the session's recorded `thread`, treating an unread coordinate as `append`, and the console
++shows the tier read-only for such a session.
+ 
+ The eventual home for "audience = the conversation" is the existing external tier —
+ `externalProvider` + `externalScopeId` bound to an `ExternalScope`, which nulls
+diff --git a/packages/control-plane/src/authorization/policy.ts b/packages/control-plane/src/authorization/policy.ts
+index 6bc9007c0..24624d514 100644
+--- a/packages/control-plane/src/authorization/policy.ts
++++ b/packages/control-plane/src/authorization/policy.ts
+@@ -1,4 +1,5 @@
+ // Human authorization after authentication and organization selection; see docs/designs/authorization-policy.md.
++import { isAppendCoordinate } from '@agentconnect.md/protocol'
+ import type { SessionExternalAccessSnapshot, SessionVisibility, Shareable, ViewCtx } from '../persistence/ports.js'
+ 
+ export type { Shareable, ViewCtx } from '../persistence/ports.js'
+@@ -26,6 +27,9 @@ export interface SessionViewable {
+   externalScopeId?: string | null
+   externalResolution?: 'pending' | 'settled' | 'invalid' | null
+   classifiedPolicyRev?: bigint | null
++  /** The session's thread coordinate; null when it has none. Omitted means unread, which
++   *  `session.visibility.change` treats as an `append` coordinate (fail closed). */
++  thread?: string | null
+ }
+ 
+ export type AuthorizationRequest =
+@@ -120,8 +124,16 @@ export function can(principal: ViewCtx, request: AuthorizationRequest): boolean
+     // `session.view`). A row with no recorded owner is re-classifiable by no
+     // one. Deliberately NOT the role-based edit guard: the grant follows
+     // OWNERSHIP, so a viewer-role member keeps control of their own DM.
++    // An `append` session is the whole conversation's long-lived session: its
++    // recorded owner is only the first poster, so its audience is no one's to
++    // change (channel-session-mode.md §9). An unread coordinate counts as one.
+     case AuthorizationAction.SessionChangeVisibility:
+-      return !request.resource.externalProvider && identityOwnsSession(request.resource, request.identitySet)
++      return (
++        !request.resource.externalProvider &&
++        request.resource.thread !== undefined &&
++        !isAppendCoordinate(request.resource.thread) &&
++        identityOwnsSession(request.resource, request.identitySet)
++      )
+     // Continuation is an organization WRITE riding on view (webchat-cross-
+     // integration-continuation.md §5.1): viewing a transcript is not authority
+     // to make the bot speak in an external system, so the viewer role is
+diff --git a/packages/control-plane/src/persistence/ports.ts b/packages/control-plane/src/persistence/ports.ts
+index d24ba8261..f64fef23c 100644
+--- a/packages/control-plane/src/persistence/ports.ts
++++ b/packages/control-plane/src/persistence/ports.ts
+@@ -1610,6 +1610,7 @@ export interface SessionRepo {
+       visibility: SessionVisibility
+       ownerIdentity: string | null
+       externalProvider: string | null
++      thread: string | null
+     }) => boolean
+   ): Promise<SessionVisibilityChange>
+   /** Raise the daemon-ack watermark (§5.1). Monotonic: a late ack for an older
+diff --git a/packages/control-plane/src/persistence/repositories/session.repo.ts b/packages/control-plane/src/persistence/repositories/session.repo.ts
+index 1091dfbce..8c20e9e56 100644
+--- a/packages/control-plane/src/persistence/repositories/session.repo.ts
++++ b/packages/control-plane/src/persistence/repositories/session.repo.ts
+@@ -1791,6 +1791,7 @@ export class PgSessionRepo implements SessionRepo {
+       visibility: SessionVisibility
+       ownerIdentity: string | null
+       externalProvider: string | null
++      thread: string | null
+     }) => boolean
+   ): Promise<SessionVisibilityChange> {
+     return withAmbientTx(this.db, async (tx) => {
+@@ -1798,9 +1799,14 @@ export class PgSessionRepo implements SessionRepo {
+       // for children, and a child whose row is still uncommitted is invisible to that scan.
+       await lockSessionLineage(tx, [sessionId])
+       const locked = await tx.$queryRaw<
+-        Array<{ visibility: string; ownerIdentity: string | null; externalProvider: string | null }>
++        Array<{
++          visibility: string
++          ownerIdentity: string | null
++          externalProvider: string | null
++          thread: string | null
++        }>
+       >(Prisma.sql`
+-        SELECT "visibility", "ownerIdentity", "externalProvider"
++        SELECT "visibility", "ownerIdentity", "externalProvider", "thread"
+         FROM "session_meta" WHERE "id" = ${sessionId} AND "orgId" = ${orgId} FOR UPDATE
+       `)
+       // The org fence rides the row-lock read, so a cross-org id takes the same
+@@ -1811,7 +1817,8 @@ export class PgSessionRepo implements SessionRepo {
+       const current = {
+         visibility: locked[0]!.visibility as SessionVisibility,
+         ownerIdentity: locked[0]!.ownerIdentity,
+-        externalProvider: locked[0]!.externalProvider
++        externalProvider: locked[0]!.externalProvider,
++        thread: locked[0]!.thread
+       }
+       // Re-authorize against the LOCKED row, not the one the route read. An
+       // ancestor cascade committing in between can re-own this session, and the
+diff --git a/packages/daemon/src/session/append-coordinate.ts b/packages/daemon/src/session/append-coordinate.ts
+index dfbb0d93d..32f1e86ac 100644
+--- a/packages/daemon/src/session/append-coordinate.ts
++++ b/packages/daemon/src/session/append-coordinate.ts
+@@ -14,8 +14,11 @@
+  * forward, so a coordinate minted after a purge is one that has never been used.
+  */
+ 
+-/** The reserved prefix an append coordinate wears; exported so the store migration can match on it. */
+-export const APPEND_COORDINATE_PREFIX = 'append:'
++import { APPEND_COORDINATE_PREFIX, isAppendCoordinate } from '@agentconnect.md/protocol'
++
++// The prefix and its test live in the protocol package so the Control Plane can recognize an
++// append session too; the prefix is re-exported so the store migration can match on it.
++export { APPEND_COORDINATE_PREFIX, isAppendCoordinate }
+ 
+ const PREFIX = APPEND_COORDINATE_PREFIX
+ 
+@@ -24,11 +27,6 @@ export function appendCoordinate(ts: number): string {
+   return `${PREFIX}${ts}`
+ }
+ 
+-/** Whether a session's thread segment is an append coordinate rather than a platform thread. */
+-export function isAppendCoordinate(thread: string | undefined): boolean {
+-  return thread !== undefined && thread.startsWith(PREFIX)
+-}
+-
+ /** The mint time a coordinate carries; undefined when it is not one, or its payload is not a timestamp. */
+ export function appendCoordinateTs(thread: string | undefined): number | undefined {
+   if (!isAppendCoordinate(thread)) return undefined
+diff --git a/packages/protocol/src/append-coordinate.ts b/packages/protocol/src/append-coordinate.ts
+new file mode 100644
+index 000000000..bc07651b1
+--- /dev/null
++++ b/packages/protocol/src/append-coordinate.ts
+@@ -0,0 +1,11 @@
++/**
++ * The `append` session coordinate's reserved prefix (channel-session-mode.md §3.2), shared
++ * so the Control Plane can recognize an `append` session from the `thread` it records. The
++ * daemon mints and parses coordinates in `packages/daemon/src/session/append-coordinate.ts`.
++ */
++export const APPEND_COORDINATE_PREFIX = 'append:'
++
++/** Whether a session's thread segment is an append coordinate rather than a platform thread. */
++export function isAppendCoordinate(thread: string | null | undefined): boolean {
++  return typeof thread === 'string' && thread.startsWith(APPEND_COORDINATE_PREFIX)
++}
+diff --git a/packages/protocol/src/index.ts b/packages/protocol/src/index.ts
+index 01c03b070..88bd00f02 100644
+--- a/packages/protocol/src/index.ts
++++ b/packages/protocol/src/index.ts
+@@ -208,6 +208,7 @@ export {
+ 
+ // ── repository-relative agent working-directory helpers ──
+ export { MAX_REPO_SUBDIR_LENGTH, RepoSubdirError, normalizeRepoSubdir } from './repo-subdir.js'
++export { APPEND_COORDINATE_PREFIX, isAppendCoordinate } from './append-coordinate.js'
+ 
+ // ── §5 platform manifest — pre-dispatch capability table, read by every host ──
+ export { DEFAULT_MANIFEST, GOOGLE_CHAT_PLATFORM, manifestFor } from './platform-manifest.js'

@@ -1,0 +1,363 @@
+diff --git a/CHANGELOG.md b/CHANGELOG.md
+index 8da2327f..8b6b0db6 100644
+--- a/CHANGELOG.md
++++ b/CHANGELOG.md
+@@ -367,6 +367,15 @@
+   `--full`. If a pass stops making progress, it reports how many notes still have
+   pending chunks, says how to continue, and exits non-zero. Reported by @beru-ant-king;
+   @lastguru-net independently reached the same fix in #1730.
++- **#1732**: An API edit no longer leaves a note's observations and relations without
++  vectors. The accept path publishes only the note body as a temporary search row,
++  and the observation and relation rows appear when the file is written and indexed
++  in the background. The route also scheduled its own embed, which often ran first,
++  embedded the body alone, and left nothing to embed the rest. A background index
++  pass did not repair it, because the file looked unchanged. Now the materialization
++  job embeds the note once, right after it indexes the written file, as cloud's
++  materialize job already did. Routes no longer schedule vector sync for note writes,
++  edits or moves. Reported by @beru-ant-king with a reproducer.
+ - **#1720**: CLI output prints project names, paths, and error messages as typed.
+   Rich used to read bracketed text in them as markup: `proj [x]` printed as `proj `,
+   `[bold]` restyled the line, and a value containing a closing tag such as `a[/b]c`
+diff --git a/src/basic_memory/api/v2/routers/knowledge_router.py b/src/basic_memory/api/v2/routers/knowledge_router.py
+index d37e0eee..54c47b7c 100644
+--- a/src/basic_memory/api/v2/routers/knowledge_router.py
++++ b/src/basic_memory/api/v2/routers/knowledge_router.py
+@@ -132,30 +132,30 @@ EntityReadCacheDep = Annotated[
+ 
+ def _schedule_post_write_followups(
+     *,
+-    vector_sync_scheduler,
+     relation_resolution_scheduler,
+-    entity_id: int,
+     project_id: int,
+ ) -> None:
+     """Schedule out-of-band follow-ups after an accepted note mutation.
+ 
+-    Vector sync only runs when semantic search is enabled. Relation resolution
+-    always runs so a newly written note back-resolves inbound forward references
+-    that name it — parity with the watcher's relation repair, which the inline
+-    write path does not otherwise trigger (#1015). Both are no-ops in test mode.
++    Relation resolution always runs so a newly written note back-resolves inbound
++    forward references that name it — parity with the watcher's relation repair,
++    which the inline write path does not otherwise trigger (#1015). It is a no-op
++    in test mode.
++
++    Vector sync is not scheduled here. The materialization job embeds the note
++    after it indexes the written file (local provider and cloud's
++    materialize_note_file job alike). A request-time embed raced that job and
++    could publish vectors for the body-only search row the accept path writes
++    (#1732).
+ 
+     CLOUD/LOCAL PARITY (do not break): every follow-up here is a core *router
+     scheduler* that the runtime overrides via dependency injection — local runs
+-    it in-process (debounced), cloud overrides each to enqueue a queue job. Cloud
+-    must override BOTH get_entity_vector_sync_scheduler AND
+-    get_relation_resolution_scheduler; if a new follow-up scheduler is added
+-    here, cloud needs a matching override or it will run the local in-process
+-    work on the cloud API server. See basic_memory_cloud api/deps/cloud_overrides.
++    it in-process (debounced), cloud overrides it to enqueue a queue job. Cloud
++    must override get_relation_resolution_scheduler; if a new follow-up scheduler
++    is added here, cloud needs a matching override or it will run the local
++    in-process work on the cloud API server. See basic_memory_cloud
++    api/deps/cloud_overrides.
+     """
+-    vector_sync_scheduler.schedule_entity_vector_sync(
+-        entity_id=entity_id,
+-        project_id=project_id,
+-    )
+     relation_resolution_scheduler.schedule_relation_resolution(project_id=project_id)
+ 
+ 
+@@ -919,7 +919,6 @@ async def create_entity(
+     data: Entity,
+     note_content_mutation_service: NoteContentMutationServiceDep,
+     note_content_materialization_provider: NoteContentMaterializationProviderDep,
+-    vector_sync_scheduler: EntityVectorSyncSchedulerDep,
+     relation_resolution_scheduler: RelationResolutionSchedulerDep,
+ ) -> EntityResponseV2:
+     """Create a new entity.
+@@ -953,9 +952,7 @@ async def create_entity(
+         accepted = await note_content_materialization_provider.materialize_write_change(accepted)
+         result = entity_response_from_note_content_payload(accepted.payload)
+         _schedule_post_write_followups(
+-            vector_sync_scheduler=vector_sync_scheduler,
+             relation_resolution_scheduler=relation_resolution_scheduler,
+-            entity_id=result.id,
+             project_id=project_id,
+         )
+ 
+@@ -982,7 +979,6 @@ async def update_entity_by_id(
+     ],
+     note_content_mutation_service: NoteContentMutationServiceDep,
+     note_content_materialization_provider: NoteContentMaterializationProviderDep,
+-    vector_sync_scheduler: EntityVectorSyncSchedulerDep,
+     relation_resolution_scheduler: RelationResolutionSchedulerDep,
+     entity_id: str = Path(..., description="Entity external ID (UUID)"),
+     base_checksum: Annotated[
+@@ -1032,9 +1028,7 @@ async def update_entity_by_id(
+         response.status_code = status.HTTP_202_ACCEPTED
+         result = entity_response_from_note_content_payload(accepted.payload)
+         _schedule_post_write_followups(
+-            vector_sync_scheduler=vector_sync_scheduler,
+             relation_resolution_scheduler=relation_resolution_scheduler,
+-            entity_id=result.id,
+             project_id=project_id,
+         )
+ 
+@@ -1057,7 +1051,6 @@ async def edit_entity_by_id(
+     ],
+     note_content_mutation_service: NoteContentMutationServiceDep,
+     note_content_materialization_provider: NoteContentMaterializationProviderDep,
+-    vector_sync_scheduler: EntityVectorSyncSchedulerDep,
+     relation_resolution_scheduler: RelationResolutionSchedulerDep,
+     entity_id: str = Path(..., description="Entity external ID (UUID)"),
+     base_checksum: Annotated[
+@@ -1111,9 +1104,7 @@ async def edit_entity_by_id(
+         accepted = await note_content_materialization_provider.materialize_write_change(accepted)
+         result = entity_response_from_note_content_payload(accepted.payload)
+         _schedule_post_write_followups(
+-            vector_sync_scheduler=vector_sync_scheduler,
+             relation_resolution_scheduler=relation_resolution_scheduler,
+-            entity_id=result.id,
+             project_id=project_id,
+         )
+ 
+@@ -1193,7 +1184,6 @@ async def move_entity(
+     ],
+     note_content_mutation_service: NoteContentMutationServiceDep,
+     note_content_materialization_provider: NoteContentMaterializationProviderDep,
+-    vector_sync_scheduler: EntityVectorSyncSchedulerDep,
+     relation_resolution_scheduler: RelationResolutionSchedulerDep,
+     entity_id: str = Path(..., description="Entity external ID (UUID)"),
+ ) -> EntityResponseV2:
+@@ -1234,9 +1224,7 @@ async def move_entity(
+         accepted = await note_content_materialization_provider.materialize_write_change(accepted)
+         result = entity_response_from_note_content_payload(accepted.payload)
+         _schedule_post_write_followups(
+-            vector_sync_scheduler=vector_sync_scheduler,
+             relation_resolution_scheduler=relation_resolution_scheduler,
+-            entity_id=result.id,
+             project_id=project_id,
+         )
+ 
+@@ -1288,8 +1276,18 @@ async def move_directory(
+ 
+         def schedule_followups(entity_id: int) -> None:
+             _schedule_post_write_followups(
+-                vector_sync_scheduler=vector_sync_scheduler,
+                 relation_resolution_scheduler=relation_resolution_scheduler,
++                project_id=project_id,
++            )
++
++        # Trigger: a regular file (image, PDF) moved directly, with no accepted
++        #   note change and so no materialization job to embed it.
++        # Why: its search rows carry the new permalink, which is part of the chunk
++        #   text, so its vectors must be refreshed. Cloud no-ops this scheduler
++        #   because the storage event for the moved object queues that work.
++        # Outcome: one background vector sync per moved regular file.
++        def schedule_regular_file_vector_sync(entity_id: int) -> None:
++            vector_sync_scheduler.schedule_entity_vector_sync(
+                 entity_id=entity_id,
+                 project_id=project_id,
+             )
+@@ -1304,6 +1302,7 @@ async def move_directory(
+             search_service=search_service,
+             read_cache=read_cache,
+             schedule_followups=schedule_followups,
++            schedule_regular_file_vector_sync=schedule_regular_file_vector_sync,
+         )
+         logger.info(
+             f"API v2 response: move_directory "
+diff --git a/src/basic_memory/api/v2/routers/note_write_router.py b/src/basic_memory/api/v2/routers/note_write_router.py
+index c93175c5..0c1e5e83 100644
+--- a/src/basic_memory/api/v2/routers/note_write_router.py
++++ b/src/basic_memory/api/v2/routers/note_write_router.py
+@@ -9,7 +9,6 @@ from fastapi import APIRouter, HTTPException, Path
+ from basic_memory.deps import (
+     AppConfigDep,
+     EntityRepositoryV2ExternalDep,
+-    EntityVectorSyncSchedulerDep,
+     NoteContentMaterializationProviderDep,
+     NoteContentMutationServiceDep,
+     ProjectExternalIdPathDep,
+@@ -58,7 +57,6 @@ async def write_note(
+     session_maker: SessionMakerDep,
+     note_content_mutation_service: NoteContentMutationServiceDep,
+     note_content_materialization_provider: NoteContentMaterializationProviderDep,
+-    vector_sync_scheduler: EntityVectorSyncSchedulerDep,
+     relation_resolution_scheduler: RelationResolutionSchedulerDep,
+     app_config: AppConfigDep,
+ ) -> WriteNoteResponse:
+@@ -106,10 +104,8 @@ async def write_note(
+                 entity = EntityResponseV2.model_validate(
+                     runtime_note_content_payload_as_dict(accepted.payload)
+                 )
+-                # Runtime-injected schedulers preserve local and Cloud publication behavior.
+-                vector_sync_scheduler.schedule_entity_vector_sync(
+-                    entity_id=entity.id, project_id=project_id
+-                )
++                # The materialization job embeds the note after indexing its file
++                # (#1732); relation resolution stays a runtime-injected scheduler.
+                 relation_resolution_scheduler.schedule_relation_resolution(project_id=project_id)
+                 match outcome:
+                     case Created():
+diff --git a/src/basic_memory/deps/services.py b/src/basic_memory/deps/services.py
+index d6fd8125..10c0f2fd 100644
+--- a/src/basic_memory/deps/services.py
++++ b/src/basic_memory/deps/services.py
+@@ -549,7 +549,9 @@ async def get_note_content_materialization_provider(
+ 
+     test_mode keeps materialization inline so tests can assert file/search state
+     synchronously; production defers the file write + index off the accept path
+-    for cloud parity (see LocalNoteContentMaterializationProvider).
++    for cloud parity (see LocalNoteContentMaterializationProvider). The provider
++    embeds each note after indexing its file, so routes never schedule vector sync
++    for accepted note writes (#1732).
+     """
+     return LocalNoteContentMaterializationProvider(
+         session_maker=session_maker,
+@@ -560,6 +562,7 @@ async def get_note_content_materialization_provider(
+         test_mode=app_config.is_test_env,
+         materialization_workers=app_config.materialization_workers,
+         relation_resolution_scheduler=relation_resolution_scheduler,
++        entity_vector_sync=search_service,
+         relation_cleanup_refresher=RepositoryProjectIndexMovedEntitySearchRefresher(
+             session_maker=session_maker,
+             entity_repository=entity_repository,
+diff --git a/src/basic_memory/index/note_content_materialization.py b/src/basic_memory/index/note_content_materialization.py
+index b3196609..4e69bd9a 100644
+--- a/src/basic_memory/index/note_content_materialization.py
++++ b/src/basic_memory/index/note_content_materialization.py
+@@ -51,6 +51,7 @@ from basic_memory.runtime.note_content import (
+ from basic_memory.runtime.note_materialization import RuntimeFileMetadataSource
+ from basic_memory.runtime.project_partition import RuntimeAcceptedProjectNoteChange
+ from basic_memory.runtime.storage import RuntimeFileChecksum, RuntimeFilePath
++from basic_memory.runtime.vector_sync import EntityVectorSync
+ from basic_memory.models import Entity
+ from basic_memory.repository import EntityRepository, NoteContentRepository
+ from basic_memory.repository.project_repository import ProjectRepository
+@@ -155,18 +156,26 @@ class _MaterializationWorkerPool:
+ 
+ 
+ _materialization_pool = _MaterializationWorkerPool()
++# Embeds notes after their materialized files are indexed (#1732). A separate pool,
++# mirroring cloud's separate index_embeddings job: a slow embedding provider must not
++# hold a materialization worker and delay unrelated notes' file writes. Keyed by note
++# like the materialization pool, so one note's embeds still run one at a time in
++# write order.
++_vector_sync_pool = _MaterializationWorkerPool()
+ 
+ 
+ async def drain_pending_materializations() -> None:
+-    """Block until queued local materializations finish writing + indexing.
++    """Block until queued local materializations finish writing, indexing and embedding.
+ 
+     One-shot clients (``bm tool write-note``, importers) return right after the
+     accept enqueues the markdown write/index; without this drain the event loop can
+     close before the worker writes the source-of-truth file, silently losing the
+     write even though the API already reported it accepted. Long-lived servers keep
+-    the loop alive and don't need it.
++    the loop alive and don't need it. Materializations queue the embeds, so the
++    materialization pool drains first.
+     """
+     await _materialization_pool.join()
++    await _vector_sync_pool.join()
+ 
+ 
+ # --- Startup Recovery ---
+@@ -676,6 +685,10 @@ class LocalNoteContentMaterializationProvider:
+     # target (#1351). Optional so providers wired without it (cloud, focused
+     # tests) keep working; cloud relies on its orphan sweeper instead.
+     relation_cleanup_refresher: ProjectIndexMovedEntitySearchRefresher | None = None
++    # Embeds the note once its materialized file is indexed (#1732), through the
++    # vector pool. Optional so providers wired without semantic work (cloud, focused
++    # tests) keep working; cloud embeds from its materialize_note_file job instead.
++    entity_vector_sync: EntityVectorSync | None = None
+ 
+     async def materialize_write_change(
+         self,
+@@ -812,7 +825,7 @@ class LocalNoteContentMaterializationProvider:
+                     self.relation_resolution_scheduler.schedule_relation_resolution(
+                         project_id=accepted.materialization.project_id,
+                     )
+-                return replace(
++                indexed = replace(
+                     accepted,
+                     payload=await load_indexed_note_content_response_payload(
+                         session_maker=self.session_maker,
+@@ -822,8 +835,54 @@ class LocalNoteContentMaterializationProvider:
+                         or "note-content-materialization",
+                     ),
+                 )
++                await self._embed_indexed_note(accepted.materialization)
++                return indexed
+             return accepted
+ 
++    async def _embed_indexed_note(self, materialization: RuntimePendingNoteMaterialization) -> None:
++        """Embed a note from the search rows its materialized file just produced.
++
++        Trigger: the accepted note's file was written and indexed.
++        Why: the accept path only publishes the note body as a temporary search row;
++            observations and relations exist only after this index. A request-time
++            embed raced this job, embedded the body alone, and nothing re-embedded
++            the rest (#1732). Cloud likewise queues index_embeddings from its
++            materialize_note_file job.
++        Outcome: one embed per accepted write, queued after its own index. Test mode
++            runs it inline so tests can assert vectors synchronously; production
++            hands it to the vector pool so the materialization worker is free for
++            the next file write.
++        """
++        if self.entity_vector_sync is None:
++            return
++        if self.test_mode:
++            await self._sync_note_vectors(materialization.entity_id)
++            return
++        _vector_sync_pool.submit(
++            self._sync_note_vectors(materialization.entity_id),
++            workers=self.materialization_workers,
++            key=(materialization.project_id, materialization.entity_id),
++        )
++
++    async def _sync_note_vectors(self, entity_id: int) -> None:
++        if self.entity_vector_sync is None:  # pragma: no cover - guarded by caller
++            return
++        # Vector publication can change VECTOR/HYBRID results after the note's own
++        # invalidation, so retire reads cached while vectors were stale.
++        invalidation_scope = (
++            invalidate_cache(self.read_cache, self.project_external_id)
++            if self.read_cache is not None
++            else nullcontext()
++        )
++        try:
++            async with invalidation_scope:
++                await self.entity_vector_sync.sync_entity_vectors(entity_id)
++        except Exception:
++            # Vectors are derived state: the accepted note and its file are already
++            # published, and the next write or a reindex re-embeds the note. Keep
++            # the write's materialization result instead of failing it here.
++            logger.exception("Vector sync after materialization failed", entity_id=entity_id)
++
+     async def materialize_delete_change(
+         self,
+         accepted: RuntimeAcceptedNoteChange[RuntimeNoteContentResponsePayload],
+diff --git a/src/basic_memory/services/directory_moves.py b/src/basic_memory/services/directory_moves.py
+index 1188e990..5270ac0f 100644
+--- a/src/basic_memory/services/directory_moves.py
++++ b/src/basic_memory/services/directory_moves.py
+@@ -52,6 +52,7 @@ async def move_directory(
+     search_service: SearchService,
+     read_cache: ReadCache | None,
+     schedule_followups: MovedEntityFollowups,
++    schedule_regular_file_vector_sync: MovedEntityFollowups,
+ ) -> DirectoryMoveResult:
+     """Move every entity under ``source_directory`` to ``destination_directory``.
+ 
+@@ -108,6 +109,8 @@ async def move_directory(
+             except (ValueError, EntityNotFoundError) as error:
+                 errors.append(DirectoryMoveError(path=entity.file_path, error=str(error)))
+                 continue
++            # A moved note is embedded by its materialization; a regular file has none.
++            schedule_regular_file_vector_sync(entity.id)
+ 
+         schedule_followups(entity.id)
+         moved_files.append(moved_path)

@@ -1,0 +1,78 @@
+diff --git a/modules/qbittorrent.py b/modules/qbittorrent.py
+index 714a694..cd00c38 100755
+--- a/modules/qbittorrent.py
++++ b/modules/qbittorrent.py
+@@ -16,6 +16,7 @@ from modules import util
+ from modules.qbit_error_handler import handle_qbit_api_errors
+ from modules.util import Failed
+ from modules.util import TorrentMessages
++from modules.util import UnsupportedVersion
+ from modules.util import list_in_text
+ 
+ logger = util.logger
+@@ -80,8 +81,10 @@ class Qbt:
+                 else:
+                     self.config.notify(ex, "Qbittorrent")
+                     logger.print_line(ex, "CRITICAL")
+-                    sys.exit(1)
++                    raise UnsupportedVersion(ex)
+             logger.info("Qbt Connection Successful")
++        except UnsupportedVersion:
++            raise
+         except LoginFailed:
+             ex = "Qbittorrent Error: Failed to login. Invalid username/password or API key."
+             self.config.notify(ex, "Qbittorrent")
+diff --git a/modules/util.py b/modules/util.py
+index 3ebc003..9b8e229 100755
+--- a/modules/util.py
++++ b/modules/util.py
+@@ -895,6 +895,12 @@ class Failed(Exception):
+     pass
+ 
+ 
++class UnsupportedVersion(Failed):
++    """Exception raised when the qBittorrent version is outside the supported range."""
++
++    pass
++
++
+ def list_in_text(text, search_list, match_all=False):
+     """
+     Check if elements from a search list are present in a given text.
+diff --git a/modules/web_api.py b/modules/web_api.py
+index 7094525..bb95d12 100755
+--- a/modules/web_api.py
++++ b/modules/web_api.py
+@@ -909,6 +909,10 @@ class WebAPI:
+             temp_args["time"] = now.strftime("%H:%M")
+             temp_args["time_obj"] = now
+             temp_args["run"] = True
++            commands = processed_data.get("commands")
++            # A commands section replaces env/CLI commands in a normal run, with missing keys defaulting to False.
++            if isinstance(commands, dict):
++                temp_args["skip_qb_version_check"] = str(commands.get("skip_qb_version_check")).lower() == "true"
+ 
+             try:
+                 logger.separator("Configuration Validation Check", space=False, border=False)
+diff --git a/qbit_manage.py b/qbit_manage.py
+index 2d8c3b5..2c4311f 100755
+--- a/qbit_manage.py
++++ b/qbit_manage.py
+@@ -401,6 +401,7 @@ from modules.core.tag_nohardlinks import TagNoHardLinks  # noqa
+ from modules.core.tags import Tags  # noqa
+ from modules.util import Failed  # noqa
+ from modules.util import GracefulKiller  # noqa
++from modules.util import UnsupportedVersion  # noqa
+ from modules.web_api import CommandRequest  # noqa
+ 
+ 
+@@ -616,6 +617,9 @@ def start():
+                     is_running.value = False
+                 logger.info("Released lock for web API requests despite webhook error")
+     except Failed as ex:
++        # One-shot runs exit non-zero; scheduled runs return so the scheduler thread keeps future runs.
++        if run and isinstance(ex, UnsupportedVersion):
++            sys.exit(1)
+         logger.stacktrace()
+         logger.print_line(ex, "CRITICAL")
+         logger.print_line("Exiting scheduled Run.", "CRITICAL")

@@ -1,0 +1,937 @@
+{
+  "window": {
+    "from": "2026-08-01",
+    "to": "2026-10-31"
+  },
+  "issue_since": "2026-07-01",
+  "filters": {
+    "min_stars": 500,
+    "max_per_repo": 3,
+    "source_files": [
+      3,
+      10
+    ],
+    "languages": [
+      "python",
+      "typescript"
+    ]
+  },
+  "candidates": [
+    {
+      "repo": "Ikalus1988/MisakaNet",
+      "pr": 3062,
+      "url": "https://github.com/Ikalus1988/MisakaNet/pull/3062",
+      "title": "fix(sync): the two paths disagreed about the same labelled issue (#3012)",
+      "merged_at": "2026-10-08T16:23:57Z",
+      "language": "python",
+      "kind": "bugfix",
+      "stars": 526,
+      "issues": [
+        3012
+      ],
+      "issue_created_at": "2026-10-07T17:03:02Z",
+      "source_files": 3,
+      "test_files": [
+        "tests/test_export_okf_frontmatter.py",
+        "tests/test_sync_answered_questions.py",
+        "tests/test_worker_evidence_kind_gate.py"
+      ]
+    },
+    {
+      "repo": "Anyesh/wardrowbe",
+      "pr": 224,
+      "url": "https://github.com/Anyesh/wardrowbe/pull/224",
+      "title": "feat: localize AI clothing descriptions by owner locale",
+      "merged_at": "2026-10-12T01:02:21Z",
+      "language": "python",
+      "kind": "feature",
+      "stars": 764,
+      "issues": [
+        206
+      ],
+      "issue_created_at": "2026-09-23T20:13:34Z",
+      "source_files": 7,
+      "test_files": [
+        "backend/tests/test_ai_service.py",
+        "backend/tests/test_capabilities.py",
+        "backend/tests/test_item_tagging.py",
+        "backend/tests/test_tagging_durability.py",
+        "backend/tests/test_tags_merge.py",
+        "frontend/tests/profile-locale-sync.test.tsx"
+      ]
+    },
+    {
+      "repo": "EthanYoQ/AI-Novel-Writer",
+      "pr": 369,
+      "url": "https://github.com/EthanYoQ/AI-Novel-Writer/pull/369",
+      "title": "fix(projects): expose recent record removal on the bookcase",
+      "merged_at": "2026-10-11T16:19:54Z",
+      "language": "typescript",
+      "kind": "bugfix",
+      "stars": 1410,
+      "issues": [
+        365
+      ],
+      "issue_created_at": "2026-10-11T11:09:36Z",
+      "source_files": 4,
+      "test_files": [
+        "src/components/layout/v2/__tests__/v3-shell.browser.tsx",
+        "src/components/pages/v2/__tests__/writer-project-overview.browser.tsx"
+      ]
+    },
+    {
+      "repo": "Bitterbot-AI/bitterbot-desktop",
+      "pr": 153,
+      "url": "https://github.com/Bitterbot-AI/bitterbot-desktop/pull/153",
+      "title": "feat(web-search): Serply provider (#152) plus onboarding env-detection fix",
+      "merged_at": "2026-10-04T20:07:19Z",
+      "language": "typescript",
+      "kind": "feature",
+      "stars": 2472,
+      "issues": [
+        151
+      ],
+      "issue_created_at": "2026-10-04T04:16:11Z",
+      "source_files": 10,
+      "test_files": [
+        "src/agents/tools/web-search-serply.test.ts",
+        "src/wizard/onboarding.web-search.test.ts"
+      ]
+    },
+    {
+      "repo": "NousResearch/hermes-agent",
+      "pr": 136225,
+      "url": "https://github.com/NousResearch/hermes-agent/pull/136225",
+      "title": "fix(gateway): keep delegate child completions from taking over the chat (supersedes #132827)",
+      "merged_at": "2026-10-11T17:27:07Z",
+      "language": "python",
+      "kind": "bugfix",
+      "stars": 252813,
+      "issues": [
+        92859
+      ],
+      "issue_created_at": "2026-08-23T10:01:51Z",
+      "source_files": 7,
+      "test_files": [
+        "tests/gateway/conftest.py",
+        "tests/gateway/test_async_delegation_session_binding.py",
+        "tests/gateway/test_child_notice_profile_admission.py",
+        "tests/gateway/test_completion_admission_compression_race.py",
+        "tests/gateway/test_completion_owner_retry.py",
+        "tests/gateway/test_multiplex_routing_authz.py",
+        "tests/tools/test_async_delegation_requeue.py"
+      ]
+    },
+    {
+      "repo": "ArchiveBox/ArchiveBox",
+      "pr": 1877,
+      "url": "https://github.com/ArchiveBox/ArchiveBox/pull/1877",
+      "title": "Self-heal Docker permissions and wait for Sonic search readiness",
+      "merged_at": "2026-09-16T21:51:33Z",
+      "language": "python",
+      "kind": "feature",
+      "stars": 28736,
+      "issues": [
+        1876
+      ],
+      "issue_created_at": "2026-09-15T14:10:06Z",
+      "source_files": 4,
+      "test_files": [
+        "archivebox/tests/test_permissions.py",
+        "archivebox/tests/test_search.py",
+        "archivebox/tests/test_takeover_util.py"
+      ]
+    },
+    {
+      "repo": "LibreChat-AI/LibreChat",
+      "pr": 16690,
+      "url": "https://github.com/LibreChat-AI/LibreChat/pull/16690",
+      "title": "\ud83d\udd4a\ufe0f fix: Keep Attachment History From Locking Conversations",
+      "merged_at": "2026-10-03T00:21:20Z",
+      "language": "typescript",
+      "kind": "bugfix",
+      "stars": 45533,
+      "issues": [
+        16660
+      ],
+      "issue_created_at": "2026-10-02T07:40:23Z",
+      "source_files": 3,
+      "test_files": [
+        "api/server/controllers/agents/client.test.js",
+        "client/src/components/Messages/Content/__tests__/Error.spec.tsx",
+        "packages/api/src/agents/attachments.test.ts"
+      ]
+    },
+    {
+      "repo": "BlockRunAI/ClawRouter",
+      "pr": 357,
+      "url": "https://github.com/BlockRunAI/ClawRouter/pull/357",
+      "title": "feat(x402): opt-in TWZRD AutoGate after SpendControl (#355)",
+      "merged_at": "2026-09-07T04:14:48Z",
+      "language": "typescript",
+      "kind": "feature",
+      "stars": 6621,
+      "issues": [
+        355
+      ],
+      "issue_created_at": "2026-09-07T03:22:44Z",
+      "source_files": 4,
+      "test_files": [
+        "src/twzrd-autogate.test.ts"
+      ]
+    },
+    {
+      "repo": "Project-N-E-K-O/N.E.K.O",
+      "pr": 3369,
+      "url": "https://github.com/Project-N-E-K-O/N.E.K.O/pull/3369",
+      "title": "fix(memory): \u4fee\u590d\u8bb0\u5fc6\u5f00\u5173\u540c\u6b65\u4e0e\u914d\u7f6e\u8bfb\u5199\u4fdd\u62a4",
+      "merged_at": "2026-10-10T13:28:51Z",
+      "language": "python",
+      "kind": "bugfix",
+      "stars": 3045,
+      "issues": [
+        3365
+      ],
+      "issue_created_at": "2026-10-09T10:06:29Z",
+      "source_files": 3,
+      "test_files": [
+        "tests/frontend/test_memory_browser.py",
+        "tests/unit/test_locale_cache_bust_contract.py",
+        "tests/unit/test_memory_toggle_config.py"
+      ]
+    },
+    {
+      "repo": "Arize-ai/phoenix",
+      "pr": 16879,
+      "url": "https://github.com/Arize-ai/phoenix/pull/16879",
+      "title": "fix(mcp): improve analytics SQL execution and dialect guidance",
+      "merged_at": "2026-10-08T17:31:01Z",
+      "language": "python",
+      "kind": "feature",
+      "stars": 11793,
+      "issues": [
+        16834
+      ],
+      "issue_created_at": "2026-10-07T09:08:47Z",
+      "source_files": 3,
+      "test_files": [
+        "tests/unit/server/mcp/sql/conftest.py",
+        "tests/unit/server/mcp/sql/test_execute.py",
+        "tests/unit/server/mcp/sql/test_liveness.py",
+        "tests/unit/server/mcp/sql/test_rewrite.py"
+      ]
+    },
+    {
+      "repo": "OneUptime/oneuptime",
+      "pr": 4600,
+      "url": "https://github.com/OneUptime/oneuptime/pull/4600",
+      "title": "fix(ai): the Anthropic provider works on current Claude models (#4583)",
+      "merged_at": "2026-10-09T10:28:50Z",
+      "language": "typescript",
+      "kind": "bugfix",
+      "stars": 7725,
+      "issues": [
+        4583
+      ],
+      "issue_created_at": "2026-10-08T23:20:28Z",
+      "source_files": 6,
+      "test_files": [
+        "packages/App/Tests/FeatureSet/Docs/LlmProviderGuideDocs.test.ts",
+        "packages/Common/Tests/Server/API/LlmProviderConnectionTestAnthropic.test.ts",
+        "packages/Common/Tests/Server/Utils/AI/ClaudeModels.test.ts",
+        "packages/Common/Tests/Server/Utils/AI/LLMServiceAnthropicCurrentModels.test.ts",
+        "packages/Common/Tests/Server/Utils/AI/LLMServiceToolCalling.test.ts",
+        "packages/Common/Tests/Server/Utils/AI/RejectedRequestParameter.test.ts"
+      ]
+    },
+    {
+      "repo": "BuilderIO/agent-native",
+      "pr": 7393,
+      "url": "https://github.com/BuilderIO/agent-native/pull/7393",
+      "title": "Preserve continuation state and Slides prompt navigation",
+      "merged_at": "2026-10-11T17:13:26Z",
+      "language": "typescript",
+      "kind": "feature",
+      "stars": 7121,
+      "issues": [
+        7376,
+        7377
+      ],
+      "issue_created_at": "2026-10-11T05:29:34Z",
+      "source_files": 4,
+      "test_files": [
+        "packages/core/src/agent/production-agent.reaper-resume.spec.ts",
+        "packages/core/src/agent/thread-data-builder.spec.ts",
+        "packages/core/src/server/agent-chat-plugin.suggestions.spec.ts",
+        "templates/slides/app/pages/DeckEditor.generation-signal.test.tsx",
+        "templates/slides/app/pages/Index.home.test.tsx"
+      ]
+    },
+    {
+      "repo": "StuffAnThings/qbit_manage",
+      "pr": 1401,
+      "url": "https://github.com/StuffAnThings/qbit_manage/pull/1401",
+      "title": "fix: return validation error instead of exiting on unsupported qBittorrent version",
+      "merged_at": "2026-10-11T16:14:35Z",
+      "language": "python",
+      "kind": "bugfix",
+      "stars": 1650,
+      "issues": [
+        1388
+      ],
+      "issue_created_at": "2026-10-01T20:42:22Z",
+      "source_files": 4,
+      "test_files": [
+        "tests/test_web_api_validate_config.py"
+      ]
+    },
+    {
+      "repo": "BasedHardware/omi",
+      "pr": 11183,
+      "url": "https://github.com/BasedHardware/omi/pull/11183",
+      "title": "feat(backend): split X connector sync into its own Cloud Run Job (#9298)",
+      "merged_at": "2026-10-06T16:39:30Z",
+      "language": "python",
+      "kind": "feature",
+      "stars": 13691,
+      "issues": [
+        9298
+      ],
+      "issue_created_at": "2026-07-09T03:31:10Z",
+      "source_files": 7,
+      "test_files": [
+        "backend/testing/workflow_contracts.json",
+        "backend/tests/support/firestore_outside_query_drivers.py",
+        "backend/tests/unit/test_backend_runtime_env_validator.py",
+        "backend/tests/unit/test_notifications_job_orchestrator.py",
+        "backend/tests/unit/test_proactivity_v2_flag_env_contract.py",
+        "backend/tests/unit/test_render_backend_runtime_env.py",
+        "backend/tests/unit/test_runtime_image_contracts.py",
+        "backend/tests/unit/test_validate_x_connector_sync_scheduler.py",
+        "backend/tests/unit/test_workflow_contracts.py",
+        "backend/tests/unit/test_x_connector_sync_job_failure_surface.py",
+        "backend/tests/unit/test_x_connector_sync_job_import.py",
+        "backend/tests/unit/test_x_memory_extraction_retry.py",
+        "backend/tests/unit/test_x_sync_credential_gating.py"
+      ]
+    },
+    {
+      "repo": "agentconnect-md/agentconnect",
+      "pr": 2815,
+      "url": "https://github.com/agentconnect-md/agentconnect/pull/2815",
+      "title": "fix(control-plane): refuse visibility changes on append sessions",
+      "merged_at": "2026-10-07T03:26:22Z",
+      "language": "typescript",
+      "kind": "bugfix",
+      "stars": 1461,
+      "issues": [
+        2813
+      ],
+      "issue_created_at": "2026-10-07T03:02:17Z",
+      "source_files": 6,
+      "test_files": [
+        "packages/control-plane/src/authorization/policy.test.ts",
+        "packages/control-plane/test/integration/session-visibility.route.test.ts"
+      ]
+    },
+    {
+      "repo": "CherryHQ/cherry-studio",
+      "pr": 20767,
+      "url": "https://github.com/CherryHQ/cherry-studio/pull/20767",
+      "title": "feat(paintings): conveniently view generated images",
+      "merged_at": "2026-10-10T09:30:44Z",
+      "language": "typescript",
+      "kind": "feature",
+      "stars": 52543,
+      "issues": [
+        20739
+      ],
+      "issue_created_at": "2026-09-18T16:33:53Z",
+      "source_files": 4,
+      "test_files": [
+        "src/renderer/pages/paintings/__tests__/PaintingPage.test.tsx",
+        "src/renderer/pages/paintings/components/__tests__/Artboard.test.tsx",
+        "src/renderer/pages/paintings/utils/__tests__/artboardImageScale.test.ts"
+      ]
+    },
+    {
+      "repo": "VocaHQ/vocalinux",
+      "pr": 923,
+      "url": "https://github.com/VocaHQ/vocalinux/pull/923",
+      "title": "fix(whispercpp): reuse an on-disk same-size weight at startup",
+      "merged_at": "2026-10-08T01:51:55Z",
+      "language": "python",
+      "kind": "bugfix",
+      "stars": 931,
+      "issues": [
+        916
+      ],
+      "issue_created_at": "2026-10-08T00:05:02Z",
+      "source_files": 3,
+      "test_files": [
+        "tests/test_simple_model_settings.py",
+        "tests/test_whispercpp_variant_resolution.py"
+      ]
+    },
+    {
+      "repo": "Comfy-Org/ComfyUI",
+      "pr": 16130,
+      "url": "https://github.com/Comfy-Org/ComfyUI/pull/16130",
+      "title": "Disable int8 weight-only quantization on devices without torch._int_mm (fixes MPS crash)",
+      "merged_at": "2026-09-07T20:41:33Z",
+      "language": "python",
+      "kind": "feature",
+      "stars": 136952,
+      "issues": [
+        16127
+      ],
+      "issue_created_at": "2026-09-05T12:25:19Z",
+      "source_files": 4,
+      "test_files": [
+        "tests-unit/comfy_quant/test_mixed_precision.py"
+      ]
+    },
+    {
+      "repo": "aipoch/open-science",
+      "pr": 3344,
+      "url": "https://github.com/aipoch/open-science/pull/3344",
+      "title": "fix(specialist): support session Specialist switching in Remote Web",
+      "merged_at": "2026-10-08T10:35:16Z",
+      "language": "typescript",
+      "kind": "bugfix",
+      "stars": 5517,
+      "issues": [
+        3339
+      ],
+      "issue_created_at": "2026-10-08T06:41:05Z",
+      "source_files": 4,
+      "test_files": [
+        "src/main/specialist/application-commands.test.ts",
+        "src/main/web-service/http-server.test.ts",
+        "src/shared/renderer-contract-catalog.test.ts",
+        "src/shared/renderer-surface-inventory.test.ts",
+        "src/shared/renderer-surface-matrix.test.ts",
+        "src/shared/web-rpc-contract.test.ts"
+      ]
+    },
+    {
+      "repo": "CodeWithCJ/SparkyFitness",
+      "pr": 2828,
+      "url": "https://github.com/CodeWithCJ/SparkyFitness/pull/2828",
+      "title": "feat(mobile): show the exercise, set, and target on the workout Live Activity",
+      "merged_at": "2026-10-10T18:07:34Z",
+      "language": "typescript",
+      "kind": "feature",
+      "stars": 6305,
+      "issues": [
+        2825
+      ],
+      "issue_created_at": "2026-10-09T23:01:59Z",
+      "source_files": 3,
+      "test_files": [
+        "SparkyFitnessMobile/__tests__/services/workoutLiveActivity.test.ts",
+        "SparkyFitnessMobile/__tests__/services/workoutLiveActivityLabels.test.ts",
+        "SparkyFitnessMobile/__tests__/services/workoutLiveActivityLayoutContract.test.ts"
+      ]
+    },
+    {
+      "repo": "amd/gaia",
+      "pr": 4974,
+      "url": "https://github.com/amd/gaia/pull/4974",
+      "title": "fix(ui): send a chat's attached documents to a relayed flagship",
+      "merged_at": "2026-10-11T10:00:01Z",
+      "language": "python",
+      "kind": "bugfix",
+      "stars": 1580,
+      "issues": [
+        4166
+      ],
+      "issue_created_at": "2026-09-23T22:48:49Z",
+      "source_files": 6,
+      "test_files": [
+        "docs/spec/agent-ui-query-sse-contract.md",
+        "hub/agents/gaia/python/tests/test_server_documents.py",
+        "tests/unit/chat/ui/test_recent_chat_history.py",
+        "tests/unit/test_relay_flagship_documents.py"
+      ]
+    },
+    {
+      "repo": "Human-Agent-Society/reef",
+      "pr": 726,
+      "url": "https://github.com/Human-Agent-Society/reef/pull/726",
+      "title": "feat(record2dataset): share and forward task generation inputs",
+      "merged_at": "2026-10-08T05:13:20Z",
+      "language": "python",
+      "kind": "feature",
+      "stars": 7523,
+      "issues": [
+        676
+      ],
+      "issue_created_at": "2026-09-28T16:22:59Z",
+      "source_files": 9,
+      "test_files": [
+        "tests/reef_service/test_dependency_boundaries.py",
+        "tests/reef_service/test_record2dataset_designer.py",
+        "tests/reef_service/test_record2dataset_service.py",
+        "tests/reef_service/test_task_generation_processor.py",
+        "tests/test_spade_training.py"
+      ]
+    },
+    {
+      "repo": "can1357/oh-my-pi",
+      "pr": 15316,
+      "url": "https://github.com/can1357/oh-my-pi/pull/15316",
+      "title": "fix(bedrock): add supportsThinkingBindingControls catalog opt-out",
+      "merged_at": "2026-10-11T09:41:45Z",
+      "language": "typescript",
+      "kind": "bugfix",
+      "stars": 35065,
+      "issues": [
+        15155
+      ],
+      "issue_created_at": "2026-10-10T03:26:12Z",
+      "source_files": 5,
+      "test_files": [
+        "packages/ai/test/bedrock-on-payload.test.ts",
+        "packages/catalog/test/amazon-bedrock-opus-5.test.ts",
+        "packages/catalog/test/bedrock-prompt-cache.test.ts",
+        "packages/catalog/test/model-thinking.test.ts",
+        "packages/coding-agent/test/config/models-config-validation.test.ts"
+      ]
+    },
+    {
+      "repo": "Comfy-Org/ComfyUI_frontend",
+      "pr": 19713,
+      "url": "https://github.com/Comfy-Org/ComfyUI_frontend/pull/19713",
+      "title": "test(website): schedule router provider drift checks",
+      "merged_at": "2026-10-04T02:49:50Z",
+      "language": "typescript",
+      "kind": "feature",
+      "stars": 2060,
+      "issues": [
+        19709
+      ],
+      "issue_created_at": "2026-10-01T05:06:47Z",
+      "source_files": 3,
+      "test_files": [
+        "apps/website/scripts/router-provider-drift.test.ts",
+        "apps/website/src/config/router-providers.test.ts"
+      ]
+    },
+    {
+      "repo": "apache/tvm",
+      "pr": 20237,
+      "url": "https://github.com/apache/tvm/pull/20237",
+      "title": "[Fix][Relax][Frontend][Torch] Support `aten.diagonal` from decomposed repeated-subscript einsum",
+      "merged_at": "2026-09-10T19:10:35Z",
+      "language": "python",
+      "kind": "bugfix",
+      "stars": 13822,
+      "issues": [
+        20228
+      ],
+      "issue_created_at": "2026-08-29T15:49:18Z",
+      "source_files": 3,
+      "test_files": [
+        "tests/python/relax/test_frontend_from_exported_program.py",
+        "tests/python/relax/test_frontend_onnx.py"
+      ]
+    },
+    {
+      "repo": "Kizzuwatnaa/DLSS5-Autopilot",
+      "pr": 157,
+      "url": "https://github.com/Kizzuwatnaa/DLSS5-Autopilot/pull/157",
+      "title": "fix: handle protected Xbox executables separately from write access",
+      "merged_at": "2026-09-12T22:43:20Z",
+      "language": "python",
+      "kind": "feature",
+      "stars": 867,
+      "issues": [
+        71
+      ],
+      "issue_created_at": "2026-09-08T06:30:54Z",
+      "source_files": 4,
+      "test_files": [
+        "test_all.py",
+        "test_scan.py"
+      ]
+    },
+    {
+      "repo": "chrisbenincasa/tunarr",
+      "pr": 2230,
+      "url": "https://github.com/chrisbenincasa/tunarr/pull/2230",
+      "title": "fix(scanner): keep scanning local episodes with bad NFOs or codec-less subtitles",
+      "merged_at": "2026-10-07T01:03:45Z",
+      "language": "typescript",
+      "kind": "bugfix",
+      "stars": 2641,
+      "issues": [
+        2091
+      ],
+      "issue_created_at": "2026-09-13T22:14:02Z",
+      "source_files": 3,
+      "test_files": [
+        "server/src/types/ffmpeg.test.ts"
+      ]
+    },
+    {
+      "repo": "Companion-Inc/feynman",
+      "pr": 310,
+      "url": "https://github.com/Companion-Inc/feynman/pull/310",
+      "title": "Release 0.5.14: Windows install fails on slow networks (#309); Pi package updates",
+      "merged_at": "2026-09-29T05:07:13Z",
+      "language": "typescript",
+      "kind": "feature",
+      "stars": 9937,
+      "issues": [
+        309
+      ],
+      "issue_created_at": "2026-09-28T17:15:12Z",
+      "source_files": 4,
+      "test_files": [
+        "tests/release-provenance-reconciliation.test.ts",
+        "tests/release-workflows.test.ts",
+        "tests/telemetry.test.ts"
+      ]
+    },
+    {
+      "repo": "basicmachines-co/basic-memory",
+      "pr": 1735,
+      "url": "https://github.com/basicmachines-co/basic-memory/pull/1735",
+      "title": "fix(core): embed accepted writes once, after the file is materialized",
+      "merged_at": "2026-10-10T23:53:18Z",
+      "language": "python",
+      "kind": "bugfix",
+      "stars": 4143,
+      "issues": [
+        1732
+      ],
+      "issue_created_at": "2026-10-10T21:32:59Z",
+      "source_files": 5,
+      "test_files": [
+        "test-int/test_vector_materialization_order.py",
+        "tests/api/v2/test_knowledge_router.py",
+        "tests/api/v2/test_knowledge_router_telemetry.py",
+        "tests/cloud/test_note_content_materialization.py"
+      ]
+    },
+    {
+      "repo": "MODSetter/SurfSense",
+      "pr": 1815,
+      "url": "https://github.com/MODSetter/SurfSense/pull/1815",
+      "title": "fix(sunset): gate sunset mode on cloud deployment and keep PATs working through the wind-down",
+      "merged_at": "2026-09-20T12:43:15Z",
+      "language": "python",
+      "kind": "feature",
+      "stars": 16371,
+      "issues": [
+        1814
+      ],
+      "issue_created_at": "2026-09-19T13:39:30Z",
+      "source_files": 3,
+      "test_files": [
+        "surfsense_backend/tests/unit/test_sunset_flag.py",
+        "surfsense_backend/tests/unit/test_sunset_write_block.py",
+        "surfsense_local/backend/tests/unit/shared/test_secrets.py"
+      ]
+    },
+    {
+      "repo": "cline/cline",
+      "pr": 13721,
+      "url": "https://github.com/cline/cline/pull/13721",
+      "title": "fix(desktop): render Mermaid diagrams inline",
+      "merged_at": "2026-10-06T17:50:07Z",
+      "language": "typescript",
+      "kind": "bugfix",
+      "stars": 70181,
+      "issues": [
+        13568
+      ],
+      "issue_created_at": "2026-08-25T21:55:52Z",
+      "source_files": 8,
+      "test_files": [
+        "apps/examples/desktop-app/webview/components/ui/markdown.interactions.test.tsx",
+        "apps/examples/desktop-app/webview/components/ui/markdown.test.tsx",
+        "sdk/packages/ui/tests/markdown-diagram-links.test.ts",
+        "sdk/packages/ui/tests/markdown-mermaid.test.ts",
+        "sdk/packages/ui/tests/mermaid-diagram.test.ts",
+        "sdk/packages/ui/tests/mermaid-label-extraction.test.ts"
+      ]
+    },
+    {
+      "repo": "CopilotKit/OpenBot",
+      "pr": 696,
+      "url": "https://github.com/CopilotKit/OpenBot/pull/696",
+      "title": "fix: publish playground source with its Published switch",
+      "merged_at": "2026-10-02T18:36:48Z",
+      "language": "typescript",
+      "kind": "feature",
+      "stars": 6353,
+      "issues": [
+        693
+      ],
+      "issue_created_at": "2026-10-01T09:04:28Z",
+      "source_files": 4,
+      "test_files": [
+        "server/tests/sandboxed-publication.integration.test.ts"
+      ]
+    },
+    {
+      "repo": "bramstroker/homeassistant-powercalc",
+      "pr": 4872,
+      "url": "https://github.com/bramstroker/homeassistant-powercalc/pull/4872",
+      "title": "Apply sensor category settings to group, standby and daily energy sensors",
+      "merged_at": "2026-09-26T16:59:54Z",
+      "language": "python",
+      "kind": "bugfix",
+      "stars": 1604,
+      "issues": [
+        4871
+      ],
+      "issue_created_at": "2026-09-26T16:34:37Z",
+      "source_files": 3,
+      "test_files": [
+        "tests/sensors/group/test_custom.py",
+        "tests/sensors/group/test_standby.py",
+        "tests/sensors/test_daily_energy.py"
+      ]
+    },
+    {
+      "repo": "NVIDIA-NeMo/Automodel",
+      "pr": 4054,
+      "url": "https://github.com/NVIDIA-NeMo/Automodel/pull/4054",
+      "title": "feat(mimo): add MiMo-V2.6-Pro support",
+      "merged_at": "2026-10-03T01:20:34Z",
+      "language": "python",
+      "kind": "feature",
+      "stars": 1006,
+      "issues": [
+        4052
+      ],
+      "issue_created_at": "2026-09-29T07:01:44Z",
+      "source_files": 3,
+      "test_files": [
+        "tests/unit_tests/models/mimo_v2_flash/test_model.py",
+        "tests/unit_tests/models/mimo_v2_flash/test_parallelization.py",
+        "tests/unit_tests/models/mimo_v2_flash/test_state_dict_adapter.py"
+      ]
+    },
+    {
+      "repo": "dongdongbh/Mindwtr",
+      "pr": 1171,
+      "url": "https://github.com/dongdongbh/Mindwtr/pull/1171",
+      "title": "fix(sync): keep compressing proxies from breaking WebDAV conditional writes",
+      "merged_at": "2026-09-06T17:21:01Z",
+      "language": "typescript",
+      "kind": "bugfix",
+      "stars": 2235,
+      "issues": [
+        1170
+      ],
+      "issue_created_at": "2026-09-06T15:29:39Z",
+      "source_files": 3,
+      "test_files": [
+        "packages/core/src/sync-run.test.ts"
+      ]
+    },
+    {
+      "repo": "Gentleman-Programming/gentle-shell",
+      "pr": 2120,
+      "url": "https://github.com/Gentleman-Programming/gentle-shell/pull/2120",
+      "title": "feat(installer): note a missing Git before consent, never as a blocker",
+      "merged_at": "2026-10-11T23:43:01Z",
+      "language": "typescript",
+      "kind": "feature",
+      "stars": 1282,
+      "issues": [
+        2119
+      ],
+      "issue_created_at": "2026-10-11T23:21:33Z",
+      "source_files": 4,
+      "test_files": [
+        "tests/install-wizard.test.ts",
+        "tests/installer-probes.test.ts",
+        "tests/installer-server.test.ts"
+      ]
+    },
+    {
+      "repo": "cenodude/CrossWatch",
+      "pr": 639,
+      "url": "https://github.com/cenodude/CrossWatch/pull/639",
+      "title": "Change: improve large state.json handling",
+      "merged_at": "2026-08-03T00:36:35Z",
+      "language": "python",
+      "kind": "bugfix",
+      "stars": 949,
+      "issues": [
+        626
+      ],
+      "issue_created_at": "2026-08-02T16:21:23Z",
+      "source_files": 10,
+      "test_files": [
+        "tests/test_maintenance_api.py"
+      ]
+    },
+    {
+      "repo": "PostHog/posthog",
+      "pr": 115169,
+      "url": "https://github.com/PostHog/posthog/pull/115169",
+      "title": "feat(signals): flag scout runs that close out as not in use",
+      "merged_at": "2026-10-12T00:08:01Z",
+      "language": "python",
+      "kind": "feature",
+      "stars": 40224,
+      "issues": [
+        115161
+      ],
+      "issue_created_at": "2026-10-11T22:34:13Z",
+      "source_files": 6,
+      "test_files": [
+        "products/signals/backend/test/test_scout_harness_api.py"
+      ]
+    },
+    {
+      "repo": "forcedotcom/salesforcedx-vscode",
+      "pr": 7979,
+      "url": "https://github.com/forcedotcom/salesforcedx-vscode/pull/7979",
+      "title": "fix(lwc): prevent file watcher CPU loop from unconditional jsconfig w\u2026 W-23802916",
+      "merged_at": "2026-09-02T18:35:45Z",
+      "language": "typescript",
+      "kind": "bugfix",
+      "stars": 1036,
+      "issues": [
+        7966
+      ],
+      "issue_created_at": "2026-08-07T06:36:32Z",
+      "source_files": 10,
+      "test_files": [
+        "packages/salesforcedx-lightning-lsp-common/test/areJsonValuesEqual.test.ts",
+        "packages/salesforcedx-lightning-lsp-common/test/context.test.ts",
+        "packages/salesforcedx-vscode-lwc/test/jest/languageClient/clientOptions.test.ts",
+        "packages/salesforcedx-vscode-lwc/test/playwright/specs/lwcLspSfdxProjectWatcher.desktop.spec.ts",
+        "packages/salesforcedx-vscode-services/test/jest/core/sfProjectFileWatcher.test.ts",
+        "packages/salesforcedx-vscode-services/test/jest/core/templateService.test.ts"
+      ]
+    },
+    {
+      "repo": "HeyPuter/puter",
+      "pr": 4085,
+      "url": "https://github.com/HeyPuter/puter/pull/4085",
+      "title": "fix(events): resolve relative fs: paths like fs operations do",
+      "merged_at": "2026-10-08T22:23:54Z",
+      "language": "typescript",
+      "kind": "feature",
+      "stars": 43671,
+      "issues": [
+        4026
+      ],
+      "issue_created_at": "2026-10-02T08:07:05Z",
+      "source_files": 3,
+      "test_files": [
+        "src/puter-js/src/modules/events/lib/resolveSubject.test.js"
+      ]
+    },
+    {
+      "repo": "comet-ml/opik",
+      "pr": 8710,
+      "url": "https://github.com/comet-ml/opik/pull/8710",
+      "title": "[OPIK-8661] [SDK] fix: keep and report TypeScript metric scores that fail during evaluate()",
+      "merged_at": "2026-10-02T15:31:09Z",
+      "language": "python",
+      "kind": "bugfix",
+      "stars": 22518,
+      "issues": [
+        8703
+      ],
+      "issue_created_at": "2026-10-02T12:55:23Z",
+      "source_files": 3,
+      "test_files": [
+        "sdks/typescript/tests/evaluation/evaluate.test.ts",
+        "sdks/typescript/tests/unit/evaluation/engine/EvaluationEngine.assertionRouting.test.ts",
+        "sdks/typescript/tests/unit/evaluation/results/EvaluationResultProcessor.test.ts"
+      ]
+    },
+    {
+      "repo": "agno-agi/agno",
+      "pr": 10871,
+      "url": "https://github.com/agno-agi/agno/pull/10871",
+      "title": "[feat] Add FlexAI as an OpenAI-compatible model provider",
+      "merged_at": "2026-10-07T15:18:29Z",
+      "language": "python",
+      "kind": "feature",
+      "stars": 42675,
+      "issues": [
+        10872
+      ],
+      "issue_created_at": "2026-10-07T12:11:12Z",
+      "source_files": 5,
+      "test_files": [
+        "libs/agno/tests/unit/models/flexai/__init__.py",
+        "libs/agno/tests/unit/models/flexai/test_flexai.py"
+      ]
+    },
+    {
+      "repo": "freelensapp/freelens",
+      "pr": 2710,
+      "url": "https://github.com/freelensapp/freelens/pull/2710",
+      "title": "Reload a two-run extension build once and accept interface store models",
+      "merged_at": "2026-10-12T00:25:24Z",
+      "language": "typescript",
+      "kind": "bugfix",
+      "stars": 5679,
+      "issues": [
+        2705
+      ],
+      "issue_created_at": "2026-10-11T20:24:06Z",
+      "source_files": 4,
+      "test_files": [
+        "packages/core/src/extensions/extension-discovery/extension-discovery-rebuilds.test.ts"
+      ]
+    },
+    {
+      "repo": "KittyCAD/modeling-app",
+      "pr": 14411,
+      "url": "https://github.com/KittyCAD/modeling-app/pull/14411",
+      "title": "Use property tests to fix regression in `MeasurementTool` after Face API migration",
+      "merged_at": "2026-10-07T18:42:00Z",
+      "language": "typescript",
+      "kind": "feature",
+      "stars": 1314,
+      "issues": [
+        14409
+      ],
+      "issue_created_at": "2026-10-06T21:41:21Z",
+      "source_files": 3,
+      "test_files": [
+        "src/registry/extensions/engineScene/MeasurementTool.component.test.tsx",
+        "src/registry/extensions/engineScene/MeasurementTool.test.ts",
+        "src/registry/extensions/engineScene/measurementHandoff.properties.test.ts",
+        "src/registry/extensions/engineScene/measurementResolution.test.ts",
+        "src/registry/extensions/engineScene/useMeasurementSelection.properties.test.tsx"
+      ]
+    },
+    {
+      "repo": "dgunning/edgartools",
+      "pr": 1480,
+      "url": "https://github.com/dgunning/edgartools/pull/1480",
+      "title": "fix(markdown): preserve grouped table header paths (#1474)",
+      "merged_at": "2026-10-08T19:08:38Z",
+      "language": "python",
+      "kind": "bugfix",
+      "stars": 2784,
+      "issues": [
+        1474
+      ],
+      "issue_created_at": "2026-10-07T15:02:16Z",
+      "source_files": 3,
+      "test_files": [
+        "tests/fixtures/html/eaton/etn-20241231-table-28.html",
+        "tests/fixtures/html/eaton/etn-20260331-table-22.html",
+        "tests/fixtures/html/eaton/etn-20260331-table-23.html",
+        "tests/fixtures/html/eaton/provenance.json",
+        "tests/issues/regression/test_1474_markdown_grouped_headers.py",
+        "tests/issues/regression/test_1480_markdown_header_rowspans.py"
+      ]
+    }
+  ]
+}

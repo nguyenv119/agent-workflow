@@ -1,0 +1,576 @@
+{
+ "data": {
+  "r0": {
+   "nodes": [
+    {
+     "number": 249,
+     "title": "feat: add document-level retrieval metrics",
+     "url": "https://github.com/RUC-NLPIR/FlashRAG/pull/249",
+     "mergedAt": "2026-10-01T01:49:21Z",
+     "labels": {
+      "nodes": []
+     },
+     "repository": {
+      "nameWithOwner": "RUC-NLPIR/FlashRAG",
+      "stargazerCount": 3590,
+      "isFork": false,
+      "primaryLanguage": {
+       "name": "Python"
+      }
+     },
+     "closingIssuesReferences": {
+      "nodes": [
+       {
+        "number": 177,
+        "createdAt": "2025-05-09T09:01:12Z",
+        "labels": {
+         "nodes": []
+        }
+       }
+      ]
+     },
+     "files": {
+      "totalCount": 7,
+      "nodes": [
+       {
+        "path": "README.md"
+       },
+       {
+        "path": "README_zh.md"
+       },
+       {
+        "path": "docs/original_docs/configuration.md"
+       },
+       {
+        "path": "docs/zh-cn/configuration/basic-settings.md"
+       },
+       {
+        "path": "flashrag/config/basic_config.yaml"
+       },
+       {
+        "path": "flashrag/evaluator/metrics.py"
+       },
+       {
+        "path": "tests/test_document_retrieval_metrics.py"
+       }
+      ]
+     }
+    },
+    {
+     "number": 251,
+     "title": "fix: correct LLM judge score parsing",
+     "url": "https://github.com/RUC-NLPIR/FlashRAG/pull/251",
+     "mergedAt": "2026-10-01T01:48:18Z",
+     "labels": {
+      "nodes": []
+     },
+     "repository": {
+      "nameWithOwner": "RUC-NLPIR/FlashRAG",
+      "stargazerCount": 3590,
+      "isFork": false,
+      "primaryLanguage": {
+       "name": "Python"
+      }
+     },
+     "closingIssuesReferences": {
+      "nodes": [
+       {
+        "number": 250,
+        "createdAt": "2026-09-29T11:06:28Z",
+        "labels": {
+         "nodes": []
+        }
+       }
+      ]
+     },
+     "files": {
+      "totalCount": 2,
+      "nodes": [
+       {
+        "path": "flashrag/evaluator/metrics.py"
+       },
+       {
+        "path": "tests/test_llm_judge.py"
+       }
+      ]
+     }
+    },
+    {
+     "number": 244,
+     "title": "fix(refiner): stop dropping ordinary sentence boundaries in ExtractiveRefiner split",
+     "url": "https://github.com/RUC-NLPIR/FlashRAG/pull/244",
+     "mergedAt": "2026-09-19T09:20:42Z",
+     "labels": {
+      "nodes": []
+     },
+     "repository": {
+      "nameWithOwner": "RUC-NLPIR/FlashRAG",
+      "stargazerCount": 3590,
+      "isFork": false,
+      "primaryLanguage": {
+       "name": "Python"
+      }
+     },
+     "closingIssuesReferences": {
+      "nodes": [
+       {
+        "number": 175,
+        "createdAt": "2025-05-06T16:57:10Z",
+        "labels": {
+         "nodes": []
+        }
+       }
+      ]
+     },
+     "files": {
+      "totalCount": 1,
+      "nodes": [
+       {
+        "path": "flashrag/refiner/refiner.py"
+       }
+      ]
+     }
+    },
+    {
+     "number": 238,
+     "title": "fix(retriever): stream embeddings to the memmap during encode instead of buffering the whole corpus",
+     "url": "https://github.com/RUC-NLPIR/FlashRAG/pull/238",
+     "mergedAt": "2026-08-09T05:52:07Z",
+     "labels": {
+      "nodes": []
+     },
+     "repository": {
+      "nameWithOwner": "RUC-NLPIR/FlashRAG",
+      "stargazerCount": 3590,
+      "isFork": false,
+      "primaryLanguage": {
+       "name": "Python"
+      }
+     },
+     "closingIssuesReferences": {
+      "nodes": [
+       {
+        "number": 233,
+        "createdAt": "2026-07-13T07:04:26Z",
+        "labels": {
+         "nodes": []
+        }
+       }
+      ]
+     },
+     "files": {
+      "totalCount": 1,
+      "nodes": [
+       {
+        "path": "flashrag/retriever/index_builder.py"
+       }
+      ]
+     }
+    }
+   ]
+  },
+  "r1": {
+   "nodes": [
+    {
+     "number": 4974,
+     "title": "fix(ui): send a chat's attached documents to a relayed flagship",
+     "url": "https://github.com/amd/gaia/pull/4974",
+     "mergedAt": "2026-10-11T10:00:01Z",
+     "labels": {
+      "nodes": [
+       {
+        "name": "documentation"
+       },
+       {
+        "name": "tests"
+       }
+      ]
+     },
+     "repository": {
+      "nameWithOwner": "amd/gaia",
+      "stargazerCount": 1580,
+      "isFork": false,
+      "primaryLanguage": {
+       "name": "Python"
+      }
+     },
+     "closingIssuesReferences": {
+      "nodes": [
+       {
+        "number": 4166,
+        "createdAt": "2026-09-23T22:48:49Z",
+        "labels": {
+         "nodes": [
+          {
+           "name": "bug"
+          },
+          {
+           "name": "p2"
+          },
+          {
+           "name": "agent-ui"
+          }
+         ]
+        }
+       }
+      ]
+     },
+     "files": {
+      "totalCount": 16,
+      "nodes": [
+       {
+        "path": "docs/guides/gaia.mdx"
+       },
+       {
+        "path": "docs/spec/agent-ui-query-sse-contract.md"
+       },
+       {
+        "path": "hub/agents/gaia/npm/CHANGELOG.md"
+       },
+       {
+        "path": "hub/agents/gaia/npm/README.md"
+       },
+       {
+        "path": "hub/agents/gaia/npm/SKILL.md"
+       },
+       {
+        "path": "hub/agents/gaia/npm/SPEC.md"
+       },
+       {
+        "path": "hub/agents/gaia/npm/src/lifecycle.ts"
+       },
+       {
+        "path": "hub/agents/gaia/python/gaia_agent/server.py"
+       },
+       {
+        "path": "hub/agents/gaia/python/gaia_agent/session_registry.py"
+       },
+       {
+        "path": "hub/agents/gaia/python/openapi.gaia.json"
+       },
+       {
+        "path": "hub/agents/gaia/python/tests/test_server_documents.py"
+       },
+       {
+        "path": "src/gaia/ui/_chat_helpers.py"
+       },
+       {
+        "path": "src/gaia/ui/email_sidecar/profiles.py"
+       },
+       {
+        "path": "src/gaia/ui/email_sidecar/relay.py"
+       },
+       {
+        "path": "tests/unit/chat/ui/test_recent_chat_history.py"
+       },
+       {
+        "path": "tests/unit/test_relay_flagship_documents.py"
+       }
+      ]
+     }
+    },
+    {
+     "number": 4839,
+     "title": "docs: remove obsolete plans and stale per-task-agent references",
+     "url": "https://github.com/amd/gaia/pull/4839",
+     "mergedAt": "2026-10-06T01:40:56Z",
+     "labels": {
+      "nodes": [
+       {
+        "name": "documentation"
+       },
+       {
+        "name": "installer"
+       },
+       {
+        "name": "devops"
+       },
+       {
+        "name": "tests"
+       },
+       {
+        "name": "cpp"
+       }
+      ]
+     },
+     "repository": {
+      "nameWithOwner": "amd/gaia",
+      "stargazerCount": 1580,
+      "isFork": false,
+      "primaryLanguage": {
+       "name": "Python"
+      }
+     },
+     "closingIssuesReferences": {
+      "nodes": [
+       {
+        "number": 4841,
+        "createdAt": "2026-10-06T00:56:19Z",
+        "labels": {
+         "nodes": [
+          {
+           "name": "documentation"
+          },
+          {
+           "name": "p3"
+          }
+         ]
+        }
+       }
+      ]
+     },
+     "files": {
+      "totalCount": 77,
+      "nodes": [
+       {
+        "path": ".claude/agents/ui-ux-designer.md"
+       },
+       {
+        "path": ".claude/skills/porting-agent-to-hub/SKILL.md"
+       },
+       {
+        "path": "CLAUDE.md"
+       },
+       {
+        "path": "README.md"
+       },
+       {
+        "path": "cpp/README.md"
+       },
+       {
+        "path": "docs/docs.json"
+       },
+       {
+        "path": "docs/glossary.mdx"
+       },
+       {
+        "path": "docs/guides/hub-publishing.mdx"
+       },
+       {
+        "path": "docs/guides/index.mdx"
+       },
+       {
+        "path": "docs/index.mdx"
+       },
+       {
+        "path": "docs/integrations/vscode.mdx"
+       },
+       {
+        "path": "docs/plans/agent-factory-overview.md"
+       },
+       {
+        "path": "docs/plans/agent-factory.md"
+       },
+       {
+        "path": "docs/plans/agent-hub-22-agents-spec.md"
+       },
+       {
+        "path": "docs/plans/agent-hub-ui.mdx"
+       },
+       {
+        "path": "docs/plans/agent-hub.mdx"
+       },
+       {
+        "path": "docs/plans/agent-ui-agent-capabilities-plan.md"
+       },
+       {
+        "path": "docs/plans/agent-ui-claude-desktop.mdx"
+       },
+       {
+        "path": "docs/plans/agent-ui-eval-benchmark.md"
+       },
+       {
+        "path": "docs/plans/agent-ui-hub-publish.mdx"
+       },
+       {
+        "path": "docs/plans/agent-ui-v2-implementation-breakdown.md"
+       },
+       {
+        "path": "docs/plans/agent-ui.mdx"
+       },
+       {
+        "path": "docs/plans/autonomy-engine.mdx"
+       },
+       {
+        "path": "docs/plans/bash-agent.mdx"
+       },
+       {
+        "path": "docs/plans/browser-use.mdx"
+       },
+       {
+        "path": "docs/plans/claude-session-harvest.md"
+       },
+       {
+        "path": "docs/plans/code-index-review.mdx"
+       },
+       {
+        "path": "docs/plans/connectors.mdx"
+       },
+       {
+        "path": "docs/plans/daemon-convergence.mdx"
+       },
+       {
+        "path": "docs/plans/email-agent-packaging.mdx"
+       },
+       {
+        "path": "docs/plans/email-agent-tui-port.md"
+       },
+       {
+        "path": "docs/plans/email-calendar-integration.mdx"
+       },
+       {
+        "path": "docs/plans/email-eval-node-frontend.mdx"
+       },
+       {
+        "path": "docs/plans/email-full-autonomy.mdx"
+       },
+       {
+        "path": "docs/plans/email-inbox-cleanup.mdx"
+       },
+       {
+        "path": "docs/plans/email-sidecar-agent-ui-implementation.md"
+       },
+       {
+        "path": "docs/plans/email-sidecar-agent-ui.md"
+       },
+       {
+        "path": "docs/plans/email-triage-agent.mdx"
+       },
+       {
+        "path": "docs/plans/flagship-installer.mdx"
+       },
+       {
+        "path": "docs/plans/gaia-ui-redesign.mdx"
+       },
+       {
+        "path": "docs/plans/image-agent.mdx"
+       },
+       {
+        "path": "docs/plans/messaging-integrations-plan.mdx"
+       },
+       {
+        "path": "docs/plans/oem-bundling.mdx"
+       },
+       {
+        "path": "docs/plans/package-publishing.mdx"
+       },
+       {
+        "path": "docs/plans/port-audit-6-agents.md"
+       },
+       {
+        "path": "docs/plans/port-triage-external-dep-agents.md"
+       },
+       {
+        "path": "docs/plans/port-triage-thin-infra-agents.md"
+       },
+       {
+        "path": "docs/plans/power-automate-outlook.md"
+       },
+       {
+        "path": "docs/plans/pr-queue-closeout.md"
+       },
+       {
+        "path": "docs/plans/security-model.mdx"
+       },
+       {
+        "path": "docs/plans/setup-wizard.mdx"
+       },
+       {
+        "path": "docs/plans/shareable-custom-build.md"
+       },
+       {
+        "path": "docs/plans/slack-tui-integration.mdx"
+       },
+       {
+        "path": "docs/plans/transcription-skill.mdx"
+       },
+       {
+        "path": "docs/plans/transcription-testing-guide.md"
+       },
+       {
+        "path": "docs/plans/tui-user-journey.md"
+       },
+       {
+        "path": "docs/plans/typescript-sdk.mdx"
+       },
+       {
+        "path": "docs/plans/unified-tui-composability.md"
+       },
+       {
+        "path": "docs/quickstart.mdx"
+       },
+       {
+        "path": "docs/reference/dev.mdx"
+       }
+      ]
+     }
+    },
+    {
+     "number": 4842,
+     "title": "fix(ui): memory off and private chats apply to background runs too",
+     "url": "https://github.com/amd/gaia/pull/4842",
+     "mergedAt": "2026-10-06T01:35:39Z",
+     "labels": {
+      "nodes": [
+       {
+        "name": "documentation"
+       },
+       {
+        "name": "tests"
+       }
+      ]
+     },
+     "repository": {
+      "nameWithOwner": "amd/gaia",
+      "stargazerCount": 1580,
+      "isFork": false,
+      "primaryLanguage": {
+       "name": "Python"
+      }
+     },
+     "closingIssuesReferences": {
+      "nodes": [
+       {
+        "number": 4771,
+        "createdAt": "2026-10-06T00:04:07Z",
+        "labels": {
+         "nodes": [
+          {
+           "name": "bug"
+          },
+          {
+           "name": "p2"
+          },
+          {
+           "name": "agent-ui"
+          }
+         ]
+        }
+       }
+      ]
+     },
+     "files": {
+      "totalCount": 5,
+      "nodes": [
+       {
+        "path": "docs/guides/memory.mdx"
+       },
+       {
+        "path": "src/gaia/ui/_chat_helpers.py"
+       },
+       {
+        "path": "src/gaia/ui/agent_loop.py"
+       },
+       {
+        "path": "src/gaia/ui/server.py"
+       },
+       {
+        "path": "tests/unit/chat/ui/test_memory_toggle_cached_agent.py"
+       }
+      ]
+     }
+    }
+   ]
+  }
+ }
+}
