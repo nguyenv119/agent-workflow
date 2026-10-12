@@ -347,28 +347,72 @@ class InstallHarnessTest(unittest.TestCase):
         self.assertEqual(result.returncode, 2)
         self.assertFalse(target.exists())
 
-    def test_symlinked_dir_in_target_is_refused_before_writing(self):
-        """
-        Real targets link some .claude/skills/* dirs into a nested repo. An
-        install that writes through such a link overwrites files in that other
-        repo, which no manifest owns and nothing can restore. It must refuse
-        (exit 2) and leave the link target byte-identical.
-        """
-        # GIVEN .claude/skills/coordinator is a symlink to a dir elsewhere in the target
-        target = self.tmp / "t"
+    def link_coordinator(self, target, content):
+        """Make target/.claude/skills/coordinator a symlink to a nested dir holding SKILL.md = content."""
         nested = target / "nested/coordinator"
         nested.mkdir(parents=True)
-        (nested / "SKILL.md").write_text("nested repo copy\n")
+        (nested / "SKILL.md").write_text(content)
         (target / ".claude/skills").mkdir(parents=True)
         (target / ".claude/skills/coordinator").symlink_to(nested)
+        return nested
+
+    def test_symlinked_dir_in_target_is_skipped_and_left_in_place(self):
+        """
+        Real targets link some .claude/skills/* dirs into a nested repo, which
+        must stay the single copy. Writing through the link would overwrite
+        files no manifest owns, so the install skips the linked path: the link
+        stays a link, the files behind it are byte-identical, the skipped paths
+        are not in the manifest, and everything else installs.
+        """
+        # GIVEN .claude/skills/coordinator is a symlink to a nested copy equal to commit 1's
+        target = self.tmp / "t"
+        nested = self.link_coordinator(target, "coordinator v1\n")
         before = tree_hashes(nested)
-        # WHEN commit 1 (which has skills/coordinator/SKILL.md) is installed
+        # WHEN commit 1 is installed
+        result = self.install(self.sha1, target)
+        # THEN the link and its target are untouched, the note says identical,
+        # the manifest omits the skipped file, and the other files are installed
+        self.assertTrue((target / ".claude/skills/coordinator").is_symlink())
+        self.assertEqual(tree_hashes(nested), before)
+        self.assertIn("skipped symlink .claude/skills/coordinator", result.stdout)
+        self.assertIn("all 1 files identical", result.stdout)
+        manifest = (target / ".claude/HARNESS_MANIFEST").read_text().splitlines()
+        self.assertNotIn(".claude/skills/coordinator/SKILL.md", manifest)
+        self.assertEqual((target / ".claude/skills/old/SKILL.md").read_text(), "old skill\n")
+
+    def test_symlinked_dir_whose_content_differs_is_skipped_with_the_differing_files_named(self):
+        """
+        When the base copy differs from what is behind the link, the install
+        still must not write through it, but the drift has to be visible so a
+        human can reconcile the nested copy: the note names each differing file.
+        """
+        # GIVEN the linked nested copy differs from commit 1's coordinator
+        target = self.tmp / "t"
+        nested = self.link_coordinator(target, "nested repo copy\n")
+        # WHEN commit 1 is installed
+        result = self.install(self.sha1, target)
+        # THEN the nested file is unchanged and the note lists it as differing
+        self.assertEqual((nested / "SKILL.md").read_text(), "nested repo copy\n")
+        self.assertIn("1 of 1 files differ", result.stdout)
+        self.assertIn(".claude/skills/coordinator/SKILL.md", result.stdout)
+
+    def test_version_files_through_a_symlink_are_refused(self):
+        """
+        HARNESS_VERSION and HARNESS_MANIFEST are the installer's own record;
+        skipping them would leave an install with no label, so if .claude itself
+        is a link the install refuses (exit 2) and writes nothing.
+        """
+        # GIVEN target/.claude is a symlink to a dir elsewhere
+        target = self.tmp / "t"
+        elsewhere = self.tmp / "elsewhere"
+        elsewhere.mkdir()
+        target.mkdir()
+        (target / ".claude").symlink_to(elsewhere)
+        # WHEN installed / THEN exit 2 naming the symlink, nothing written behind it
         result = self.install(self.sha1, target, check=False)
-        # THEN it exits 2, names the symlink, and the link target is untouched
         self.assertEqual(result.returncode, 2)
         self.assertIn("symlink", result.stderr)
-        self.assertEqual(tree_hashes(nested), before)
-        self.assertFalse((target / ".claude/HARNESS_MANIFEST").exists())
+        self.assertEqual(list(elsewhere.iterdir()), [])
 
     def test_force_refuses_to_delete_previous_manifest_path_under_symlink(self):
         """
@@ -582,6 +626,188 @@ class InstallHarnessTest(unittest.TestCase):
                 self.assertIn("add-on-relative", result.stderr)
                 self.assertFalse(target.exists())
                 run(["rm", "-rf", str(addon)], "/")
+
+
+SETTINGS = {
+    "permissions": {"allow": ["Bash(git:*)"], "deny": ["Bash(rm:*)"]},
+    "hooks": {
+        "SessionStart": [
+            {"hooks": [{"type": "command", "command": "cat AGENTS.md"}]},
+            {"matcher": "compact", "hooks": [{"type": "command", "command": "echo compacted"}]},
+        ],
+        "PostCompact": [{"hooks": [{"type": "command", "command": "save.sh"}]}],
+    },
+    "autoCompactWindow": 256000,
+}
+
+
+class SkipbaseTest(unittest.TestCase):
+    """The add-on's .skipbase opts a target out of base paths and settings entries, failing closed."""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        self.repo, self.sha = make_repo(self.tmp / "aw", {
+            ".claude/settings.json": json.dumps(SETTINGS, indent=2) + "\n",
+            ".claude/skills/doc/SKILL.md": "doc\n",
+            ".claude/skills/doc/template.html": "tpl\n",
+            ".claude/skills/coordinator/SKILL.md": "coordinator\n",
+            ".claude/hooks/save.sh": "echo save\n",
+            "AGENTS.md": "agents\n",
+        })
+        self.addon = self.tmp / "addon"
+        (self.addon / "skills/doc").mkdir(parents=True)
+        (self.addon / "skills/doc/example.html").write_text("private example\n")
+        self.target = self.tmp / "t"
+
+    def tearDown(self):
+        run(["rm", "-rf", str(self.tmp)], "/")
+
+    def install(self, skipbase, *extra, check=True):
+        (self.addon / ".skipbase").write_text(skipbase)
+        cmd = [sys.executable, str(SCRIPT), "--repo", str(self.repo), "--commit", self.sha,
+               "--target", str(self.target), "--addon", str(self.addon), *extra]
+        return run(cmd, self.tmp, check=check)
+
+    def settings(self):
+        return json.loads((self.target / ".claude/settings.json").read_text())
+
+    def test_path_opts_out_base_files_but_keeps_addon_files_there(self):
+        """
+        A target that already gets a skill from elsewhere (e.g. a user-level
+        copy) must not get the base copy too. `path` drops every base file under
+        the prefix; an add-on file under it is still installed because the
+        add-on asked for it explicitly. .skipbase itself is never installed.
+        """
+        # GIVEN .skipbase opting out of the base doc skill and the root AGENTS.md
+        # WHEN installed
+        result = self.install("# keep the user's own copy\npath .claude/skills/doc/\npath AGENTS.md\n")
+        # THEN the base doc files and AGENTS.md are absent from disk and manifest, the add-on file is there
+        manifest = (self.target / ".claude/HARNESS_MANIFEST").read_text().splitlines()
+        for rel in (".claude/skills/doc/SKILL.md", ".claude/skills/doc/template.html", "AGENTS.md",
+                    ".claude/.skipbase"):
+            self.assertFalse((self.target / rel).exists(), rel)
+            self.assertNotIn(rel, manifest)
+        self.assertEqual((self.target / ".claude/skills/doc/example.html").read_text(), "private example\n")
+        self.assertEqual((self.target / ".claude/skills/coordinator/SKILL.md").read_text(), "coordinator\n")
+        self.assertIn("opted out of base .claude/skills/doc (2 files)", result.stdout)
+
+    def test_skipbase_is_hashed_into_the_addon_hash(self):
+        """
+        The version label must change when the opt-outs change, or two
+        installs with different harness content would carry the same label.
+        The hash includes .skipbase by the documented formula.
+        """
+        # GIVEN two installs that differ only in one .skipbase line
+        self.install("path AGENTS.md\n")
+        first = json.loads((self.target / ".claude/HARNESS_VERSION").read_text())["addon_sha256"]
+        run(["rm", "-rf", str(self.target)], "/")
+        self.install("path .claude/skills/doc/\n")
+        second = json.loads((self.target / ".claude/HARNESS_VERSION").read_text())["addon_sha256"]
+        # THEN the hashes differ and the second equals the independent formula over the add-on (incl. .skipbase)
+        self.assertNotEqual(first, second)
+        self.assertEqual(second, addon_hash(self.addon))
+
+    def test_setting_lines_delete_top_level_and_nested_keys_and_keep_the_rest(self):
+        """
+        `setting a.b` removes one key from the installed settings.json so a
+        target can keep a user-level value (e.g. its own compact window)
+        instead of the base one. Everything else stays as in the base.
+        """
+        # WHEN installed opting out of a top-level and a nested key
+        self.install("setting autoCompactWindow\nsetting permissions.deny\n")
+        # THEN exactly those keys are gone
+        data = self.settings()
+        self.assertNotIn("autoCompactWindow", data)
+        self.assertEqual(data["permissions"], {"allow": ["Bash(git:*)"]})
+        self.assertEqual(data["hooks"], SETTINGS["hooks"])
+
+    def test_hook_lines_delete_groups_by_matcher_and_drop_emptied_events(self):
+        """
+        `hook <Event> <matcher>` removes only the groups with that matcher, so a
+        target can drop one base hook it already runs at user level without
+        losing the event's other hooks; `-` means groups with no matcher, and
+        an event left with no groups is deleted rather than kept empty.
+        """
+        # WHEN installed opting out of the compact SessionStart group and the matcher-less PostCompact group
+        self.install("hook SessionStart compact\nhook PostCompact -\n")
+        # THEN SessionStart keeps only its matcher-less group and PostCompact is gone
+        hooks = self.settings()["hooks"]
+        self.assertEqual(hooks["SessionStart"], [SETTINGS["hooks"]["SessionStart"][0]])
+        self.assertNotIn("PostCompact", hooks)
+
+    def test_force_reinstall_removes_a_base_file_newly_opted_out(self):
+        """
+        Opting out after an install must take effect on the next --force
+        reinstall: the previously installed base file is deleted (it is in the
+        old manifest) and not written again.
+        """
+        # GIVEN an install with no opt-outs
+        self.install("")
+        self.assertTrue((self.target / ".claude/hooks/save.sh").exists())
+        # WHEN reinstalled with --force opting out of the hook script
+        self.install("path .claude/hooks/save.sh\n", "--force")
+        # THEN the file is gone and not in the manifest
+        self.assertFalse((self.target / ".claude/hooks/save.sh").exists())
+        self.assertNotIn(".claude/hooks/save.sh",
+                         (self.target / ".claude/HARNESS_MANIFEST").read_text().splitlines())
+
+    def test_settings_lines_apply_to_an_addon_settings_override(self):
+        """
+        When the add-on ships its own settings.json it replaces the base one,
+        and the opt-outs must apply to that installed file, not the base copy.
+        """
+        # GIVEN an add-on settings.json with its own compact window
+        (self.addon / "settings.json").write_text(json.dumps({"autoCompactWindow": 1, "keep": True}))
+        # WHEN installed opting out of that key
+        self.install("setting autoCompactWindow\n")
+        # THEN the installed file is the add-on's, minus the key
+        self.assertEqual(self.settings(), {"keep": True})
+
+    def test_settings_lines_with_a_symlinked_settings_file_are_refused(self):
+        """
+        A symlinked settings.json is skipped (never written through), so its
+        opt-outs could not take effect; installing anyway would leave the
+        opted-out hooks live while reporting success. Refuse instead, and leave
+        the file behind the link untouched.
+        """
+        # GIVEN target/.claude/settings.json is a symlink to a file elsewhere
+        real = self.tmp / "real-settings.json"
+        real.write_text(json.dumps(SETTINGS))
+        (self.target / ".claude").mkdir(parents=True)
+        (self.target / ".claude/settings.json").symlink_to(real)
+        before = real.read_bytes()
+        # WHEN installed with a setting line / THEN exit 2 naming the symlink, file unchanged
+        result = self.install("setting autoCompactWindow\n", check=False)
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("symlink", result.stderr)
+        self.assertEqual(real.read_bytes(), before)
+        self.assertFalse((self.target / ".claude/HARNESS_MANIFEST").exists())
+
+    def test_entries_that_match_nothing_or_do_not_parse_are_refused_before_writing(self):
+        """
+        Fail closed, like .installignore: a typo or a stale entry (the base
+        renamed the key or the skill) would otherwise silently install what
+        the target opted out of. Each case exits 2 naming the line, writing nothing.
+        """
+        cases = {
+            "path .claude/skills/dco/\n": "matches no base file",
+            "path /abs\n": "target-relative",
+            "path .claude/../x\n": "target-relative",
+            "setting autoCompactWindo\n": "names no key",
+            "setting permissions.allow.x\n": "names no key",
+            "hook SessionStart startup\n": "matches no hooks.SessionStart group",
+            "hook Stop -\n": "has no hooks.Stop",
+            "skip AGENTS.md\n": "cannot parse",
+            "hook SessionStart\n": "cannot parse",
+            "path .claude/settings.json\nsetting autoCompactWindow\n": "no .claude/settings.json is installed",
+        }
+        for skipbase, message in cases.items():
+            with self.subTest(skipbase=skipbase):
+                # WHEN installed with the bad entry / THEN exit 2 with the reason, nothing written
+                result = self.install(skipbase, check=False)
+                self.assertEqual(result.returncode, 2, result.stdout)
+                self.assertIn(message, result.stderr)
+                self.assertFalse(self.target.exists())
 
 
 if __name__ == "__main__":
