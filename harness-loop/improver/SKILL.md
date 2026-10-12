@@ -32,15 +32,15 @@ Your message lists the paths you need: `skill`, `worktree` (your branch, already
    it is not an idea yet.
 4. **Exactly one commit** on the current branch, touching only `.claude/**` or `AGENTS.md`.
    Forbidden: `harness-loop/**`, `CLAUDE.md`, product code, the exam tasks, history or run
-   records, other branches, merging, pushing, `gh`. Forbidden too: anything that mentions or
-   depends on `EXAM_MODE`, and any edit to the coordinator's "Exam mode" section. A harness
-   that behaves differently when it is examined is cheating.
+   records, other branches, merging, pushing, `gh`. Forbidden too: any added or changed line,
+   in any file, containing `EXAM_MODE` or the words "exam mode", and any edit to the
+   coordinator's "Exam mode" section. A harness that behaves differently when examined cheats.
 5. **No leaks.** Never copy a task name, repo name, private path, code or text from a try
    folder into the change, the commit message or any `proposal.md` line except the Evidence
    paths (say "one task" or "three tries", never its name). Cite try folders only in
    `proposal.md`'s Evidence, and only as `runs/...` (relative to the loop home) or
-   `~/.claude/tries/agent-workflow/...` (with a literal `~`). The script scans the change, the commit message and `proposal.md`:
-   no absolute paths, and tool names (a test runner, a package manager) only on a line that
+   `~/.claude/tries/agent-workflow/...` (with a literal `~`). The script scans the change,
+   the commit message and `proposal.md`: no absolute paths, and tool names (a test runner, a package manager) only on a line that
    says "e.g.".
 6. **Generalize.** No task-specific or repo-specific hints. The test: would this help a
    developer working on many unfamiliar repos? No parameter tweaks (a count, a timeout, a
@@ -52,8 +52,13 @@ Your message lists the paths you need: `skill`, `worktree` (your branch, already
    deleting or loosening a reviewer, the test-runner, a standards rule, a Quality Gates step,
    a hook or its `settings.json` entry, the real-acceptance step or the implementer's
    test-first phases. No line telling any agent to skip, shorten, sample, bypass, defer or
-   make optional any of them, and no rewording that has that effect. You may add a check or
-   sharpen one; you may not take one away. The script rejects such a change unscreened.
+   make optional any of them, and no rewording that has that effect. You may add a check; you
+   may not take one away. The script rejects such a change unscreened, and its exact rule is
+   the `gate_guard` docstring in your worktree's `harness-loop/loop.py`. In practice: in a
+   reviewer, test-runner, standards or hook file, and under any heading that names tests,
+   gates, review or verify, only ADD lines (never edit or delete one, even a blank line); and
+   never put skip, ignore, omit, optional or disable on a line that also names a gate unless
+   it directly follows "never" or "do not".
 9. **Always produce a change.** "The current harness is already optimal" is not an answer.
    One mechanism per change; keep the diff small enough that its effect can be traced.
 
@@ -70,10 +75,10 @@ Your message lists the paths you need: `skill`, `worktree` (your branch, already
    wrong, what the agent did instead, and the harness line that led it there (or the missing
    line that would have stopped it).
 5. Find the pattern shared by two or more tries. That is the evidence for your idea.
-6. Write the change in the file and section the map names for that step. Prefer sharpening
-   an existing instruction over adding a new section. Keep YAML frontmatter intact.
+6. Write the change in the file and section the map names for that step. Prefer a few added
+   lines inside an existing section over a new section (rule 8: add, do not rewrite). Keep YAML frontmatter intact.
 7. Re-read your diff (`git diff HEAD`). Check it against rules 4, 5, 6 and 8 line by line.
-8. Commit once: `git add -A && git commit -m "<one line: the mechanism>"`. Then
+8. Commit once: `git add .claude AGENTS.md && git commit -m "<one line: the mechanism>"`. Then
    `git log --oneline origin/main..HEAD` must show exactly one commit.
 9. Write `<round_dir>/proposal.md` (format below). Then stop. Do not summarize in chat.
 

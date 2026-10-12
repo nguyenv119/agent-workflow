@@ -44,6 +44,23 @@ class HarnessMap(unittest.TestCase):
         self.assertGreater(len(paths), 15)
         self.assertEqual(missing, [])
 
+    def test_every_section_the_map_names_is_a_heading(self):
+        """Each quoted section name and each coordinator §N / §Nx in the map is a real heading."""
+        # GIVEN the map's quoted names and § references, and every heading in the harness
+        text = (IMPROVER / "harness-map.md").read_text()
+        files = list((ROOT / ".claude").rglob("*.md")) + [ROOT / "AGENTS.md"]
+        headings = [ln for f in files for ln in f.read_text().splitlines() if ln.startswith("#")]
+        coord = (ROOT / ".claude/skills/coordinator/SKILL.md").read_text().splitlines()
+        quoted = set(re.findall(r'"([^"`]+)"', text))
+        refs = set(re.findall(r"§(\d)([a-z]\d?)?", text))
+        # WHEN each is looked up
+        missing = sorted(q for q in quoted if not any(q in h for h in headings))
+        missing += [f"§{n}{x}" for n, x in refs
+                    if not any(ln.startswith(f"#### {x}." if x else f"### {n}.") for ln in coord)]
+        # THEN every one exists, so a renamed or renumbered section fails here
+        self.assertGreater(len(quoted), 15)
+        self.assertEqual(missing, [])
+
     def test_every_hook_and_reviewer_is_mapped(self):
         """Every hook file and every reviewer skill on disk is named in the map."""
         # GIVEN the hook and reviewer files on disk

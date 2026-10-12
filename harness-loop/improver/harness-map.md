@@ -8,7 +8,7 @@ Paths are relative to the repo root. `§` numbers are the coordinator's own sect
 |---|---|---|
 | Entry | `/work <id>` loads the coordinator | `.claude/commands/work.md`; `AGENTS.md` "Workflows" |
 | Exam mode | Under the exam: no `/quick` offer, no approval waits, push without `gh` | `.claude/skills/coordinator/SKILL.md` "Exam mode" (read-only for the improver) |
-| Triage | Parse input, file or read beads, print `Quick-eligible:` per bead | coordinator "Phase 1: Triage" §1-§3; `AGENTS.md` "Issue Tracking with bd" |
+| Triage | Parse input, file or read beads, print `Quick-eligible:` per bead | coordinator "Phase 1: Triage" §1, §3; `AGENTS.md` "Issue Tracking with bd" |
 | Ready beads, conflicts | Pick open unblocked beads; keep overlapping files sequential | coordinator "Phase 2" §1-§2 |
 | Worktree | One worktree and `feature/bd-<id>-<slug>` branch per bead, off `origin/main` | coordinator §3 "Create persistent worktrees" |
 | Implementer spawn | Prompt with ROLE, SKILL, standards, task, worktree, PREVIOUS TRY | coordinator §3 "Spawn implementers"; `.claude/agents/implementer.md` (model, effort) |
@@ -22,7 +22,7 @@ Paths are relative to the repo root. `§` numbers are the coordinator's own sect
 | Test-runner gates | A haiku sub-agent runs CLAUDE.md's Quality Gates, scoped to changed packages, and reports counts and the commit | coordinator §4c; `.claude/skills/test-runner/SKILL.md` |
 | Real acceptance | The bead's runnable check against reality, not mocks; under the exam, the repo's visible tests | coordinator §4c2; `.claude/skills/win-condition/SKILL.md` "Bead-level acceptance" |
 | Save the try | Gates, diff, note and transcript saved to a try folder | coordinator §4c3; `.claude/skills/coordinator/save_try.py`, `cut_tries.py` |
-| Push and PR | Push the branch; `gh pr create` (skipped under the exam) | coordinator §4d; `.claude/commands/pr.md` |
+| Push and PR | Push the branch; `gh pr create` (skipped under the exam) | coordinator §4d (inlines its own PR body; `.claude/commands/pr.md` mirrors it but is not loaded) |
 | Approval, status | Human gate (or win-condition eval in loop mode), bead status | coordinator §4e, §4f, "Autonomous Loop Mode" |
 | Failures, watchdog | Retry rules, blocked beads, stalled sub-agents | coordinator §5, §6 |
 | Quiet execution | One `BEAD COMPLETE` block per bead, no narration | coordinator "Stay quiet during execution" |
@@ -36,15 +36,9 @@ Paths are relative to the repo root. `§` numbers are the coordinator's own sect
 | `bd-dolt-pull.sh` | PreToolUse, Bash | Pulls the beads Dolt remote before a `bd` command (never blocks) |
 | `bd-dolt-push.sh` | PostToolUse, Bash | Pushes the beads Dolt remote after a `bd` write (never blocks) |
 | `save-compact-summary.sh` | PostCompact | Saves the compaction summary as a handoff file |
-| `sync-compact-instructions.py` | run by hand | Copies the handoff skill into a CLAUDE.md "Compact Instructions" section |
+| `sync-compact-instructions.py` | run by hand | Copies the handoff skill into the Compact Instructions section of a CLAUDE.md |
 
-`settings.json` also prints `AGENTS.md` at session start and sets `autoCompactWindow`.
+`settings.json` also prints `AGENTS.md` at session start, echoes a reminder on SessionStart
+`compact` and on PostCompact (`asyncRewake`), and sets `autoCompactWindow`. The loop's gate
+guard treats every hook and `settings.json` entry as a quality gate (improver skill, rule 8).
 
-## What the improver may not touch
-
-The gate guard in `harness-loop/loop.py` rejects a change that (a) deletes, renames or changes
-the mode of a reviewer, test-runner or standards file or a hook, or drops a hook entry from
-`settings.json`; (b) removes or rewrites a line of those files, or a line that mentions a gate
-or sits under a heading that does; (c) adds a line telling an agent to skip, shorten, sample or
-bypass a gate, reviewer, test or acceptance step. Adding a line to those files is allowed.
-See the improver skill, rule 8.
