@@ -17,8 +17,8 @@ harness-loop/.venv/bin/pip install -r harness-loop/exam/requirements.txt
 
 ## Run one task
 
-Task images are amd64, so run them in a cloud sandbox (Daytona, Modal, E2B), not emulated Docker on
-an Apple-silicon Mac. Model access goes through Bedrock by default; export the Bedrock-only
+`--env docker` runs the task on this machine; `--env daytona` rents a cloud sandbox (see "Where tasks
+run" below). Model access goes through Bedrock by default; export the Bedrock-only
 `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` (and `AWS_REGION`, default `us-east-1`) on the host.
 Only those, the region and the `global.anthropic.claude-*-5-5` model ids enter the sandbox
 (`trial_export.sandbox_env`). `model_access=api` sends `ANTHROPIC_API_KEY` instead and nothing else.
@@ -31,7 +31,7 @@ adds them to its agent env itself, so the scrubber covers them without `--ae`. P
 ```bash
 PYTHONPATH=harness-loop/exam harness-loop/.venv/bin/harbor run \
   --agent workflow_agent:WorkflowAgent \
-  --path harness-loop/tasks/cache/<task> --env daytona \
+  --path harness-loop/tasks/cache/<task> --env docker --delete \
   --agent-kwarg harness_commit=<sha> --agent-kwarg max_budget_usd=<usd> \
   --agent-kwarg title="<manifest title>" --agent-kwarg test_command="<manifest test_command>"
 harness-loop/exam/trial_export.py finalize <trial dir>   # after verify: writes agent/exam/gates.txt
@@ -85,6 +85,35 @@ Terminal-Bench 4.0 Software picks set `network_mode` in `task.toml`, so none nee
 task that restricts the agent phase would need an allowlist with
 `bedrock-runtime.<region>.amazonaws.com`, github.com (bd/dolt downloads) and its package registries.
 
+## Where tasks run
+
+`run_exam.py --env docker` is the default: Harbor builds each task's container with the local
+Docker engine, so a run costs no sandbox rent. `--env daytona` sends it to a rented Daytona sandbox
+instead (needs `DAYTONA_API_KEY`); use it when the laptop is busy or a task cannot build locally.
+Either way every task x try gets a fresh container that Harbor deletes afterwards (`--delete`, which
+also removes the built image). With docker, `run_exam.py` then removes any container or network of
+that trial Harbor left behind (it matches the trial's compose project name), so a crashed Harbor
+does not leave containers running. `docker ps -a` is empty after a run.
+
+Local setup: Docker Desktop running. `run_exam.py` asks `docker info` first and stops with a
+message, before any run, if the engine is down or does not answer within 60 s. Docker Desktop's
+Resource Saver stops its VM after 5 idle minutes; the first call wakes it in about a second.
+Task containers are built for the host's CPU: the base images are multi-arch, so on an
+Apple-silicon Mac they build natively as arm64. A task whose Dockerfile downloads x86-64 binaries
+cannot build that way (none in the shakedown, hard or TB4 sets does; six other Monthly-SWEBench
+tasks do); run the controls on a new task first and send it to `--env daytona` if oracle is not 1.
+
+Concurrency: each task asks for 2 CPUs and 4 GiB (one TB4 task asks for more and is capped to what
+Docker has). `--concurrency` defaults to `local_concurrency`: as many tasks as fit in the CPUs and
+memory Docker reports, keeping 1 GiB for the engine, at least 1. On a 10-CPU / 16 GiB Mac with
+Docker Desktop's default memory (7.65 GiB) that is 1. Giving Docker 10 GiB (Settings > Resources,
+which leaves 6 GiB to macOS) makes it 2; 14 GiB would make it 3 but leaves too little for anything
+else. On daytona the default stays 1.
+
+Env for Harbor: an allowlist (`HARBOR_ENV`), plus the Bedrock keys only for WorkflowAgent runs
+(oracle and nop never call a model), plus `DAYTONA_*` on daytona or `DOCKER_HOST` /
+`DOCKER_CONTEXT` / `DOCKER_CONFIG` on docker. Nothing else from the host reaches Harbor.
+
 ## Run the exam
 
 `run_exam.py` runs a manifest's tasks through Harbor at one harness sha and seals the results under
@@ -104,5 +133,5 @@ candidate run (details in `controls.md`). Harbor gets only an allowlisted host e
 `run_exam.py`), so whoever launches a run cannot change what it measures.
 
 Task folders come from the manifest's `cache/` (git-ignored); in a worktree, symlink it from the
-main clone. A task asking for more than 4 CPUs or 8 GiB gets `--override-cpus 4
---override-memory-mb 8192`, Daytona's cap.
+main clone. A task asking for more CPUs or memory than one sandbox has is capped to it: on daytona
+4 CPUs and 8 GiB, on docker the engine's CPUs and its memory less 1 GiB.

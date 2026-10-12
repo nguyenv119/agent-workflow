@@ -4,7 +4,7 @@
     run_exam.py --harness <ref|sha> --tasks <manifest> --budget-usd X
                 [--screen] [--tries N] [--agent workflow|oracle|nop|controls]
                 [--kind baseline|candidate|harm|controls|pick] [--model opus|sonnet|<id>]
-                [--max-budget-usd 12.05] [--concurrency K] [--env daytona]
+                [--max-budget-usd 12.05] [--concurrency K] [--env docker|daytona]
 
 Each task x try runs `harbor run` (WorkflowAgent, or Harbor's own oracle / nop
 agents; `controls` runs both) and becomes a try folder made by
@@ -30,13 +30,22 @@ starts and the run is marked incomplete. Each workflow run gets
 max_budget_usd = --max-budget-usd (default 12.05 = 3 x the B18.2 probe's max);
 a run that hits it is status budget_cut.
 
-Env: Harbor gets only HARBOR_ENV + DAYTONA_* (Harbor copies some host vars into
-the sandbox). EXAM_HARBOR overrides the `harbor run` command prefix (tests use a fake).
+Where tasks run: --env docker (default) builds each task's container on this
+machine with the local Docker engine; --env daytona rents a cloud sandbox. Either
+way each task x try gets a fresh container that Harbor deletes afterwards; with
+docker, run_exam also removes any container or network of that try Harbor left.
+--concurrency defaults to what fits in Docker (local_concurrency) or 1 on daytona.
+
+Env: Harbor gets only HARBOR_ENV, plus the AWS keys for workflow runs, plus
+DAYTONA_* (daytona) or DOCKER_* (docker): Harbor copies some host vars into the
+sandbox. EXAM_HARBOR / EXAM_DOCKER override the `harbor run` / `docker` command
+prefixes (tests use fakes).
 """
 import argparse
 import datetime
 import json
 import os
+import re
 import shlex
 import shutil
 import statistics
@@ -61,12 +70,18 @@ SAVE_TRY = AW_ROOT / ".claude/skills/coordinator/save_try.py"
 INSTALLER = LOOP_DIR / "install_harness.py"
 DEFAULT_HARBOR = f"{LOOP_DIR / '.venv/bin/harbor'} run"
 FIRST_ESTIMATE_USD = 15.0
-MAX_CPUS, MAX_MEMORY_MB = 4, 8192  # Daytona's per-sandbox cap
+DAYTONA_CPUS, DAYTONA_MEMORY_MB = 4, 8192  # Daytona's per-sandbox cap
+# What nearly every task asks for (task.toml [environment]), and the memory left
+# to the Docker engine itself, for local_concurrency.
+TASK_CPUS, TASK_MEMORY_MB, DOCKER_RESERVE_MB = 2, 4096, 1024
 # The only host env Harbor sees. Harbor copies some host vars (e.g.
 # CLAUDE_CODE_MAX_OUTPUT_TOKENS, DISABLE_ADAPTIVE_THINKING) into the sandbox,
 # which would make a baseline and a candidate differ by who launched them.
-HARBOR_ENV = ("PATH", "HOME", "TMPDIR", "LANG", "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY",
-              "AWS_SESSION_TOKEN", "AWS_REGION", "EXAM_HARBOR")
+HARBOR_ENV = ("PATH", "HOME", "TMPDIR", "LANG", "EXAM_HARBOR")
+# Bedrock keys, for WorkflowAgent only: oracle and nop never call a model.
+MODEL_ENV = ("AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN", "AWS_REGION")
+# Where the docker CLI finds the engine; none of these holds a secret.
+DOCKER_ENV = ("DOCKER_HOST", "DOCKER_CONTEXT", "DOCKER_CONFIG")
 MODELS = {"opus": trial_export.BEDROCK_MODELS["ANTHROPIC_MODEL"],
           "sonnet": trial_export.BEDROCK_MODELS["ANTHROPIC_DEFAULT_SONNET_MODEL"]}
 
@@ -82,16 +97,74 @@ def branch_of(repo, ref):
     return ref if p.returncode == 0 else None
 
 
-def resource_overrides(task_dir):
-    """Harbor flags capping a task that asks Daytona for more than it allows."""
+def resource_overrides(task_dir, max_cpus, max_memory_mb):
+    """Harbor flags capping a task that asks for more CPUs or memory than one sandbox has."""
     toml = Path(task_dir) / "task.toml"
     if not toml.is_file():
         return []
     data = tomllib.loads(toml.read_text())
     envs = [data.get("environment", {}), data.get("verifier", {}).get("environment", {})]
-    if any(e.get("cpus", 0) > MAX_CPUS or e.get("memory_mb", 0) > MAX_MEMORY_MB for e in envs):
-        return ["--override-cpus", str(MAX_CPUS), "--override-memory-mb", str(MAX_MEMORY_MB)]
+    cpus = max(e.get("cpus", 0) for e in envs)
+    memory = max(e.get("memory_mb", 0) for e in envs)
+    if cpus > max_cpus or memory > max_memory_mb:
+        return ["--override-cpus", str(min(cpus, max_cpus)) if cpus else str(max_cpus),
+                "--override-memory-mb", str(min(memory, max_memory_mb)) if memory else str(max_memory_mb)]
     return []
+
+
+def docker(*args, timeout=120):
+    cmd = [*shlex.split(os.environ.get("EXAM_DOCKER", "docker")), *args]
+    return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+
+
+def docker_capacity():
+    """(cpus, memory_mb) the local Docker engine gives containers; exits if it is not reachable."""
+    try:
+        p = docker("info", "--format", "{{.NCPU}} {{.MemTotal}}", timeout=60)
+    except subprocess.TimeoutExpired:
+        sys.exit("run_exam: `docker info` hung for 60 s; quit and reopen Docker Desktop, then retry")
+    except FileNotFoundError:
+        sys.exit("run_exam: no docker CLI; install Docker Desktop or pass --env daytona")
+    if p.returncode:
+        sys.exit(f"run_exam: Docker is not running (open Docker Desktop, or pass --env daytona): "
+                 f"{p.stderr.strip()[-300:]}")
+    cpus, mem = p.stdout.split()
+    return int(cpus), int(mem) // 2**20
+
+
+def local_concurrency(cpus, memory_mb):
+    """How many 2-CPU / 4 GiB tasks fit in Docker at once, keeping 1 GiB for the engine (min 1)."""
+    return max(1, min(cpus // TASK_CPUS, (memory_mb - DOCKER_RESERVE_MB) // TASK_MEMORY_MB))
+
+
+def compose_project(name):
+    """Harbor's compose project name for a session id (its _sanitize_docker_compose_project_name)."""
+    name = name.lower()
+    if not re.match(r"^[a-z0-9]", name):
+        name = "0" + name
+    return re.sub(r"[^a-z0-9_-]", "-", name)
+
+
+def remove_leftovers(job_dir):
+    """Remove containers and networks Harbor left behind for this job's trials. Returns their ids.
+
+    Harbor runs `docker compose down` itself; this covers a Harbor that crashed or was killed.
+    Every compose project of a trial (main env, separate verifier) starts with the trial's name.
+    """
+    job_dir = Path(job_dir)
+    prefixes = tuple(compose_project(d.name) for d in job_dir.iterdir() if d.is_dir()) if job_dir.is_dir() else ()
+    removed = []
+    if not prefixes:
+        return removed
+    for kind, rm in (("container", ["rm", "-f", "-v"]), ("network", ["network", "rm"])):
+        ls = ["ps", "-a"] if kind == "container" else ["network", "ls"]
+        p = docker(*ls, "--format", '{{.ID}}\t{{.Label "com.docker.compose.project"}}')
+        ids = [row.split("\t")[0] for row in p.stdout.splitlines()
+               if "\t" in row and row.split("\t")[1].startswith(prefixes)]
+        if ids:
+            docker(*rm, *ids)
+            removed += ids
+    return removed
 
 
 def new_run_dir(runs, base):
@@ -109,7 +182,7 @@ def new_run_dir(runs, base):
 def harbor_cmd(args, task, agent, jobs_dir, job_name, sha, run_id):
     cmd = shlex.split(os.environ.get("EXAM_HARBOR", DEFAULT_HARBOR))
     cmd += ["-p", task["task_dir"], "-e", args.env, "-o", str(jobs_dir), "--job-name", job_name,
-            "-y", "-q", *resource_overrides(task["task_dir"])]
+            "-y", "-q", "--delete", *resource_overrides(task["task_dir"], *args.sandbox_cap)]
     if agent != "workflow":
         return cmd + ["-a", agent]
     cmd += ["-a", "workflow_agent:WorkflowAgent",
@@ -123,9 +196,11 @@ def harbor_cmd(args, task, agent, jobs_dir, job_name, sha, run_id):
     return cmd
 
 
-def harbor_env(host):
+def harbor_env(host, where="docker", agent="workflow"):
     """Allowlisted host env for `harbor run`, with the exam dir on PYTHONPATH."""
-    env = {k: v for k, v in host.items() if k in HARBOR_ENV or k.startswith("DAYTONA_")}
+    keep = HARBOR_ENV + (MODEL_ENV if agent == "workflow" else ()) + (DOCKER_ENV if where == "docker" else ())
+    env = {k: v for k, v in host.items()
+           if k in keep or (where == "daytona" and k.startswith("DAYTONA_"))}
     env["PYTHONPATH"] = os.pathsep.join(filter(None, [str(EXAM_DIR), host.get("PYTHONPATH")]))
     return env
 
@@ -144,10 +219,18 @@ def run_try(ctx, task, n, agent):
     job_name = f"{agent + '-' if ctx['controls'] else ''}{task['id']}-try{n}"
     cmd = harbor_cmd(ctx["args"], task, agent, jobs_dir, job_name, ctx["sha"], ctx["run"].name)
     t0 = time.monotonic()
-    p = subprocess.run(cmd, env=harbor_env(os.environ), capture_output=True, text=True)
+    p = subprocess.run(cmd, env=harbor_env(os.environ, ctx["args"].env, agent), capture_output=True, text=True)
     wall = round(time.monotonic() - t0, 1)
+    leftovers = []
+    if ctx["args"].env == "docker":
+        try:
+            leftovers = remove_leftovers(jobs_dir / job_name)
+        except (OSError, subprocess.SubprocessError) as e:  # keep the try; the log says what failed
+            leftovers = [f"(cleanup failed: {e!r})"]
     jobs_dir.mkdir(parents=True, exist_ok=True)
-    (jobs_dir / f"{job_name}.log").write_text(f"$ {shlex.join(cmd)}\nexit {p.returncode}\n{p.stdout}\n{p.stderr}")
+    (jobs_dir / f"{job_name}.log").write_text(
+        f"$ {shlex.join(cmd)}\nexit {p.returncode}\n{p.stdout}\n{p.stderr}"
+        + (f"\nremoved leftover docker objects: {' '.join(leftovers)}\n" if leftovers else ""))
     trials = [r.parent for r in sorted((jobs_dir / job_name).glob("*/result.json"))]
     trial = trials[0] if trials else None
 
@@ -321,9 +404,16 @@ def main(argv=None):
     ap.add_argument("--kind", choices=["baseline", "candidate", "harm", "controls", "pick"])
     ap.add_argument("--model", default="opus")
     ap.add_argument("--max-budget-usd", type=float, default=12.05)
-    ap.add_argument("--concurrency", type=int, default=1)
-    ap.add_argument("--env", default="daytona")
+    ap.add_argument("--concurrency", type=int, help="default: what fits in Docker, or 1 on daytona")
+    ap.add_argument("--env", default="docker", choices=["docker", "daytona"])
     args = ap.parse_args(argv)
+    if args.env == "docker":
+        cpus, memory_mb = docker_capacity()
+        args.sandbox_cap = (cpus, memory_mb - DOCKER_RESERVE_MB)
+        auto = local_concurrency(cpus, memory_mb)
+    else:
+        args.sandbox_cap, auto = (DAYTONA_CPUS, DAYTONA_MEMORY_MB), 1
+    args.concurrency = args.concurrency or auto
 
     sha = git(AW_ROOT, "rev-parse", "--verify", f"{args.harness}^{{commit}}")
     data = manifest.load(args.tasks, require_cache=True)
@@ -348,7 +438,8 @@ def main(argv=None):
             "set": data["set"], "manifest": str(Path(args.tasks).resolve()), "screen": args.screen,
             "agent": args.agent, "model": MODELS.get(args.model, args.model) if args.agent == "workflow" else None,
             "tries": args.tries, "tasks": sorted(t["id"] for t in tasks), "budget_usd": args.budget_usd,
-            "max_budget_usd": args.max_budget_usd, "status": "running",
+            "max_budget_usd": args.max_budget_usd, "env": args.env, "concurrency": args.concurrency,
+            "status": "running",
             "started_at": datetime.datetime.now(datetime.timezone.utc).isoformat()}
     (run / "run.json").write_text(json.dumps(meta, indent=2) + "\n")
     agents = ["oracle", "nop"] if controls else [args.agent]

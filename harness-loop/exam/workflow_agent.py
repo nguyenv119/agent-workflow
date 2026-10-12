@@ -1,7 +1,7 @@
 """Harbor agent that runs one exam task through agent-workflow's real `/work`.
 
     PYTHONPATH=harness-loop/exam harbor run --agent workflow_agent:WorkflowAgent \\
-      --path <task dir> --env daytona \\
+      --path <task dir> --env docker \\
       --agent-kwarg harness_commit=<sha> --agent-kwarg max_budget_usd=<usd> \\
       [--agent-kwarg title=... test_command=... workdir=... model_access=api model=...]
 
