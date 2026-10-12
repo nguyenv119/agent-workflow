@@ -82,6 +82,7 @@ Write tests for the behavior you are about to change or add. Do this **before** 
 2. **Locate the package's shared test scaffolding** (quality.md §I canonical-locations table) and import from it. If scaffolding you need doesn't exist yet, create it in the canonical shared location as part of this task — never inline a private copy of something §I covers. §I's owner rule also applies in reverse: don't route through a helper when that makes the call site longer than the inline version.
 3. Write new test cases that describe the desired behavior after your change
 4. Verify the new tests fail by delegating to a test-runner sub-agent (see "Running quality gates" above)
+5. **Map every stated requirement and symptom to its own failing test.** List each numbered requirement, each "must"/"must not" line and each reported symptom in the bead, and give each one a test that recreates it in the scenario the bead describes (e.g. a symptom "output stalls under load" gets a test that applies that load and checks output still arrives). A bug you find elsewhere counts as the fix for a listed symptom when its test recreates that symptom's scenario; otherwise keep looking for the real cause. When a design doc or the existing code seems to contradict a requirement, the requirement wins: write its test anyway. A requirement whose test you cannot turn green makes the result `FAILURE` naming that requirement, never `SUCCESS` with a "decision for you" note. Phase 5's `## Test coverage` lists each requirement next to the test that covers it.
 
 ### Test Structure Requirements
 
