@@ -11,13 +11,18 @@
       (S / 3600 x R). build.sh adds it to a running total.
   collect.py manifest CANDIDATES BUILD_DIR OUT.json
       Rows for every candidate listed in BUILD_DIR/passed.txt, validated by manifest.py
-      (including its hidden-test leak check), written to OUT.json.
+      (including its hidden-test leak check), written to OUT.json. Each passed task is
+      copied from the git-ignored BUILD_DIR to <OUT dir>/<OUT stem>/<id>/ (committed,
+      so the exam can run it from a fresh clone), with SWE-gen's network_mode
+      "no-network" opened to "public" (see open_network).
 """
 import argparse
 import json
 import re
 import shlex
+import shutil
 import sys
+import tomllib
 from collections import Counter
 from pathlib import Path
 
@@ -143,8 +148,46 @@ def find_task(build_dir):
     return found[0]
 
 
-def rows(cands, build_dir, manifest_dir):
-    """Manifest rows for candidates in BUILD_DIR/passed.txt (SWE-gen nop=0, oracle=1)."""
+NO_NETWORK = re.compile(r'^(\s*network_mode\s*=\s*)"no-network"(\s*)$', re.M)
+NETWORK_NOTE = ('# SWE-gen wrote network_mode = "no-network". Opened to "public" so the exam\'s agent\n'
+                '# can reach its model API, like the other exam sets (harness-loop/tasks/README.md).\n')
+
+
+def open_network(toml_text):
+    """task.toml text with SWE-gen's no-network environment opened to public.
+
+    SWE-gen sets [environment] network_mode = "no-network", which covers the agent
+    phase too, and neither Daytona nor Harbor's default docker setup can switch the
+    network per phase. The exam's agent needs its model API, so the task runs on
+    public like every other exam set; SWE-gen already proved test.sh passes offline.
+    Raises ValueError if any phase still ends up without network.
+    """
+    text = NO_NETWORK.sub(lambda m: f'{m.group(1)}"public"{m.group(2)}', toml_text)
+    if text != toml_text and NETWORK_NOTE not in text:
+        text = NETWORK_NOTE + text
+    cfg = tomllib.loads(text)
+    for section in ("environment", "agent", "verifier"):
+        if cfg.get(section, {}).get("network_mode") == "no-network":
+            raise ValueError(f"[{section}] network_mode is still no-network")
+    return text
+
+
+def publish(tdir, dest):
+    """Copy one built task folder to dest (replaced if present), network opened."""
+    dest = Path(dest)
+    if dest.exists():
+        shutil.rmtree(dest)
+    shutil.copytree(tdir, dest, symlinks=True)  # never follow links in untrusted output
+    toml = dest / "task.toml"
+    toml.write_text(open_network(toml.read_text()))
+    return dest
+
+
+def rows(cands, build_dir, manifest_dir, publish_dir=None):
+    """Manifest rows for candidates in BUILD_DIR/passed.txt (SWE-gen nop=0, oracle=1).
+
+    With publish_dir, each task is first copied to publish_dir/<id> and the row points there.
+    """
     passed_file = Path(build_dir) / "passed.txt"
     passed = set(passed_file.read_text().split()) if passed_file.is_file() else set()
     out = []
@@ -153,6 +196,8 @@ def rows(cands, build_dir, manifest_dir):
         if tid not in passed:
             continue
         tdir = find_task(Path(build_dir) / tid)
+        if publish_dir is not None:
+            tdir = publish(tdir, Path(publish_dir) / tid)
         dockerfile = next(iter(sorted(tdir.rglob("Dockerfile"))), None)
         sh = tdir / "tests" / "test.sh"
         wd = workdir(dockerfile.read_text()) if dockerfile else None
@@ -210,7 +255,7 @@ def main(argv=None):
     out = Path(a.out)
     month = re.search(r"\d{4}-\d{2}", out.name)
     doc = {"set": out.stem, "source": "swegen" + (f"-{month.group()}" if month else ""),
-           "tasks": rows(cands, a.build_dir, out.parent)}
+           "tasks": rows(cands, a.build_dir, out.parent, publish_dir=out.parent / out.stem)}
     tmp = out.with_suffix(".tmp.json")
     tmp.write_text(json.dumps(doc, indent=2) + "\n")
     try:

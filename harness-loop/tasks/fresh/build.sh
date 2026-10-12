@@ -2,7 +2,7 @@
 # Build the fresh exam set from candidates-<YYYY-MM>.json with SWE-gen. PAID.
 #
 #   build.sh [--candidates FILE] [--limit N] [--per-task-usd 12] [--usd-per-hour 13.5]
-#            [--cc-timeout 3200] [--tasks-dir DIR] [--confirm-budget USD]
+#            [--cc-timeout 3200] [--cc-max-usd 8] [--tasks-dir DIR] [--confirm-budget USD]
 #
 # 1. Prints the candidate count and estimated cost, and stops unless --confirm-budget
 #    is at least the estimate. Nothing is spent before this.
@@ -11,6 +11,7 @@
 # 3. Per candidate (the first --limit N, default all): daytona_build.py runs
 #    `swegen create` through swegen_shim.py in a throwaway Daytona sandbox (see there),
 #    itself started from a scratch folder under `env -i` with only an allowlisted env.
+#    Each Claude build session is capped at --cc-max-usd (the Agent SDK's max_budget_usd).
 #    SWE-gen exits non-zero unless its own nop=0 / oracle=1 validation passes; only
 #    passing ids go to passed.txt. Ids already in passed.txt / failed.txt are skipped.
 #    After each task its cost (measured from the log, else elapsed x --usd-per-hour) is
@@ -28,6 +29,7 @@ PER_TASK_USD=12
 USD_PER_HOUR=13.5
 DAYTONA_USD_PER_HOUR=0.34   # 4 CPU x $0.0504 + 8 GiB x $0.0162, rounded up
 CC_TIMEOUT=3200
+CC_MAX_USD=8
 BUDGET=""
 
 die() { echo "build.sh: $*" >&2; exit "${CODE:-2}"; }
@@ -39,9 +41,10 @@ while [ $# -gt 0 ]; do
     --per-task-usd) PER_TASK_USD="$2"; shift 2 ;;
     --usd-per-hour) USD_PER_HOUR="$2"; shift 2 ;;
     --cc-timeout) CC_TIMEOUT="$2"; shift 2 ;;
+    --cc-max-usd) CC_MAX_USD="$2"; shift 2 ;;
     --tasks-dir) TASKS="$(cd "$2" && pwd)"; shift 2 ;;
     --confirm-budget) BUDGET="$2"; shift 2 ;;
-    -h|--help) sed -n '2,19p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,20p' "$0"; exit 0 ;;
     *) die "unknown argument $1" ;;
   esac
 done
@@ -50,6 +53,7 @@ if [ -z "$CANDIDATES" ]; then
   CANDIDATES="$(ls "$HERE"/candidates-*.json 2>/dev/null | sort | tail -n 1 || true)"
   [ -n "$CANDIDATES" ] || die "no candidates-*.json; run pick_prs.py first"
 fi
+CANDIDATES="$(cd "$(dirname "$CANDIDATES")" && pwd)/$(basename "$CANDIDATES")"  # the loop runs elsewhere
 MONTH="$(basename "$CANDIDATES" | grep -oE '[0-9]{4}-[0-9]{2}')" \
   || die "candidates file name must contain YYYY-MM"
 
@@ -78,6 +82,7 @@ CHILD_ENV=(
   "OPENAI_API_KEY=$GEMINI_API_KEY_DEV"
   "SWEGEN_LLM_MODEL=${SWEGEN_LLM_MODEL:-gemini-pro-latest}"
   "SWEGEN_CLAUDE_MODEL=${SWEGEN_CLAUDE_MODEL:-global.anthropic.claude-opus-5-5}"
+  "SWEGEN_CLAUDE_MAX_BUDGET_USD=$CC_MAX_USD"
   "CLAUDE_CODE_USE_BEDROCK=1"
   "AWS_ACCESS_KEY_ID=$AWS_ACCESS_KEY_ID" "AWS_SECRET_ACCESS_KEY=$AWS_SECRET_ACCESS_KEY"
   "AWS_REGION=$AWS_REGION"
@@ -86,7 +91,7 @@ CHILD_ENV=(
 # Never the gh login: set GITHUB_TOKEN yourself, to a fine-grained read-only public-repo token.
 [ -n "${GITHUB_TOKEN:-}" ] && CHILD_ENV+=("GITHUB_TOKEN=$GITHUB_TOKEN")
 while IFS= read -r v; do
-  case "$v" in SWEGEN_LLM_MODEL|SWEGEN_CLAUDE_MODEL) ;; *) CHILD_ENV+=("$v=${!v}") ;; esac
+  case "$v" in SWEGEN_LLM_MODEL|SWEGEN_CLAUDE_MODEL|SWEGEN_CLAUDE_MAX_BUDGET_USD) ;; *) CHILD_ENV+=("$v=${!v}") ;; esac
 done < <(compgen -e | grep -E '^(SWEGEN_|ANTHROPIC_DEFAULT_[A-Z]+_MODEL$|ANTHROPIC_SMALL_FAST_MODEL$)' || true)
 
 LIST="$(python3 "$HERE/collect.py" list "$CANDIDATES" ${LIMIT:+--limit "$LIMIT"})" \

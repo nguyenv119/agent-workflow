@@ -33,20 +33,37 @@ SANDBOX_ENV = ("AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN"
                "OPENAI_API_KEY", "OPENAI_BASE_URL", "CLAUDE_CODE_USE_BEDROCK", "GITHUB_TOKEN",
                "ANTHROPIC_SMALL_FAST_MODEL")
 SANDBOX_PREFIXES = ("SWEGEN_", "ANTHROPIC_DEFAULT_")
+# Set inside the sandbox regardless of the host. The sandbox runs as root, and Claude Code
+# refuses --dangerously-skip-permissions as root unless told it is inside a sandbox.
+SANDBOX_FIXED = {"IS_SANDBOX": "1"}
 CPUS, MEMORY_GB, DISK_GB = 4, 8, 10  # Daytona's per-sandbox caps
 POLL_SECONDS = 30
 
 
 def sandbox_env(env):
-    return {k: v for k, v in env.items()
+    kept = {k: v for k, v in env.items()
             if v and (k in SANDBOX_ENV or k.startswith(SANDBOX_PREFIXES))}
+    return {**kept, **SANDBOX_FIXED}
+
+
+# Harbor's docker environment drives `docker compose`, which Debian's docker.io lacks;
+# the compose and buildx CLI plugins come from Docker's GitHub releases, pinned.
+COMPOSE_VERSION, BUILDX_VERSION = "v2.29.7", "v0.17.1"
+PLUGINS = "/usr/local/lib/docker/cli-plugins"
 
 
 def image():
     from daytona import Image
+    arch = "$(uname -m | sed 's/aarch64/arm64/;s/x86_64/amd64/')"
     return (Image.debian_slim("3.12")
             .run_commands("apt-get update && apt-get install -y --no-install-recommends "
-                          "git docker.io ca-certificates && rm -rf /var/lib/apt/lists/*")
+                          "git docker.io ca-certificates curl && rm -rf /var/lib/apt/lists/*",
+                          f"mkdir -p {PLUGINS} && curl -fsSL -o {PLUGINS}/docker-compose "
+                          "https://github.com/docker/compose/releases/download/"
+                          f"{COMPOSE_VERSION}/docker-compose-linux-$(uname -m)",
+                          f"curl -fsSL -o {PLUGINS}/docker-buildx https://github.com/docker/buildx/"
+                          f"releases/download/{BUILDX_VERSION}/buildx-{BUILDX_VERSION}.linux-{arch}",
+                          f"chmod +x {PLUGINS}/docker-compose {PLUGINS}/docker-buildx")
             .pip_install_from_requirements(str(REQUIREMENTS)))
 
 
@@ -65,7 +82,7 @@ def build(sb, repo, pr, cc_timeout, env, out):
         timeout=180)
     cmd = shlex.join(["python3", "/work/swegen_shim.py", "create", "--repo", repo, "--pr", str(int(pr)),
                       "--output", "/work/out", "--state-dir", "/work/.swegen",
-                      "--cc-timeout", str(int(cc_timeout))])
+                      "--cc-timeout", str(int(cc_timeout)), "--verbose"])  # session transcript in the log
     sb.fs.upload_file(f"cd /work\n{cmd} >/work/log 2>&1\necho $? >/work/rc\n".encode(), "/work/run.sh")
     # The process env is given here only; nothing is written to the sandbox's env.
     sb.process.exec("nohup sh /work/run.sh >/dev/null 2>&1 &", env=env, timeout=30)

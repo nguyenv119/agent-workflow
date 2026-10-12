@@ -49,8 +49,8 @@ FILES = {
         ''',
     "create/claude_code_runner.py": '''
         class ClaudeAgentOptions:
-            def __init__(self, model=None, cwd=None):
-                self.model, self.cwd = model, cwd
+            def __init__(self, model=None, cwd=None, max_budget_usd=None):
+                self.model, self.cwd, self.max_budget_usd = model, cwd, max_budget_usd
 
         def build_options(cwd):
             return ClaudeAgentOptions(cwd=cwd, model="claude-opus-4-8")
@@ -165,6 +165,40 @@ class ShimTest(unittest.TestCase):
         # THEN the build session gets the Bedrock Opus id, the cwd is kept, the other is untouched
         self.assertEqual((opts.model, opts.cwd), ("global.anthropic.claude-opus-5-5", "/w"))
         self.assertEqual(other.model, "claude-haiku-4-5")
+
+    def test_session_budget_cap_passed_only_to_build_session(self):
+        """
+        SWEGEN_CLAUDE_MAX_BUDGET_USD caps each build session's spend through the
+        Agent SDK's max_budget_usd; without it no cap is added, a bad value is
+        refused, and an options class that takes no max_budget_usd fails loudly
+        instead of silently running uncapped.
+        """
+        # GIVEN the shim applied with a $8 cap
+        swegen_shim.apply(self.targets(), {**ENV, "SWEGEN_CLAUDE_MAX_BUDGET_USD": "8"})
+        runner = self.mod("create.claude_code_runner")
+        # WHEN the build session and another call build their options
+        opts, other = runner.build_options("/w"), runner.other_options()
+        # THEN only the build session carries the cap
+        self.assertEqual(opts.max_budget_usd, 8.0)
+        self.assertIsNone(other.max_budget_usd)
+        # AND a bad value or an options class without the field is refused
+        self.unload()
+        with self.assertRaisesRegex(swegen_shim.ShimError, "must be a number"):
+            swegen_shim.apply(self.targets(), {**ENV, "SWEGEN_CLAUDE_MAX_BUDGET_USD": "lots"})
+
+        class NoBudget:
+            def __init__(self, model=None, cwd=None):
+                pass
+        with self.assertRaisesRegex(swegen_shim.ShimError, "no max_budget_usd"):
+            swegen_shim._max_budget({"SWEGEN_CLAUDE_MAX_BUDGET_USD": "8"}, NoBudget)
+
+    def test_no_budget_env_means_no_cap(self):
+        # GIVEN the shim applied without a cap
+        swegen_shim.apply(self.targets(), ENV)
+        # WHEN the build session builds its options
+        opts = self.mod("create.claude_code_runner").build_options("/w")
+        # THEN max_budget_usd is left at the SDK default
+        self.assertIsNone(opts.max_budget_usd)
 
     def test_session_cost_is_printed(self):
         """

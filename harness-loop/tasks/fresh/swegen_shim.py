@@ -12,7 +12,9 @@ Upstream SWE-gen hardwires two things we replace:
   That one is a literal `ClaudeAgentOptions(model="claude-opus-4-8")`, so the shim
   wraps ClaudeAgentOptions in that module (model from SWEGEN_CLAUDE_MODEL). It also
   wraps that module's `query` to print each session's total_cost_usd to stderr, which
-  SWE-gen does not report and build.sh uses as the task's measured cost.
+  SWE-gen does not report and build.sh uses as the task's measured cost. With
+  SWEGEN_CLAUDE_MAX_BUDGET_USD set, the same wrapper passes it as the session's
+  max_budget_usd, so the Agent SDK ends a session that would cost more.
 
 Every place patched is listed in PATCH_TARGETS. If a SWE-gen upgrade moves one, the
 shim fails loudly ("nothing to patch") instead of silently calling the old model.
@@ -45,6 +47,7 @@ SETTING_TARGETS = (
 )
 OPTIONS_CLASS = "ClaudeAgentOptions"  # callable whose literal model= kwarg is rewritten
 QUERY_FUNC = "query"                  # claude_agent_sdk.query as imported there; cost logged
+BUDGET_ENV = "SWEGEN_CLAUDE_MAX_BUDGET_USD"  # optional per-session cap, passed as max_budget_usd
 ENTRY_POINT = "swegen"                # console_scripts name of SWE-gen's CLI
 
 # Env the build needs: calls must go to Gemini and Bedrock, never OpenAI or a personal login.
@@ -105,12 +108,34 @@ def _functions(module):
                     yield fn
 
 
-def _wrap_options(cls, old, new):
+def _wrap_options(cls, old, new, max_budget_usd=None):
     def options(*args, **kwargs):
         if kwargs.get("model") == old:
             kwargs["model"] = new
+            if max_budget_usd is not None:
+                kwargs.setdefault("max_budget_usd", max_budget_usd)
         return cls(*args, **kwargs)
     return options
+
+
+def _max_budget(env, cls):
+    """The per-session USD cap from SWEGEN_CLAUDE_MAX_BUDGET_USD, or None if unset."""
+    raw = env.get(BUDGET_ENV)
+    if not raw:
+        return None
+    try:
+        usd = float(raw)
+    except ValueError:
+        raise ShimError(f"{BUDGET_ENV} must be a number, got {raw!r}") from None
+    if usd <= 0:
+        raise ShimError(f"{BUDGET_ENV} must be above 0, got {raw!r}")
+    try:
+        params = inspect.signature(cls).parameters
+    except (TypeError, ValueError):
+        params = {}
+    if "max_budget_usd" not in params:
+        raise ShimError(f"{OPTIONS_CLASS} takes no max_budget_usd: upgrade claude-agent-sdk or unset {BUDGET_ENV}")
+    return usd
 
 
 def _wrap_query(query):
@@ -160,7 +185,7 @@ def apply(targets=PATCH_TARGETS, env=os.environ):
             options = getattr(module, OPTIONS_CLASS, None)
             if options is None:
                 raise ShimError(f"{name} has no {OPTIONS_CLASS}: update PATCH_TARGETS")
-            setattr(module, OPTIONS_CLASS, _wrap_options(options, old, new))
+            setattr(module, OPTIONS_CLASS, _wrap_options(options, old, new, _max_budget(env, options)))
             query = getattr(module, QUERY_FUNC, None)
             if query is None:
                 raise ShimError(f"{name} has no {QUERY_FUNC}: update PATCH_TARGETS")

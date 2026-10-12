@@ -44,8 +44,28 @@ and starts no new task once the total reaches `--confirm-budget`; the total incl
 earlier runs of the same month. A task's cost is the `total_cost_usd` the Claude session
 reports (the shim prints it) plus Daytona time at $0.34/hour; if the log has no session
 cost, it is elapsed time x `--usd-per-hour` (default $13.50/hour, i.e. $12 for SWE-gen's
-default 3200 s session timeout). Stopped runs resume: ids in `passed.txt` / `failed.txt`
-there are skipped.
+default 3200 s session timeout). Each Claude session is also capped at `--cc-max-usd`
+(default $8, passed as the Agent SDK's `max_budget_usd` through the shim), so one task
+cannot run past it. Stopped runs resume: ids in `passed.txt` / `failed.txt` there are
+skipped.
+
+Unlike the other sets, fresh tasks are committed: the manifest step copies each passing
+task from the git-ignored cache to `fresh-<YYYY-MM>/<id>/`, and `harbor_path` points
+there. They come from public PRs only. SWE-gen writes `network_mode = "no-network"` in
+`task.toml`, which also cuts off the agent phase, and neither Daytona nor Harbor's
+default docker setup can switch the network per phase. The copy opens it to `"public"`
+(Harbor's default, as in every other exam set) with a comment saying so; SWE-gen had
+already shown that test.sh passes offline. On public network an agent could look up
+the upstream PR, the same as on the Monthly-SWEBench tasks.
+
+Before a set joins the exam, check every task independently of SWE-gen's own check,
+locally and free (oracle must score 1, nop 0):
+
+```
+harness-loop/.venv/bin/python harness-loop/exam/run_exam.py --harness HEAD \
+  --tasks harness-loop/tasks/fresh-<YYYY-MM>.json --agent controls --budget-usd 1
+python3 harness-loop/tasks/manifest.py --require-cache harness-loop/tasks/fresh-<YYYY-MM>.json
+```
 
 SWE-gen never runs on this machine. Its Claude Code session runs with permission checks
 off and reads untrusted repo and issue text, so `fresh/daytona_build.py` runs each
@@ -53,7 +73,8 @@ off and reads untrusted repo and issue text, so `fresh/daytona_build.py` runs ea
 SWE-gen; SWE-gen's nop/oracle validation uses that docker), with a wall-clock TTL as a
 backstop, and deletes it afterwards, also on failure. Only `swegen_shim.py` is uploaded,
 and the SWE-gen process gets only the model ids, the Bedrock AWS key + region and the
-Gemini key (`daytona_build.SANDBOX_ENV`). Only the log and, for a passing task, the task
+Gemini key (`daytona_build.SANDBOX_ENV`), plus `IS_SANDBOX=1`: the sandbox runs as root,
+and Claude Code refuses to skip permission checks as root without it. Only the log and, for a passing task, the task
 folder come back, extracted as untrusted data.
 
 Before any paid work `build.sh` requires `DAYTONA_API_KEY` (stays on this machine),

@@ -100,7 +100,7 @@ class BuildShLoopTest(Tmp):
         "CLAUDE_CODE_OAUTH_TOKEN": "oauth-test", "GEMINI_API_KEY_PROD": "prod-test",
     }
 
-    def build(self, *args, cost=1.0, drop=()):
+    def build(self, *args, cost=1.0, drop=(), cwd=None):
         bin_dir = self.dir / "bin"
         bin_dir.mkdir(exist_ok=True)
         calls = self.dir / "calls"
@@ -120,7 +120,7 @@ class BuildShLoopTest(Tmp):
                "PYTHONPATH": str(self.dir / "pylib"),
                **{k: v for k, v in self.PARENT_ENV.items() if k not in drop}}
         r = subprocess.run(["bash", str(FRESH / "build.sh"), "--tasks-dir", str(self.dir), *args],
-                           capture_output=True, text=True, env=env)
+                           capture_output=True, text=True, env=env, cwd=cwd)
         envs = [dict(l.split("=", 1) for l in f.read_text().splitlines() if "=" in l)
                 for f in sorted(calls.glob("*.env"))]
         cwds = [f.read_text().strip() for f in sorted(calls.glob("*.cwd"))]
@@ -180,6 +180,21 @@ class BuildShLoopTest(Tmp):
         self.assertIn("1 candidates", r.stdout)
         self.assertEqual(len(envs), 1, r.stdout + r.stderr)
 
+    def test_relative_candidates_path_reaches_the_manifest_step(self):
+        """
+        The loop runs from a scratch folder, so a --candidates path relative to the
+        caller must still be readable when the manifest is written at the end.
+        """
+        # GIVEN a candidates file named relative to the caller's cwd
+        self.candidates([cand()])
+        # WHEN build.sh runs from that cwd with the relative name
+        r, envs, _ = self.build("--candidates", "candidates-2026-10.json", "--confirm-budget", "12",
+                                cwd=self.dir)
+        # THEN the task ran and the manifest step finished (an empty set: the fake task failed)
+        self.assertEqual(len(envs), 1, r.stdout + r.stderr)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("fresh-2026-10: 0 tasks valid", r.stdout)
+
     def test_no_github_token_means_none_reaches_the_child(self):
         """GITHUB_TOKEN is optional and never filled from the gh login."""
         # GIVEN no GITHUB_TOKEN in the parent env
@@ -222,7 +237,9 @@ class SandboxEnvTest(unittest.TestCase):
         self.assertEqual(sorted(got), sorted([
             "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_REGION", "OPENAI_API_KEY", "OPENAI_BASE_URL",
             "CLAUDE_CODE_USE_BEDROCK", "GITHUB_TOKEN", "SWEGEN_LLM_MODEL", "SWEGEN_EXTRA",
-            "ANTHROPIC_DEFAULT_OPUS_MODEL", "ANTHROPIC_SMALL_FAST_MODEL"]))
+            "ANTHROPIC_DEFAULT_OPUS_MODEL", "ANTHROPIC_SMALL_FAST_MODEL", "IS_SANDBOX"]))
+        # AND IS_SANDBOX is fixed by the driver, not taken from the host
+        self.assertEqual(daytona_build.sandbox_env({"IS_SANDBOX": "0"}), {"IS_SANDBOX": "1"})
 
 
 class CostTest(unittest.TestCase):
@@ -317,6 +334,57 @@ class TestCommandTest(unittest.TestCase):
         self.assertFalse([h for h in self.HIDDEN for t in toks if collect.manifest._names(t, h)])
 
 
+SWEGEN_TOML = """[metadata]
+difficulty = "medium"
+
+[verifier]
+timeout_sec = 600.0
+
+[agent]
+timeout_sec = 600.0
+
+[environment]
+build_timeout_sec = 600.0
+cpus = 1
+memory_mb = 2048
+storage_mb = 10240
+network_mode = "no-network"
+"""
+
+
+class OpenNetworkTest(unittest.TestCase):
+    def test_no_network_becomes_public_and_rest_is_kept(self):
+        """
+        SWE-gen's no-network covers the agent phase, which must reach its model
+        API; the environment opens to public and every other setting stays.
+        """
+        # GIVEN SWE-gen's task.toml
+        # WHEN the network is opened
+        text = collect.open_network(SWEGEN_TOML)
+        cfg = collect.tomllib.loads(text)
+        # THEN network_mode is public, a note says why, the rest is unchanged
+        self.assertEqual(cfg["environment"]["network_mode"], "public")
+        self.assertIn("SWE-gen wrote", text)
+        self.assertEqual(cfg["environment"]["memory_mb"], 2048)
+        self.assertEqual(cfg["verifier"]["timeout_sec"], 600.0)
+        # AND running it twice changes nothing more
+        self.assertEqual(collect.open_network(text), text)
+
+    def test_toml_without_network_mode_is_unchanged(self):
+        # GIVEN a task.toml that sets no network mode (Harbor's default is public)
+        text = "[environment]\ncpus = 2\n"
+        # WHEN opened / THEN untouched
+        self.assertEqual(collect.open_network(text), text)
+
+    def test_phase_override_left_without_network_is_refused(self):
+        """A phase override to no-network is not SWE-gen's shape; refuse rather than guess."""
+        # GIVEN a verifier override written inline (not the environment line the regex opens)
+        text = '[verifier]\nnetwork_mode="no-network" # inline comment\n'
+        # WHEN opened / THEN it fails naming the section
+        with self.assertRaisesRegex(ValueError, "verifier"):
+            collect.open_network(text)
+
+
 class WorkdirTest(unittest.TestCase):
     def test_last_workdir_wins(self):
         """Dockerfiles may change WORKDIR; the agent starts in the last one."""
@@ -333,7 +401,7 @@ class ManifestTest(Tmp):
         t = self.dir / "cache" / "fresh-2026-10" / tid / "acme-widgets-7"
         (t / "environment").mkdir(parents=True)
         (t / "tests").mkdir()
-        (t / "task.toml").write_text("")
+        (t / "task.toml").write_text(SWEGEN_TOML)
         (t / "environment" / "Dockerfile").write_text(f"FROM ubuntu:24.04\nWORKDIR {workdir}\n")
         (t / "tests" / "test_widget.py").write_text("")
         (t / "tests" / "test.sh").write_text("pytest -xvs tests/test_widget.py\n")
@@ -362,9 +430,34 @@ class ManifestTest(Tmp):
         (row,) = doc["tasks"]
         self.assertEqual((row["id"], row["workdir"], row["test_command"], row["screen"]),
                          ("acme__widgets-7", "/app/src", "pytest -xvs", False))
-        self.assertEqual(row["harbor_path"], "cache/fresh-2026-10/acme__widgets-7/acme-widgets-7")
+        self.assertEqual(row["harbor_path"], "fresh-2026-10/acme__widgets-7")
         self.assertEqual(doc["set"], "fresh-2026-10")
         self.assertIn("leak-checked 1/1", r.stdout)
+        # AND the task was copied out of the git-ignored cache with its network opened
+        published = self.dir / "fresh-2026-10" / "acme__widgets-7"
+        self.assertTrue((published / "tests" / "test_widget.py").is_file())
+        cfg = collect.tomllib.loads((published / "task.toml").read_text())
+        self.assertEqual(cfg["environment"]["network_mode"], "public")
+        self.assertEqual(cfg["environment"]["cpus"], 1)
+        self.assertFalse((build / "acme__widgets-8").exists())
+        self.assertFalse((self.dir / "fresh-2026-10" / "acme__widgets-8").exists())
+
+    def test_rebuild_replaces_a_published_task(self):
+        """A second manifest run replaces the published copy instead of mixing old files in."""
+        # GIVEN a task published once, with a stale file added to the copy
+        p = self.candidates([cand(pr=7)])
+        build = self.dir / "cache" / "fresh-2026-10"
+        self.fake_task("acme__widgets-7")
+        (build / "passed.txt").write_text("acme__widgets-7\n")
+        out = self.dir / "fresh-2026-10.json"
+        collect.main(["manifest", str(p), str(build), str(out)])
+        stale = self.dir / "fresh-2026-10" / "acme__widgets-7" / "stale.txt"
+        stale.write_text("old")
+        # WHEN the manifest is written again
+        collect.main(["manifest", str(p), str(build), str(out)])
+        # THEN the stale file is gone and the task is still there
+        self.assertFalse(stale.exists())
+        self.assertTrue((stale.parent / "task.toml").is_file())
 
     def test_missing_workdir_fails_and_writes_nothing(self):
         """A task whose Dockerfile has no WORKDIR is an error, not a row with workdir null."""
