@@ -9,18 +9,19 @@ its seal is refused with exit 3.
 
 Per task, a run's reward is the mean over its counted tries:
   - status ok tries count with their reward;
-  - budget_cut: in the BASELINE excluded (running out of budget is not the
-    harness failing); in the CANDIDATE counted as reward 0 at the full cap
-    (run.json max_budget_usd), because overspend is itself the regression;
-  - error tries never count.
+  - budget_cut and error tries: in the BASELINE excluded (running out of
+    budget or a broken sandbox is not the harness failing); in the CANDIDATE
+    counted as reward 0 at the full cap (run.json max_budget_usd), because a
+    candidate's overspend or crash is itself the regression.
 Tasks with counted tries in both runs are paired; d_i = B - A.
 A task is solved when its mean reward is >= 0.5. Costs are over paired tasks.
 
-Prints  n= diff= se= ci95=± solvedA= solvedB= costA= costB= cutA= cutB=
+Prints  n= diff= se= ci95=± solvedA= solvedB= costA= costB= cutA= cutB= errA= errB=
+        statusA= statusB=   (run.json status: complete|incomplete)
 --margin-from A2 (a second run of A's harness): margin_raw = 1.96 x SE of the
 paired difference A vs A2, margin = max(margin_raw, 1/n), and verdict=win|lose|tie.
---screen-rule: screen=pass iff solvedB >= solvedA - 1, costB <= 1.25 x costA
-and cutB <= cutA.
+--screen-rule: screen=pass iff solvedB >= solvedA - 1, costB <= 1.25 x costA,
+cutB <= cutA, errB <= errA and B is not incomplete.
 Exit: 0 ok, 2 usage / nothing to pair, 3 seal mismatch.
 """
 import argparse
@@ -64,14 +65,14 @@ def check_seal(run):
 
 
 def load(run):
-    """({task: [result dicts]}, cap) for a sealed run."""
+    """({task: [result dicts]}, cap, run status) for a sealed run."""
     check_seal(run)
     run = Path(run)
     meta = json.loads((run / "run.json").read_text())
     tries = {}
     for f in sorted(run.glob("*/try-*/result.json")):
         tries.setdefault(f.parent.parent.name, []).append(json.loads(f.read_text()))
-    return tries, float(meta.get("max_budget_usd") or DEFAULT_CAP)
+    return tries, float(meta.get("max_budget_usd") or DEFAULT_CAP), meta.get("status", "unknown")
 
 
 def counted(rows, candidate, cap):
@@ -80,16 +81,17 @@ def counted(rows, candidate, cap):
     for r in rows:
         if r["status"] == "ok":
             out.append((float(r["reward"]), float(r.get("cost_usd") or 0)))
-        elif r["status"] == "budget_cut" and candidate:
+        elif r["status"] in ("budget_cut", "error") and candidate:
             out.append((0.0, cap))
     return out
 
 
 def paired(a, b, b_is_candidate=True):
-    """Per paired task: (rewardA, rewardB, costA, costB), plus cut counts over common tasks."""
-    (ta, _), (tb, cap_b) = a, b
+    """Per paired task: (rewardA, rewardB, costA, costB), plus {status: (countA, countB)}
+    for budget_cut and error over the tasks both runs have."""
+    (ta, _, _), (tb, cap_b, _) = a, b
     common = sorted(set(ta) & set(tb))
-    cut = lambda t, task: sum(r["status"] == "budget_cut" for r in t[task])  # noqa: E731
+    count = lambda t, st: sum(r["status"] == st for task in common for r in t[task])  # noqa: E731
     rows = []
     for task in common:
         ca = counted(ta[task], False, 0)
@@ -97,7 +99,7 @@ def paired(a, b, b_is_candidate=True):
         if ca and cb:
             rows.append((statistics.fmean(x for x, _ in ca), statistics.fmean(x for x, _ in cb),
                          sum(c for _, c in ca), sum(c for _, c in cb)))
-    return rows, sum(cut(ta, t) for t in common), sum(cut(tb, t) for t in common)
+    return rows, {st: (count(ta, st), count(tb, st)) for st in ("budget_cut", "error")}
 
 
 def diff_stats(rows):
@@ -115,7 +117,8 @@ def main(argv=None):
     args = ap.parse_args(argv)
 
     a, b = load(args.run_a), load(args.run_b)
-    rows, cut_a, cut_b = paired(a, b)
+    rows, counts = paired(a, b)
+    (cut_a, cut_b), (err_a, err_b) = counts["budget_cut"], counts["error"]
     if not rows:
         sys.exit("compare: no task has counted tries in both runs")
     n = len(rows)
@@ -125,10 +128,11 @@ def main(argv=None):
     cost_a = sum(r[2] for r in rows)
     cost_b = sum(r[3] for r in rows)
     print(f"n={n} diff={diff:.3f} se={se:.3f} ci95=±{1.96 * se:.3f} solvedA={solved_a} solvedB={solved_b} "
-          f"costA={cost_a:.2f} costB={cost_b:.2f} cutA={cut_a} cutB={cut_b}")
+          f"costA={cost_a:.2f} costB={cost_b:.2f} cutA={cut_a} cutB={cut_b} errA={err_a} errB={err_b} "
+          f"statusA={a[2]} statusB={b[2]}")
     if args.margin_from:
         # A2 is a second baseline: its cut tries are excluded too.
-        base_rows, _, _ = paired(a, load(args.margin_from), b_is_candidate=False)
+        base_rows, _ = paired(a, load(args.margin_from), b_is_candidate=False)
         if not base_rows:
             sys.exit("compare: no task has counted tries in both baseline runs")
         margin_raw = 1.96 * diff_stats(base_rows)[1]
@@ -136,7 +140,8 @@ def main(argv=None):
         verdict = "win" if diff > margin + EPS else "lose" if diff < -margin - EPS else "tie"
         print(f"margin_raw={margin_raw:.3f} margin={margin:.3f} verdict={verdict}")
     if args.screen_rule:
-        ok = solved_b >= solved_a - 1 and cost_b <= 1.25 * cost_a + EPS and cut_b <= cut_a
+        ok = (solved_b >= solved_a - 1 and cost_b <= 1.25 * cost_a + EPS and cut_b <= cut_a
+              and err_b <= err_a and b[2] != "incomplete")
         print(f"screen={'pass' if ok else 'fail'}")
 
 

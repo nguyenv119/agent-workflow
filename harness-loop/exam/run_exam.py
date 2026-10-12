@@ -12,7 +12,11 @@ agents; `controls` runs both) and becomes a try folder made by
 try folders under inner/ and a result.json:
   {task, try, status: ok|budget_cut|error, reward, cost_usd, wall_s, harness_commit,
    model, origin_url, bead_branch_in_origin, exam_no_pr_line, harbor_trial_dir}
-Rewards count only status ok tries.
+Rewards count only status ok tries. A workflow try is an error when its
+recorded harness_commit is not the requested sha. One with no cost (killed
+before claude's result line) is booked at max_budget_usd with cost_unknown.
+A try whose filing raises is saved as an error and the run marked incomplete.
+Exit 1 when every try errored (the run is still sealed).
 
 Layout: $HARNESS_LOOP_HOME (default ~/.harness-loop)/runs/<run-id>/
   run.json  summary.json  summary.sha256  <task>/try-<n>/  harbor/ (Harbor's job dirs)
@@ -26,7 +30,8 @@ starts and the run is marked incomplete. Each workflow run gets
 max_budget_usd = --max-budget-usd (default 12.05 = 3 x the B18.2 probe's max);
 a run that hits it is status budget_cut.
 
-Env: EXAM_HARBOR overrides the `harbor run` command prefix (tests use a fake).
+Env: Harbor gets only HARBOR_ENV + DAYTONA_* (Harbor copies some host vars into
+the sandbox). EXAM_HARBOR overrides the `harbor run` command prefix (tests use a fake).
 """
 import argparse
 import datetime
@@ -57,6 +62,11 @@ INSTALLER = LOOP_DIR / "install_harness.py"
 DEFAULT_HARBOR = f"{LOOP_DIR / '.venv/bin/harbor'} run"
 FIRST_ESTIMATE_USD = 15.0
 MAX_CPUS, MAX_MEMORY_MB = 4, 8192  # Daytona's per-sandbox cap
+# The only host env Harbor sees. Harbor copies some host vars (e.g.
+# CLAUDE_CODE_MAX_OUTPUT_TOKENS, DISABLE_ADAPTIVE_THINKING) into the sandbox,
+# which would make a baseline and a candidate differ by who launched them.
+HARBOR_ENV = ("PATH", "HOME", "TMPDIR", "LANG", "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY",
+              "AWS_SESSION_TOKEN", "AWS_REGION", "EXAM_HARBOR")
 MODELS = {"opus": trial_export.BEDROCK_MODELS["ANTHROPIC_MODEL"],
           "sonnet": trial_export.BEDROCK_MODELS["ANTHROPIC_DEFAULT_SONNET_MODEL"]}
 
@@ -113,6 +123,13 @@ def harbor_cmd(args, task, agent, jobs_dir, job_name, sha, run_id):
     return cmd
 
 
+def harbor_env(host):
+    """Allowlisted host env for `harbor run`, with the exam dir on PYTHONPATH."""
+    env = {k: v for k, v in host.items() if k in HARBOR_ENV or k.startswith("DAYTONA_")}
+    env["PYTHONPATH"] = os.pathsep.join(filter(None, [str(EXAM_DIR), host.get("PYTHONPATH")]))
+    return env
+
+
 def read_json(path):
     try:
         return json.loads(Path(path).read_text())
@@ -126,9 +143,8 @@ def run_try(ctx, task, n, agent):
     jobs_dir = ctx["run"] / "harbor"
     job_name = f"{agent + '-' if ctx['controls'] else ''}{task['id']}-try{n}"
     cmd = harbor_cmd(ctx["args"], task, agent, jobs_dir, job_name, ctx["sha"], ctx["run"].name)
-    env = {**os.environ, "PYTHONPATH": os.pathsep.join(filter(None, [str(EXAM_DIR), os.environ.get("PYTHONPATH")]))}
     t0 = time.monotonic()
-    p = subprocess.run(cmd, env=env, capture_output=True, text=True)
+    p = subprocess.run(cmd, env=harbor_env(os.environ), capture_output=True, text=True)
     wall = round(time.monotonic() - t0, 1)
     jobs_dir.mkdir(parents=True, exist_ok=True)
     (jobs_dir / f"{job_name}.log").write_text(f"$ {shlex.join(cmd)}\nexit {p.returncode}\n{p.stdout}\n{p.stderr}")
@@ -144,7 +160,10 @@ def run_try(ctx, task, n, agent):
             shutil.copytree(trial / "agent/exam", stage, dirs_exist_ok=True)
             exam = read_json(stage / "result.json")
             harbor_res = read_json(trial / "result.json")
-            log = trial / "agent" / f"{agent}.txt"
+            # No parent transcript found: fall back to the agent's own log
+            # (WorkflowAgent's stream-json, or Harbor's oracle/nop log).
+            name = "claude-code.txt" if agent == "workflow" else f"{agent}.txt"
+            log = trial / "agent" / name
             if not (stage / "transcript.jsonl").is_file() and log.is_file() and log.stat().st_size:
                 transcript = log
         else:
@@ -162,8 +181,14 @@ def run_try(ctx, task, n, agent):
             status = "ok" if trial else "error"
         if status == "ok" and reward is None:
             status = "error"
-        cost = exam.get("total_cost_usd")
-        if cost is None:
+        if agent == "workflow" and exam.get("harness_commit") != ctx["sha"]:
+            status = "error"  # the agent ran some other harness (or left no record of it)
+        cost_unknown = False
+        if agent == "workflow":
+            cost = exam.get("total_cost_usd")
+            if cost is None:  # e.g. killed at the agent timeout: no result line
+                cost, cost_unknown = ctx["args"].max_budget_usd, True
+        else:
             cost = (harbor_res.get("agent_result") or {}).get("cost_usd") or 0.0
         (stage / "note.md").write_text(
             f"exam {ctx['run'].name}: agent {agent}, status {status}, reward {reward}, "
@@ -179,7 +204,7 @@ def run_try(ctx, task, n, agent):
         shutil.copytree(trial / "agent/tries", folder / "inner")
     result = {
         "task": task["id"], "try": int(folder.name.split("-")[1]), "agent": agent, "status": status,
-        "reward": reward, "cost_usd": cost, "wall_s": wall,
+        "reward": reward, "cost_usd": cost, "cost_unknown": cost_unknown, "wall_s": wall,
         "harness_commit": exam.get("harness_commit") or ctx["sha"],
         "model": MODELS.get(ctx["args"].model, ctx["args"].model) if agent == "workflow" else None,
         "origin_url": exam.get("origin_url"), "bead_branch_in_origin": bool(exam.get("branch")),
@@ -193,7 +218,7 @@ def run_try(ctx, task, n, agent):
 def schedule(ctx, jobs):
     """Run jobs (task, try, agent) up to --concurrency at once inside the budget. True if all ran."""
     args = ctx["args"]
-    done, pending = [], set()
+    done, pending, futures = [], set(), {}
     first = FIRST_ESTIMATE_USD if args.agent == "workflow" else 0.0
     queue = list(jobs)
     with ThreadPoolExecutor(args.concurrency) as ex:
@@ -207,15 +232,41 @@ def schedule(ctx, jobs):
                     ctx["not_started"] = len(queue)
                     queue.clear()
                     break
-                pending.add(ex.submit(run_try, ctx, *queue.pop(0)))
+                job = queue.pop(0)
+                fut = ex.submit(run_try, ctx, *job)
+                futures[fut] = job
+                pending.add(fut)
             if pending:
                 finished, pending = wait(pending, return_when=FIRST_COMPLETED)
                 for f in finished:
-                    r = f.result()
+                    try:
+                        r = f.result()
+                    except Exception as e:  # noqa: BLE001 - file it, keep the run sealable
+                        r = crashed_try(ctx, futures[f], e)
+                        ctx["crashed"] = True
                     done.append(r)
                     print(f"run_exam: {r['agent']} {r['task']} try-{r['try']}: {r['status']} "
                           f"reward={r['reward']} ${r['cost_usd']}", file=sys.stderr)
-    return not ctx.get("not_started")
+    return not ctx.get("not_started") and not ctx.get("crashed")
+
+
+def crashed_try(ctx, job, exc):
+    """File a try whose run_exam step raised as status error, booked at the cap."""
+    task, _, agent = job
+    base = (ctx["run"] / agent if ctx["controls"] else ctx["run"]) / task["id"]
+    base.mkdir(parents=True, exist_ok=True)
+    k = 1
+    while (base / f"try-{k}").exists():
+        k += 1
+    folder = base / f"try-{k}"
+    folder.mkdir()
+    (folder / "note.md").write_text(f"run_exam raised while filing this try: {exc!r}\n")
+    cost = ctx["args"].max_budget_usd if agent == "workflow" else 0.0
+    result = {"task": task["id"], "try": k, "agent": agent, "status": "error", "reward": None,
+              "cost_usd": cost, "cost_unknown": agent == "workflow", "wall_s": None,
+              "harness_commit": ctx["sha"], "error": repr(exc)}
+    (folder / "result.json").write_text(json.dumps(result, indent=2) + "\n")
+    return result
 
 
 def score(results):
@@ -254,6 +305,7 @@ def finish(ctx, meta, complete):
     compare.seal(run)
     subprocess.run(["chmod", "-R", "a-w", str(run)], check=True)
     print(f"run_exam: {run} {status} solved={solved} cost=${total:.2f}")
+    return results
 
 
 def main(argv=None):
@@ -300,7 +352,9 @@ def main(argv=None):
     agents = ["oracle", "nop"] if controls else [args.agent]
     jobs = [(t, n, a) for n in range(1, args.tries + 1) for t in tasks for a in agents]
     ctx = {"args": args, "run": run, "sha": sha, "controls": controls}
-    finish(ctx, meta, schedule(ctx, jobs))
+    results = finish(ctx, meta, schedule(ctx, jobs))
+    if results and all(r["status"] == "error" for r in results):
+        sys.exit("run_exam: every try errored")
 
 
 if __name__ == "__main__":

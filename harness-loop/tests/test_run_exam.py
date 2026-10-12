@@ -2,7 +2,9 @@
 
 The fake writes the trial dir a real Harbor + WorkflowAgent run leaves behind
 (result.json, verifier/reward.txt, agent/exam/*, agent/tries/), driven by a
-JSON spec per task, and logs its argv so the flags run_exam passes are visible.
+JSON spec per task, and logs its argv and env keys so what run_exam passes is
+visible. Its log and spec paths come first on its own command line, because
+run_exam passes Harbor only an allowlisted env.
 """
 import json
 import os
@@ -26,9 +28,9 @@ import run_exam  # noqa: E402
 FAKE_HARBOR = textwrap.dedent('''\
     import json, os, sys
     from pathlib import Path
-    argv = sys.argv[1:]
-    with open(os.environ["FAKE_LOG"], "a") as fh:
-        fh.write(json.dumps(argv) + "\\n")
+    log, spec_path, argv = sys.argv[1], sys.argv[2], sys.argv[3:]
+    with open(log, "a") as fh:
+        fh.write(json.dumps({"argv": argv, "env": sorted(os.environ)}) + "\\n")
     def opt(*names):
         for i, a in enumerate(argv):
             if a in names:
@@ -36,8 +38,13 @@ FAKE_HARBOR = textwrap.dedent('''\
     ak = dict(argv[i + 1].split("=", 1) for i, a in enumerate(argv) if a == "--ak")
     task = Path(opt("-p")).name
     agent = opt("-a")
-    spec = json.loads(Path(os.environ["FAKE_SPEC"]).read_text()).get(task, {})
+    spec = json.loads(Path(spec_path).read_text()).get(task, {})
     reward = {"oracle": 1, "nop": 0}.get(agent, spec.get("reward", 1))
+    if spec.get("crash"):
+        (Path(opt("-o")) / opt("--job-name") / "t__abc" / "agent").mkdir(parents=True)
+        (Path(opt("-o")) / opt("--job-name") / "t__abc" / "agent" / "exam").write_text("not a dir")
+        (Path(opt("-o")) / opt("--job-name") / "t__abc" / "result.json").write_text("{}")
+        sys.exit(0)
     cost = 0 if agent in ("oracle", "nop") else spec.get("cost", 8.0)
     trial = Path(opt("-o")) / opt("--job-name") / (task[:20] + "__abc")
     (trial / "verifier").mkdir(parents=True)
@@ -57,10 +64,13 @@ FAKE_HARBOR = textwrap.dedent('''\
     for name, text in {"start.sha": "a" * 40, "end.sha": "b" * 40, "diff.patch": "diff --git a/x b/x\\n",
                        "branch.txt": branch, "origin_url.txt": "file:///tmp/origin.git",
                        "transcript.jsonl": '{"type": "user"}\\n'}.items():
+        if name == "transcript.jsonl" and spec.get("no_transcript"):
+            continue
         (exam / name).write_text(text + "\\n")
+    (agent_dir / "claude-code.txt").write_text('{"type": "result"}\\n')
     subtype = spec.get("subtype", "success")
     (exam / "result.json").write_text(json.dumps({
-        "harness_commit": ak["harness_commit"], "branch": branch or None,
+        "harness_commit": spec.get("harness_commit", ak["harness_commit"]), "branch": branch or None,
         "origin_url": "file:///tmp/origin.git",
         "status": {"success": "ok", "error_max_budget_usd": "budget_cut"}.get(subtype, "error"),
         "total_cost_usd": cost, "exam_no_pr_line": True}))
@@ -105,9 +115,9 @@ class RunExamTest(unittest.TestCase):
         m.write_text(json.dumps({"set": "demo", "source": "test", "tasks": rows}))
         return m
 
-    def run_exam(self, *args, check=True):
-        env = {**os.environ, "HARNESS_LOOP_HOME": str(self.home), "FAKE_LOG": str(self.log),
-               "FAKE_SPEC": str(self.spec), "EXAM_HARBOR": f"{sys.executable} {self.fake} run"}
+    def run_exam(self, *args, check=True, extra_env=None):
+        env = {**os.environ, **(extra_env or {}), "HARNESS_LOOP_HOME": str(self.home),
+               "EXAM_HARBOR": f"{sys.executable} {self.fake} {self.log} {self.spec} run"}
         p = subprocess.run([sys.executable, str(SCRIPT), "--harness", "HEAD", *map(str, args)],
                            env=env, text=True, capture_output=True)
         if check:
@@ -123,7 +133,10 @@ class RunExamTest(unittest.TestCase):
         return {f.parent.parent.name: json.loads(f.read_text()) for f in run.glob("*/try-*/result.json")}
 
     def argvs(self):
-        return [json.loads(l) for l in self.log.read_text().splitlines()]
+        return [json.loads(l)["argv"] for l in self.log.read_text().splitlines()]
+
+    def envs(self):
+        return [json.loads(l)["env"] for l in self.log.read_text().splitlines()]
 
     def test_complete_run_writes_one_try_folder_per_task(self):
         """
@@ -206,11 +219,98 @@ class RunExamTest(unittest.TestCase):
         m = self.manifest({"t1": 2})
         self.spec.write_text(json.dumps({"t1": {"reward": None}}))
         # WHEN run_exam runs
-        self.run_exam("--tasks", m, "--budget-usd", 100)
+        self.run_exam("--tasks", m, "--budget-usd", 100, check=False)
         # THEN the try is an error and the task has no reward in run.json
         run = self.only_run()
         self.assertEqual(self.results(run)["t1"]["status"], "error")
         self.assertEqual(json.loads((run / "run.json").read_text())["rewards"], {})
+
+    def test_harbor_sees_only_allowlisted_env(self):
+        """
+        Harbor copies some host vars into the sandbox, so whoever launches a run
+        must not change what it measures, and admin keys must not leave the host.
+        """
+        # GIVEN a host env with an admin key, an API key and a claude tuning var
+        m = self.manifest({"t1": 2})
+        planted = {"AWS_ADMIN_X": "x", "ANTHROPIC_API_KEY": "x", "CLAUDE_CODE_MAX_OUTPUT_TOKENS": "1",
+                   "AWS_ACCESS_KEY_ID": "id", "DAYTONA_API_KEY": "d"}
+        # WHEN run_exam runs
+        self.run_exam("--tasks", m, "--budget-usd", 100, extra_env=planted)
+        # THEN none of the planted vars reached Harbor, but the Bedrock and Daytona keys did
+        env = self.envs()[0]
+        for k in ("AWS_ADMIN_X", "ANTHROPIC_API_KEY", "CLAUDE_CODE_MAX_OUTPUT_TOKENS"):
+            self.assertNotIn(k, env)
+        self.assertIn("AWS_ACCESS_KEY_ID", env)
+        self.assertIn("DAYTONA_API_KEY", env)
+
+    def test_missing_cost_is_booked_at_the_cap(self):
+        """A run killed before its result line has an unknown cost; booking $0 would hide it."""
+        # GIVEN a workflow try whose stream has no total_cost_usd
+        m = self.manifest({"t1": 2})
+        self.spec.write_text(json.dumps({"t1": {"cost": None, "subtype": None}}))
+        # WHEN run_exam runs
+        self.run_exam("--tasks", m, "--budget-usd", 100, check=False)
+        # THEN the try is booked at the $12.05 cap and flagged
+        r = self.results(self.only_run())["t1"]
+        self.assertEqual((r["cost_usd"], r["cost_unknown"]), (12.05, True))
+
+    def test_transcript_falls_back_to_claude_code_log(self):
+        """With no parent transcript found, the try keeps the agent's own stream-json."""
+        # GIVEN a workflow try whose export has no transcript.jsonl
+        m = self.manifest({"t1": 2})
+        self.spec.write_text(json.dumps({"t1": {"no_transcript": True}}))
+        # WHEN run_exam runs
+        self.run_exam("--tasks", m, "--budget-usd", 100)
+        # THEN the try's transcript is agent/claude-code.txt
+        self.assertEqual((self.only_run() / "t1/try-1/transcript.jsonl").read_text(), '{"type": "result"}\n')
+
+    def test_wrong_harness_commit_is_an_error(self):
+        """A try that ran some other harness than the one requested must not be scored."""
+        # GIVEN a task whose agent recorded a different sha
+        m = self.manifest({"t1": 2, "t2": 2})
+        self.spec.write_text(json.dumps({"t1": {"harness_commit": "f" * 40}}))
+        # WHEN run_exam runs
+        self.run_exam("--tasks", m, "--budget-usd", 100)
+        # THEN t1 is an error and t2 is ok
+        res = self.results(self.only_run())
+        self.assertEqual((res["t1"]["status"], res["t2"]["status"]), ("error", "ok"))
+
+    def test_every_try_errored_exits_nonzero(self):
+        """A run where nothing worked must not look like a run that scored 0."""
+        # GIVEN one task whose verifier gives no reward
+        m = self.manifest({"t1": 2})
+        self.spec.write_text(json.dumps({"t1": {"reward": None}}))
+        # WHEN run_exam runs
+        p = self.run_exam("--tasks", m, "--budget-usd", 100, check=False)
+        # THEN it exits non-zero, and the run is still sealed
+        self.assertNotEqual(p.returncode, 0)
+        run = self.only_run()
+        self.assertEqual((run / "summary.sha256").read_text(), compare.listing(run))
+
+    def test_a_raising_try_is_filed_as_error_and_the_run_still_seals(self):
+        """One broken trial dir must not leave the whole run unsealed."""
+        # GIVEN two tasks, t1's trial export broken so filing it raises
+        m = self.manifest({"t1": 2, "t2": 2})
+        self.spec.write_text(json.dumps({"t1": {"crash": True}}))
+        # WHEN run_exam runs
+        self.run_exam("--tasks", m, "--budget-usd", 100)
+        # THEN t1 is an error, t2 ok, the run incomplete and sealed
+        run = self.only_run()
+        res = self.results(run)
+        self.assertEqual((res["t1"]["status"], res["t2"]["status"]), ("error", "ok"))
+        self.assertEqual(json.loads((run / "run.json").read_text())["status"], "incomplete")
+        self.assertEqual((run / "summary.sha256").read_text(), compare.listing(run))
+
+    def test_budget_counts_runs_in_flight(self):
+        """At concurrency 2 the second start must count the first, still-running run."""
+        # GIVEN two tasks, concurrency 2 and a $29 budget (first estimate $15)
+        m = self.manifest({"t1": 2, "t2": 2})
+        # WHEN run_exam runs (0 + 1 x 15 <= 29 starts t1; 0 + 2 x 15 > 29 stops t2)
+        self.run_exam("--tasks", m, "--budget-usd", 29, "--concurrency", 2)
+        # THEN only one try ran and the run is incomplete
+        run = self.only_run()
+        self.assertEqual(len(self.results(run)), 1)
+        self.assertEqual(json.loads((run / "run.json").read_text())["status"], "incomplete")
 
     def test_missing_bead_branch_is_recorded(self):
         """bead_branch_in_origin is false when finish_task found no branch on origin."""

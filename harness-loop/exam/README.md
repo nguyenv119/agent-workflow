@@ -98,6 +98,11 @@ harness-loop/exam/run_exam.py --harness main --tasks <same> --screen --agent con
 harness-loop/exam/compare.py <runA> <runB> --margin-from <runA2> --screen-rule
 ```
 
+Scoring: in the baseline, `budget_cut` and `error` tries are left out; in the candidate they count
+as unsolved at the full cap. The screen also fails on more candidate errors or an incomplete
+candidate run (details in `controls.md`). Harbor gets only an allowlisted host env (`HARBOR_ENV` in
+`run_exam.py`), so whoever launches a run cannot change what it measures.
+
 Task folders come from the manifest's `cache/` (git-ignored); in a worktree, symlink it from the
 main clone. A task asking for more than 4 CPUs or 8 GiB gets `--override-cpus 4
 --override-memory-mb 8192`, Daytona's cap.
