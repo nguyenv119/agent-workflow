@@ -1,0 +1,3 @@
+# Harbor runs the exam tasks; pinned so the WorkflowAgent overrides match its ClaudeCode agent.
+harbor[daytona]==0.24.0
+daytona==0.223.1
