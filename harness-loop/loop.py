@@ -516,22 +516,40 @@ def compare(a, b, *extra):
     return dict(tok.split("=", 1) for tok in p.stdout.split() if "=" in tok)
 
 
+def harness_tree(sha):
+    """What the exam installs at sha: the .claude tree and AGENTS.md blob ids ('' if sha is unknown)."""
+    if not re.fullmatch(r"[0-9a-f]{7,40}", sha):
+        return ""
+    return git("ls-tree", sha, "--", ".claude", "AGENTS.md", check=False)
+
+
 def find_base_run(base_sha, manifest):
-    """Newest complete, sealed main screen run at base_sha on this manifest that this script booked, or None.
+    """Newest complete, sealed main screen run of this manifest's screen tasks that this script booked,
+    made at any commit whose installed harness (.claude/ + AGENTS.md) matches base_sha's, or None.
 
     Booked = named in an exam-baseline row of spend.jsonl, which the improver cannot write (it is
-    hashed and restored every round), so a run dir the improver forged is never reused."""
-    booked = {r.get("note") for r in read_jsonl(HOME / "spend.jsonl") if r.get("kind") == "exam-baseline"}
+    hashed and restored every round), so a run dir the improver forged is never reused. Matching on
+    the installed tree, not the commit, lets a run survive main commits that only touch harness-loop/.
+    The exam's own settings (model, per-try cap) are checked against the candidate run once it
+    exists (cmd_round); the sandbox (docker or daytona) is deliberately not part of the key."""
+    rows = read_jsonl(HOME / "spend.jsonl")
+    booked = ({r.get("note") for r in rows if r.get("kind") == "exam-baseline"}
+              - {r.get("note") for r in rows if r.get("kind") == "exam-baseline-stale"})
+    data = json.loads(Path(manifest).read_text())
+    want = sorted(t["id"] for t in data.get("tasks", []) if t.get("screen"))
+    tree = harness_tree(base_sha)
     found = []
     for meta_f in (HOME / "runs").glob("*/run.json"):
         try:
             meta = json.loads(meta_f.read_text())
-        except ValueError:
+        except (ValueError, OSError):
             continue
-        if (meta.get("harness_commit") == base_sha and meta.get("manifest") == str(Path(manifest).resolve())
-                and meta.get("screen") and meta.get("agent") == "workflow" and meta.get("kind") == "baseline"
+        if not isinstance(meta, dict):
+            continue
+        if (meta.get("set") == data.get("set") and meta.get("tasks") == want and meta.get("screen")
+                and meta.get("agent") == "workflow" and meta.get("kind") == "baseline"
                 and meta.get("status") == "complete" and (meta_f.parent / "summary.sha256").is_file()
-                and meta_f.parent.name in booked):
+                and meta_f.parent.name in booked and tree and harness_tree(str(meta.get("harness_commit"))) == tree):
             found.append((meta_f.stat().st_mtime, meta_f.parent))
     return max(found)[1] if found else None
 
@@ -732,6 +750,12 @@ def cmd_round(args):
         if changes:
             restore_state(before["state"])
             return finish("dropped", "tamper during screen: " + "; ".join(changes))
+        b_meta, c_meta = (json.loads((Path(r) / "run.json").read_text()) for r in (base_run, cand_run))
+        differ = [k for k in ("model", "max_budget_usd", "tries") if b_meta.get(k) != c_meta.get(k)]
+        if differ:  # a reused main run made under other exam settings would give a wrong verdict
+            book("exam-baseline-stale", 0, n, Path(base_run).name)  # find_base_run skips it from now on
+            return finish("dropped", f"main run {rel_home(base_run)} differs from the candidate in "
+                                     f"{', '.join(differ)}; the next round re-runs main")
         stats = compare(base_run, cand_run, "--screen-rule")
         verdict = stats["screen"]
         row["screen"] = {"base_run": rel_home(base_run), "cand_run": rel_home(cand_run),

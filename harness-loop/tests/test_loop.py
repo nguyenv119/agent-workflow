@@ -147,11 +147,11 @@ class LoopRepo:
     def exam_calls(self):
         return [json.loads(line) for line in self.exam_log.read_text().splitlines()] if self.exam_log.is_file() else []
 
-    def base_run(self, booked=True):
+    def base_run(self, booked=True, env=None):
         """A sealed main screen run at base_sha; the round reuses it only if booked in spend.jsonl."""
         p = subprocess.run([sys.executable, str(FIXTURES / "fake_run_exam.py"), "--harness", self.base_sha,
                             "--tasks", str(self.manifest), "--budget-usd", "9", "--screen", "--kind", "baseline"],
-                           env=self.env, capture_output=True, text=True, check=True)
+                           env={**self.env, **(env or {})}, capture_output=True, text=True, check=True)
         self.exam_log.unlink()
         run_dir = Path(p.stdout.split()[1])
         if booked:
@@ -159,6 +159,14 @@ class LoopRepo:
                 fh.write(json.dumps({"ts": datetime.datetime.now(datetime.timezone.utc).isoformat(),
                                      "kind": "exam-baseline", "round": 0, "usd": 0, "note": run_dir.name}) + "\n")
         return run_dir
+
+    def commit_on_main(self, rel, text):
+        """Commit one file on the checkout's main and push it, so origin/main moves."""
+        (self.aw / rel).parent.mkdir(parents=True, exist_ok=True)
+        (self.aw / rel).write_text(text)
+        run(GIT + ["add", rel], self.aw)
+        run(GIT + ["commit", "-q", "-m", f"touch {rel}"], self.aw)
+        run(GIT + ["push", "-q", "origin", "main"], self.aw)
 
     def ledger(self, *rows):
         with (self.home / "spend.jsonl").open("a") as fh:
@@ -240,6 +248,83 @@ class RoundOpensPR(LoopTestCase):
         self.assertEqual([c[c.index("--kind") + 1] for c in self.r.exam_calls()], ["candidate"])
         body = [c for c in self.r.gh_calls() if "body" in c][0]["body"]
         self.assertIn(f"runs/{base.name}", body)
+
+    def kinds(self):
+        return [c[c.index("--kind") + 1] for c in self.r.exam_calls()]
+
+    def test_reuses_main_run_from_an_older_commit_with_the_same_harness_tree(self):
+        """
+        A main screen run at an older commit is reused when .claude/ and AGENTS.md are unchanged
+        since: main moving on harness-loop/ alone must not cost a fresh main exam.
+        """
+        # GIVEN a booked main screen run, then a main commit that touches only harness-loop/
+        base = self.r.base_run()
+        self.r.commit_on_main("harness-loop/notes.txt", "exam code moved on\n")
+        # WHEN a stub round runs on the new main
+        p = self.r.round()
+        # THEN main is not re-examined and the PR cites the older run
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertEqual(self.kinds(), ["candidate"])
+        self.assertIn(f"runs/{base.name}", [c for c in self.r.gh_calls() if "body" in c][0]["body"])
+
+    def assert_fresh_main_after(self, manifest=None, commit=None):
+        """Book a main run, change the manifest or commit on main, run a round: main must be re-examined."""
+        self.r.manifest.write_text(json.dumps({"set": "s", "tasks": [{"id": "t1", "screen": True}]}))
+        self.r.base_run()
+        if manifest:
+            self.r.manifest.write_text(json.dumps(manifest))
+        if commit:
+            self.r.commit_on_main(*commit)
+        p = self.r.round()
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertEqual(self.kinds(), ["baseline", "candidate"])
+
+    def test_main_run_is_not_reused_once_claude_dir_changes(self):
+        """A main run is not reused after main changes .claude/: its score measured another harness."""
+        # GIVEN a booked main run, WHEN main changes a .claude file and a round runs, THEN main is re-examined
+        self.assert_fresh_main_after(commit=(".claude/skills/coordinator/notes.md", "# changed\n"))
+
+    def test_main_run_is_not_reused_once_agents_md_changes(self):
+        """A main run is not reused after main changes AGENTS.md, which the exam also installs."""
+        # GIVEN a booked main run, WHEN main changes AGENTS.md and a round runs, THEN main is re-examined
+        self.assert_fresh_main_after(commit=("AGENTS.md", "# changed\n"))
+
+    def test_main_run_is_not_reused_for_a_different_screen_task_list(self):
+        """A main run of other screen tasks in the same set is not reused: solved counts would not pair."""
+        # GIVEN a booked main run, WHEN the set gains a screen task and a round runs, THEN main is re-examined
+        self.assert_fresh_main_after(manifest={"set": "s", "tasks": [{"id": "t1", "screen": True},
+                                                                     {"id": "t2", "screen": True}]})
+
+    def test_main_run_is_not_reused_for_another_set(self):
+        """A main run of the same task ids in another set is not reused, whatever its manifest path."""
+        # GIVEN a booked main run, WHEN the manifest's set changes and a round runs, THEN main is re-examined
+        self.assert_fresh_main_after(manifest={"set": "other", "tasks": [{"id": "t1", "screen": True}]})
+
+    def assert_stale_main_retired(self, env, field):
+        """Book a main run made under other exam settings, run two rounds: drop, retire, re-run main."""
+        self.r.base_run(env=env)
+        first, second = self.r.round(), self.r.round()
+        self.assertEqual(first.returncode, 0, first.stderr)
+        self.assertEqual(self.r.history()[0]["outcome"], "dropped")
+        self.assertIn(field, self.r.history()[0]["reason"])
+        self.assertEqual(self.kinds(), ["candidate", "baseline", "candidate"])
+        self.assertEqual(second.returncode, 0, second.stderr)
+        self.assertEqual(len([c for c in self.r.gh_calls() if "body" in c]), 1)
+
+    def test_reused_main_run_with_another_model_drops_the_round_and_is_retired(self):
+        """
+        A reused main run made with another model drops the round before any PR (its verdict would
+        be wrong), and the next round examines main afresh instead of reusing it again.
+        """
+        # GIVEN a booked main run made under another model, WHEN two rounds run,
+        # THEN the first is dropped without a PR and the second re-runs main
+        self.assert_stale_main_retired({"FAKE_EXAM_MODEL": "old"}, "model")
+
+    def test_reused_main_run_with_another_per_try_cap_drops_the_round_and_is_retired(self):
+        """A reused main run made with another per-try cap is retired the same way: the cap moves scores."""
+        # GIVEN a booked main run made under another cap, WHEN two rounds run,
+        # THEN the first is dropped without a PR and the second re-runs main
+        self.assert_stale_main_retired({"FAKE_EXAM_CAP": "3.5"}, "max_budget_usd")
 
     def test_unbooked_main_run_is_not_reused(self):
         """A sealed main run that spend.jsonl does not name (one an improver could forge) is never reused."""
