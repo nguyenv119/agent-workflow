@@ -228,12 +228,13 @@ class LifecycleTest(AgentCase):
             # GIVEN a config dir whose .claude.json already holds a key
             cfg = Path(tmp) / "sessions"
             cfg.mkdir()
-            (cfg / ".claude.json").write_text('{"keep": 1}')
+            (cfg / ".claude.json").write_text('{"keep": 1, "projects": {"/other": {"x": 1}}}')
             # WHEN the trust command runs for /app/my repo
             subprocess.run(["bash", "-c", trust_cmd(cfg, "/app/my repo")], check=True)
             # THEN the repo is trusted and the old key survives
             data = json.loads((cfg / ".claude.json").read_text())
-            self.assertEqual(data, {"keep": 1, "projects": {"/app/my repo": {"hasTrustDialogAccepted": True}}})
+            self.assertEqual(data, {"keep": 1, "projects": {
+                "/other": {"x": 1}, "/app/my repo": {"hasTrustDialogAccepted": True}}})
             # AND it also works when no config exists yet
             (cfg / ".claude.json").unlink()
             subprocess.run(["bash", "-c", trust_cmd(cfg / "new", "/r")], check=True)
@@ -255,6 +256,18 @@ class LifecycleTest(AgentCase):
         self.assertIn("repo /app/betterleaks ", repo.command)
         self.assertEqual(env.commands("claude")[0].cwd, "/app/betterleaks")
         self.assertEqual({e.cwd for e in env.execs}, {"/app/betterleaks"})
+
+    def test_workdir_kwarg_rejects_shell_unsafe_paths(self):
+        """
+        Harbor's Daytona exec runs `cd {cwd} && ...` unquoted, so a workdir
+        with a space or `;` would break or inject every sandbox command.
+        """
+        # GIVEN / WHEN / THEN unsafe or relative workdirs are refused up front
+        for bad in ("/app/my repo", "/app;rm -rf /", "app/repo", "/app/$(id)"):
+            with self.subTest(bad=bad), self.assertRaisesRegex(ValueError, "workdir"):
+                self.make_agent(workdir=bad)
+        # AND a normal repo path is accepted
+        self.make_agent(workdir="/app/bun-1.2_x")
 
     def test_finish_runs_even_when_claude_fails(self):
         """

@@ -29,6 +29,7 @@ origin_url.txt, transcript.jsonl, result.json; `trial_export.py finalize
 <trial>` adds gates.txt after verify).
 """
 import os
+import re
 import shlex
 import subprocess
 import sys
@@ -89,6 +90,9 @@ class WorkflowAgent(ClaudeCode):
         self._model = _text(model)
         # The repo dir; None = the image's WORKDIR (betterleaks' is /app, its repo /app/betterleaks).
         self._repo: str | None = _text(workdir)
+        # Harbor's Daytona backend puts the exec cwd into `cd {cwd}` unquoted.
+        if self._repo is not None and not re.fullmatch(r"/[A-Za-z0-9._/-]+", self._repo):
+            raise ValueError(f"workdir must be an absolute path of [A-Za-z0-9._/-]: {self._repo!r}")
         self._bead: str | None = None
         # In -p mode a pending ScheduleWakeup keeps claude alive after /work is
         # done and re-sends its prompt when it fires (first Daytona run: ~29 min
@@ -178,8 +182,8 @@ class WorkflowAgent(ClaudeCode):
             "bead", repo, title, REMOTE / "instruction.md", self._run_name, self._exam_logs),
             timeout_sec=120)
         self._bead = result.stdout.strip().splitlines()[-1]
-        await self.exec_as_agent(environment, trust_cmd(self.environment_logs_dir / "sessions", repo))
         try:
+            await self.exec_as_agent(environment, trust_cmd(self.environment_logs_dir / "sessions", repo))
             await super().run(f"/work {self._bead}", environment, context)
         finally:
             await self.exec_as_agent(
