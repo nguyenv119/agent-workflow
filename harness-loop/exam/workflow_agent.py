@@ -13,7 +13,8 @@ handling, and around `claude` it:
     runs `setup_task.sh tools` as root and `setup_task.sh repo` as the agent
     user (`exam: base`, `exam: harness`, bare origin) in the task workdir;
   - run(): `setup_task.sh bead` (one bead from the instruction, EXAM_MODE),
-    then `claude -p "/work <bead>"` in the workdir, then finish_task.sh
+    marks the workdir trusted in claude's config (else project settings are
+    ignored), then `claude -p "/work <bead>"` in the workdir, then finish_task.sh
     (checks the bead branch out so the hidden tests grade it; writes
     end.sha/diff.patch), even when claude fails;
   - passes only trial_export.sandbox_env() into the sandbox (Bedrock by default)
@@ -51,6 +52,15 @@ OWN_KWARGS = ("harness_commit", "harness_addon", "model_access", "model", "title
               "test_command", "run_name")
 # sandbox_env values Harbor's scrubber must know about (it only reads agent env).
 SECRET_KEYS = ("AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "ANTHROPIC_API_KEY")
+
+
+def trust_cmd(config_dir, repo) -> str:
+    """Mark `repo` trusted in claude's config. Untrusted, `claude -p` ignores
+    the project's .claude/settings.json permissions (seen on Daytona)."""
+    f = shlex.quote(f"{config_dir}/.claude.json")
+    return (f"mkdir -p {shlex.quote(str(config_dir))} && {{ [ -s {f} ] || echo '{{}}' > {f}; }} && "
+            f"jq --arg p {shlex.quote(repo)} '.projects[$p].hasTrustDialogAccepted = true' {f} > {f}.tmp "
+            f"&& mv {f}.tmp {f}")
 
 
 def _text(value):
@@ -157,6 +167,7 @@ class WorkflowAgent(ClaudeCode):
             "bead", repo, title, REMOTE / "instruction.md", self._run_name, self._exam_logs),
             timeout_sec=120)
         self._bead = result.stdout.strip().splitlines()[-1]
+        await self.exec_as_agent(environment, trust_cmd(self.environment_logs_dir / "sessions", repo))
         try:
             await super().run(f"/work {self._bead}", environment, context)
         finally:

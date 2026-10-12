@@ -23,7 +23,7 @@ from harbor.models.agent.context import AgentContext  # noqa: E402
 from harbor.utils.env import is_sensitive_env_key  # noqa: E402
 
 import workflow_agent  # noqa: E402
-from workflow_agent import WorkflowAgent  # noqa: E402
+from workflow_agent import WorkflowAgent, trust_cmd  # noqa: E402
 
 BEDROCK = {"AWS_ACCESS_KEY_ID": "AKIA-bedrock", "AWS_SECRET_ACCESS_KEY": "bedrock-secret"}
 
@@ -198,6 +198,30 @@ class LifecycleTest(AgentCase):
         self.assertIn("/app/repo 'Fix the counter.'", bead.command)
         finish, = env.commands("finish_task.sh")
         self.assertTrue(finish.command.endswith("finish_task.sh /app/repo /logs/agent/exam"))
+        # AND the workdir was marked trusted in the session config claude uses
+        trust, = env.commands("hasTrustDialogAccepted")
+        self.assertIn("/logs/agent/sessions/.claude.json", trust.command)
+        self.assertIn("--arg p /app/repo", trust.command)
+
+    def test_trust_cmd_marks_the_repo_and_keeps_existing_config(self):
+        """
+        Untrusted, `claude -p` ignores the project's .claude/settings.json;
+        the trust step must set the flag without clobbering other config.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            # GIVEN a config dir whose .claude.json already holds a key
+            cfg = Path(tmp) / "sessions"
+            cfg.mkdir()
+            (cfg / ".claude.json").write_text('{"keep": 1}')
+            # WHEN the trust command runs for /app/my repo
+            subprocess.run(["bash", "-c", trust_cmd(cfg, "/app/my repo")], check=True)
+            # THEN the repo is trusted and the old key survives
+            data = json.loads((cfg / ".claude.json").read_text())
+            self.assertEqual(data, {"keep": 1, "projects": {"/app/my repo": {"hasTrustDialogAccepted": True}}})
+            # AND it also works when no config exists yet
+            (cfg / ".claude.json").unlink()
+            subprocess.run(["bash", "-c", trust_cmd(cfg / "new", "/r")], check=True)
+            self.assertTrue(json.loads((cfg / "new" / ".claude.json").read_text())["projects"]["/r"]["hasTrustDialogAccepted"])
 
     def test_finish_runs_even_when_claude_fails(self):
         """
