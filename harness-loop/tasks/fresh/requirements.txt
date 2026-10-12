@@ -1,0 +1,2 @@
+# SWE-gen 0.1.1 at the commit swegen_shim.PATCH_TARGETS was checked against.
+swegen @ git+https://github.com/abundant-ai/SWE-gen@14e185f413f7bff03f8f9fec6fb246681bf61d74

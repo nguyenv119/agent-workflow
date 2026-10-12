@@ -6,7 +6,8 @@
 #
 # 1. Prints the candidate count and estimated cost, and stops unless --confirm-budget
 #    is at least the estimate. Nothing is spent before this.
-# 2. Checks swegen, docker, GITHUB_TOKEN, GEMINI_API_KEY_DEV and the AWS key + region.
+# 2. Checks swegen, docker, GEMINI_API_KEY_DEV and the AWS key + region. GITHUB_TOKEN is
+#    optional (SWE-gen's PR fetch works unauthenticated, 60 GitHub calls/hour, ~11 per task).
 # 3. Per candidate (the first --limit N, default all): `swegen create` through
 #    swegen_shim.py, in a scratch folder, under `env -i` with only an allowlisted env.
 #    SWE-gen exits non-zero unless its own nop=0 / oracle=1 validation passes; only
@@ -59,8 +60,6 @@ CODE=4
 command -v swegen >/dev/null 2>&1 \
   || die "swegen is not installed. Installing it (uv pip install swegen) needs Long's OK."
 command -v docker >/dev/null 2>&1 || die "docker is required by swegen create"
-[ -n "${GITHUB_TOKEN:-}" ] \
-  || die "set GITHUB_TOKEN to a fine-grained, read-only, public-repositories token (see README)"
 [ -n "${GEMINI_API_KEY_DEV:-}" ] || die "set GEMINI_API_KEY_DEV (the instruction writer runs on Gemini)"
 for v in AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_REGION; do
   [ -n "${!v:-}" ] || die "set $v (the build session runs on Bedrock)"
@@ -71,7 +70,6 @@ CODE=2
 # off, so nothing else (admin keys, other tokens, personal logins) may reach it.
 CHILD_ENV=(
   "PATH=$PATH" "HOME=$HOME" "TMPDIR=${TMPDIR:-/tmp}"
-  "GITHUB_TOKEN=$GITHUB_TOKEN"
   "OPENAI_BASE_URL=${OPENAI_BASE_URL:-https://generativelanguage.googleapis.com/v1beta/openai/}"
   "OPENAI_API_KEY=$GEMINI_API_KEY_DEV"
   "SWEGEN_LLM_MODEL=${SWEGEN_LLM_MODEL:-gemini-pro-latest}"
@@ -81,6 +79,8 @@ CHILD_ENV=(
   "AWS_REGION=$AWS_REGION"
 )
 [ -n "${AWS_SESSION_TOKEN:-}" ] && CHILD_ENV+=("AWS_SESSION_TOKEN=$AWS_SESSION_TOKEN")
+# Never the gh login: set GITHUB_TOKEN yourself, to a fine-grained read-only public-repo token.
+[ -n "${GITHUB_TOKEN:-}" ] && CHILD_ENV+=("GITHUB_TOKEN=$GITHUB_TOKEN")
 while IFS= read -r v; do
   case "$v" in SWEGEN_LLM_MODEL|SWEGEN_CLAUDE_MODEL) ;; *) CHILD_ENV+=("$v=${!v}") ;; esac
 done < <(compgen -e | grep '^SWEGEN_' || true)

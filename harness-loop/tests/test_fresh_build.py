@@ -176,10 +176,20 @@ class BuildShLoopTest(Tmp):
         self.assertIn("1 candidates", r.stdout)
         self.assertEqual(len(envs), 1, r.stdout + r.stderr)
 
-    def test_missing_credentials_stop_before_any_task(self):
-        """GITHUB_TOKEN (no gh login fallback) and the AWS key + region are required up front."""
+    def test_no_github_token_means_none_reaches_the_child(self):
+        """GITHUB_TOKEN is optional and never filled from the gh login."""
+        # GIVEN no GITHUB_TOKEN in the parent env
         p = self.candidates([cand()])
-        for var in ("GITHUB_TOKEN", "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_REGION"):
+        # WHEN build.sh runs one task
+        r, envs, _ = self.build("--candidates", str(p), "--confirm-budget", "12", drop=("GITHUB_TOKEN",))
+        # THEN the task runs without any GitHub token
+        self.assertEqual(len(envs), 1, r.stdout + r.stderr)
+        self.assertNotIn("GITHUB_TOKEN", envs[0])
+
+    def test_missing_credentials_stop_before_any_task(self):
+        """The Gemini key and the AWS key + region are required up front."""
+        p = self.candidates([cand()])
+        for var in ("GEMINI_API_KEY_DEV", "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_REGION"):
             with self.subTest(var=var):
                 # GIVEN the var unset
                 # WHEN build.sh runs with a confirmed budget

@@ -24,6 +24,9 @@ model's training cutoff, so a score on them can't come from a remembered answer.
 once a month (the window is the last three months; `--to` names the set):
 
 ```
+uv venv harness-loop/.venv --python 3.12                                         # once
+VIRTUAL_ENV=harness-loop/.venv uv pip install -r harness-loop/tasks/fresh/requirements.txt
+export PATH="$PWD/harness-loop/.venv/bin:$PATH"                                  # swegen + harbor
 python3 harness-loop/tasks/fresh/pick_prs.py --from 2026-08-01 --to 2026-10-31   # free
 harness-loop/tasks/fresh/build.sh                                                # prints count + cost, spends nothing
 harness-loop/tasks/fresh/build.sh --limit 3 --confirm-budget <usd>               # paid: small first batch
@@ -43,13 +46,15 @@ time x `--usd-per-hour` (default $13.50/hour, i.e. $12 for SWE-gen's default 320
 session timeout). It needs `swegen` and docker installed, and resumes a stopped run (ids
 in `passed.txt` / `failed.txt` there are skipped).
 
-Before any paid work `build.sh` requires `GITHUB_TOKEN`, `GEMINI_API_KEY_DEV`,
-`AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` and `AWS_REGION`. Set `GITHUB_TOKEN` to a
-fine-grained token with read-only access to public repositories only; `build.sh` never
-falls back to your `gh` login. SWE-gen's Claude session runs with permission checks off,
+Before any paid work `build.sh` requires `GEMINI_API_KEY_DEV`, `AWS_ACCESS_KEY_ID`,
+`AWS_SECRET_ACCESS_KEY` and `AWS_REGION`. `GITHUB_TOKEN` is optional: SWE-gen's PR
+fetch works unauthenticated (GitHub allows 60 calls an hour; a task makes about 11). If
+you set it, use a fine-grained token with read-only access to public repositories only;
+`build.sh` never falls back to your `gh` login. SWE-gen's Claude session runs with permission checks off,
 so it is started under `env -i` with only those variables (plus `PATH`, `HOME`, `TMPDIR`,
 `AWS_SESSION_TOKEN` if set, and any `SWEGEN_*`), from a scratch folder under the cache.
 
+SWE-gen is pinned in `fresh/requirements.txt` (0.1.1, commit 14e185f).
 Differences from upstream SWE-gen: `build.sh` runs it through `fresh/swegen_shim.py`.
 The task instructions are written by Gemini (`gemini-pro-latest` through Gemini's
 OpenAI-compatible endpoint), not gpt-5.5, so instruction text differs from upstream
