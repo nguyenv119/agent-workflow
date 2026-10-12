@@ -21,13 +21,15 @@ handling, and around `claude` it:
     and registers its secrets as agent env so Harbor's trial-dir scrubber
     redacts them;
   - post-run: sets cost_usd from total_cost_usd (includes subagents) and writes
-    logs/exam/result.json + transcript.jsonl (trial_export.write_result).
+    logs/exam/result.json (with the HARNESS_VERSION install() packed) +
+    transcript.jsonl (trial_export.write_result).
 Trial logs: agent/claude-code.txt (stream-json), agent/sessions/projects/**
 (parent + subagent transcripts), agent/tries/ (coordinator try folders),
 agent/exam/ (start.sha, end.sha, diff.patch, base.sha, bead.txt, branch.txt,
 origin_url.txt, transcript.jsonl, result.json; `trial_export.py finalize
 <trial>` adds gates.txt after verify).
 """
+import json
 import os
 import re
 import shlex
@@ -94,6 +96,7 @@ class WorkflowAgent(ClaudeCode):
         if self._repo is not None and not re.fullmatch(r"/[A-Za-z0-9._/-]+", self._repo):
             raise ValueError(f"workdir must be an absolute path of [A-Za-z0-9._/-]: {self._repo!r}")
         self._bead: str | None = None
+        self._harness_version: dict | None = None  # the installed .claude/HARNESS_VERSION
         # In -p mode a pending ScheduleWakeup keeps claude alive after /work is
         # done and re-sends its prompt when it fires (first Daytona run: ~29 min
         # idle, then a second `/work` turn). Background-agent completions
@@ -135,6 +138,7 @@ class WorkflowAgent(ClaudeCode):
         if self._harness_addon:
             cmd += ["--addon", self._harness_addon]
         subprocess.run(cmd, check=True, capture_output=True, text=True)
+        self._harness_version = json.loads((target / ".claude/HARNESS_VERSION").read_text())
         tarball = out_dir / "harness.tgz"
         with tarfile.open(tarball, "w:gz") as tar:
             for name in (".claude", "AGENTS.md"):
@@ -193,6 +197,7 @@ class WorkflowAgent(ClaudeCode):
 
     def populate_context_post_run(self, context: AgentContext) -> None:
         super().populate_context_post_run(context)
-        result = trial_export.write_result(self.logs_dir, self._bead, self._harness_commit)
+        result = trial_export.write_result(self.logs_dir, self._bead, self._harness_commit,
+                                           self._harness_version)
         if result["total_cost_usd"] is not None:
             context.cost_usd = float(result["total_cost_usd"])

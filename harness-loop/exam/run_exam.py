@@ -4,21 +4,30 @@
     run_exam.py --harness <ref|sha> --tasks <manifest> --budget-usd X
                 [--screen] [--tries N] [--agent workflow|oracle|nop|controls]
                 [--kind baseline|candidate|harm|controls|pick] [--model opus|sonnet|<id>]
-                [--max-budget-usd 12.05] [--concurrency K] [--env docker|daytona]
+                [--max-budget-usd 12.05] [--concurrency K] [--env docker|daytona] [--addon <dir>]
 
 Each task x try runs `harbor run` (WorkflowAgent, or Harbor's own oracle / nop
 agents; `controls` runs both) and becomes a try folder made by
 .claude/skills/coordinator/save_try.py --from-files, with the coordinator's own
 try folders under inner/ and a result.json:
   {task, try, status: ok|budget_cut|error, reward, cost_usd, wall_s, harness_commit,
-   model, origin_url, bead_branch_in_origin, exam_no_pr_line, harbor_trial_dir}
+   harness_version, model, origin_url, bead_branch_in_origin, exam_no_pr_line, harbor_trial_dir}
 Rewards count only status ok tries. A workflow try is an error when its
-recorded harness_commit is not the requested sha. One with no cost (killed
+recorded harness_commit is not the requested sha, or its harness_version (the
+.claude/HARNESS_VERSION its own install wrote, from agent/exam/result.json)
+differs from the preflight install's. One with no cost (killed
 before claude's result line) is booked at max_budget_usd with cost_unknown.
 A try whose filing raises is saved as an error and the run marked incomplete.
 Exit 1 when every try errored (the run is still sealed).
 
-Layout: $HARNESS_LOOP_HOME (default ~/.harness-loop)/runs/<run-id>/
+--addon <dir>: an add-on dir (e.g. a private one holding a private task set)
+installed over the harness by the preflight install and by WorkflowAgent
+(`--ak harness_addon=<abs dir>`). The preflight install's .claude/HARNESS_VERSION
+({commit, addon, addon_sha256}) is recorded as harness_version in run.json; each
+workflow result.json records the try's own (a crashed try: the preflight's). Oracle/nop/controls install no harness: harness_version is
+null there and --addon is only recorded (run.json `addon`).
+
+Layout: $HARNESS_LOOP_HOME (default ~/.harness-loop; an --addon run refuses that default)/runs/<run-id>/
   run.json  summary.json  summary.sha256  <task>/try-<n>/  harbor/ (Harbor's job dirs)
   (controls: <agent>/<task>/try-<n>/). run-id = <utc-date>-<sha7>-<set>[-screen][-<agent>],
   plus -2, -3 ... when that dir exists. At the end the run is sealed (compare.seal)
@@ -198,6 +207,8 @@ def harbor_cmd(args, task, agent, jobs_dir, job_name, sha, run_id):
           "workdir": task["workdir"], "model": MODELS.get(args.model, args.model), "run_name": run_id}
     if task["test_command"]:
         kw["test_command"] = task["test_command"]
+    if args.addon:
+        kw["harness_addon"] = args.addon
     for k, v in kw.items():
         cmd += ["--ak", f"{k}={v}"]
     return cmd
@@ -271,7 +282,8 @@ def run_try(ctx, task, n, agent):
             status = "ok" if trial else "error"
         if status == "ok" and reward is None:
             status = "error"
-        if agent == "workflow" and exam.get("harness_commit") != ctx["sha"]:
+        if agent == "workflow" and (exam.get("harness_commit") != ctx["sha"]
+                                    or exam.get("harness_version") != ctx["harness_version"]):
             status = "error"  # the agent ran some other harness (or left no record of it)
         cost_unknown = False
         if agent == "workflow":
@@ -296,6 +308,7 @@ def run_try(ctx, task, n, agent):
         "task": task["id"], "try": int(folder.name.split("-")[1]), "agent": agent, "status": status,
         "reward": reward, "cost_usd": cost, "cost_unknown": cost_unknown, "wall_s": wall,
         "harness_commit": exam.get("harness_commit") or ctx["sha"],
+        "harness_version": exam.get("harness_version") if agent == "workflow" else None,
         "model": MODELS.get(ctx["args"].model, ctx["args"].model) if agent == "workflow" else None,
         "origin_url": exam.get("origin_url"), "bead_branch_in_origin": bool(exam.get("branch")),
         "exam_no_pr_line": bool(exam.get("exam_no_pr_line")),
@@ -356,7 +369,8 @@ def crashed_try(ctx, job, exc):
     cost = ctx["args"].max_budget_usd if agent == "workflow" else 0.0
     result = {"task": task["id"], "try": k, "agent": agent, "status": "error", "reward": None,
               "cost_usd": cost, "cost_unknown": agent == "workflow", "wall_s": None,
-              "harness_commit": ctx["sha"], "error": repr(exc)}
+              "harness_commit": ctx["sha"], "error": repr(exc),
+              "harness_version": ctx["harness_version"] if agent == "workflow" else None}
     (folder / "result.json").write_text(json.dumps(result, indent=2) + "\n")
     return result
 
@@ -413,7 +427,16 @@ def main(argv=None):
     ap.add_argument("--max-budget-usd", type=float, default=12.05)
     ap.add_argument("--concurrency", type=int, help="default: what fits in Docker, or 1 on daytona")
     ap.add_argument("--env", default="docker", choices=["docker", "daytona"])
+    ap.add_argument("--addon")
     args = ap.parse_args(argv)
+    if args.addon:
+        args.addon = str(Path(args.addon).resolve())
+        if not Path(args.addon).is_dir():
+            sys.exit(f"run_exam: add-on dir not found: {args.addon}")
+        loop_home = (Path.home() / ".harness-loop").resolve()
+        if Path(os.environ.get("HARNESS_LOOP_HOME", loop_home)).resolve() == loop_home:
+            sys.exit("run_exam: an --addon run is private: set HARNESS_LOOP_HOME to a private dir, "
+                     "never ~/.harness-loop (the improver reads its runs/)")
     if args.env == "docker":
         cpus, memory_mb = docker_capacity()
         args.sandbox_cap = (cpus, memory_mb - DOCKER_RESERVE_MB)
@@ -427,11 +450,14 @@ def main(argv=None):
     tasks = [t for t in data["tasks"] if t["screen"] or not args.screen]
     if not tasks:
         sys.exit(f"run_exam: no {'screen ' if args.screen else ''}tasks in {args.tasks}")
+    harness_version = None
     if args.agent == "workflow":
         # Fail before any spend if the harness at this sha does not install.
         with tempfile.TemporaryDirectory(prefix="exam-harness-") as tmp:
             subprocess.run([sys.executable, str(INSTALLER), "--repo", str(AW_ROOT), "--commit", sha,
-                            "--target", tmp], check=True, capture_output=True, text=True)
+                            "--target", tmp, *(["--addon", args.addon] if args.addon else [])],
+                           check=True, capture_output=True, text=True)
+            harness_version = json.loads((Path(tmp) / ".claude/HARNESS_VERSION").read_text())
 
     date = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d")
     base = f"{date}-{sha[:7]}-{data['set']}{'-screen' if args.screen else ''}"
@@ -442,7 +468,7 @@ def main(argv=None):
     controls = args.agent == "controls"
     meta = {"run_id": run.name, "kind": args.kind or ("controls" if args.agent != "workflow" else "candidate"),
             "harness_ref": args.harness, "branch": branch_of(AW_ROOT, args.harness), "harness_commit": sha,
-            "set": data["set"], "manifest": str(Path(args.tasks).resolve()), "screen": args.screen,
+            "harness_version": harness_version, "addon": args.addon, "set": data["set"], "manifest": str(Path(args.tasks).resolve()), "screen": args.screen,
             "agent": args.agent, "model": MODELS.get(args.model, args.model) if args.agent == "workflow" else None,
             "tries": args.tries, "tasks": sorted(t["id"] for t in tasks), "budget_usd": args.budget_usd,
             "max_budget_usd": args.max_budget_usd, "env": args.env, "concurrency": args.concurrency,
@@ -451,7 +477,7 @@ def main(argv=None):
     (run / "run.json").write_text(json.dumps(meta, indent=2) + "\n")
     agents = ["oracle", "nop"] if controls else [args.agent]
     jobs = [(t, n, a) for n in range(1, args.tries + 1) for t in tasks for a in agents]
-    ctx = {"args": args, "run": run, "sha": sha, "controls": controls}
+    ctx = {"args": args, "run": run, "sha": sha, "controls": controls, "harness_version": harness_version}
     results = finish(ctx, meta, schedule(ctx, jobs))
     if results and all(r["status"] == "error" for r in results):
         sys.exit("run_exam: every try errored")

@@ -317,6 +317,24 @@ class PostRunTest(AgentCase):
         self.assertEqual((logs / "exam" / "transcript.jsonl").read_text(),
                          (session / "s-1.jsonl").read_text())
 
+    def test_pack_harness_keeps_the_installed_version_for_the_export(self):
+        """
+        Each trial installs the harness itself; the version it actually
+        installed (commit + add-on hash) must reach exam/result.json so
+        run_exam can reject a try that ran something else.
+        """
+        # GIVEN an agent that packed the harness at HEAD
+        agent = self.make_agent()
+        with tempfile.TemporaryDirectory() as tmp:
+            agent._pack_harness(Path(tmp))
+            installed = json.loads((Path(tmp) / "harness/.claude/HARNESS_VERSION").read_text())
+        self.assertEqual(installed["commit"], agent._harness_commit)
+        # WHEN post-run writes the export
+        agent.populate_context_post_run(AgentContext())
+        # THEN it records exactly that version
+        self.assertEqual(json.loads((agent.logs_dir / "exam" / "result.json").read_text())["harness_version"],
+                         installed)
+
     def test_post_run_without_result_line_leaves_cost_unset(self):
         """A run killed before its result line has no cost: None, never 0."""
         # GIVEN logs with no stream at all

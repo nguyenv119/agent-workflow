@@ -8,6 +8,7 @@ run_exam passes Harbor only an allowlisted env. A fake `docker` (EXAM_DOCKER)
 answers `docker info` like a 10-CPU / 7.65 GiB Docker Desktop, lists the
 containers in its own spec file, and logs every call.
 """
+import hashlib
 import json
 import os
 import shutil
@@ -74,11 +75,21 @@ FAKE_HARBOR = textwrap.dedent('''\
         (exam / name).write_text(text + "\\n")
     (agent_dir / "claude-code.txt").write_text('{"type": "result"}\\n')
     subtype = spec.get("subtype", "success")
+    if "harness_version" in spec:
+        version = spec["harness_version"]
+    else:  # what WorkflowAgent._pack_harness records: a real install of the same kwargs
+        import subprocess, tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            cmd = [sys.executable, INSTALLER, "--repo", AW_ROOT, "--commit", ak["harness_commit"], "--target", tmp]
+            if "harness_addon" in ak:
+                cmd += ["--addon", ak["harness_addon"]]
+            subprocess.run(cmd, check=True, capture_output=True)
+            version = json.loads((Path(tmp) / ".claude/HARNESS_VERSION").read_text())
     (exam / "result.json").write_text(json.dumps({
         "harness_commit": spec.get("harness_commit", ak["harness_commit"]), "branch": branch or None,
         "origin_url": "file:///tmp/origin.git",
         "status": {"success": "ok", "error_max_budget_usd": "budget_cut"}.get(subtype, "error"),
-        "total_cost_usd": cost, "exam_no_pr_line": True}))
+        "total_cost_usd": cost, "exam_no_pr_line": True, "harness_version": version}))
     inner = agent_dir / "tries/app/exam-1/try-1"
     inner.mkdir(parents=True)
     (inner / "note.md").write_text("inner try\\n")
@@ -108,7 +119,8 @@ class RunExamTest(unittest.TestCase):
         self.root = Path(tempfile.mkdtemp())
         self.home = self.root / "home"
         self.fake = self.root / "fake_harbor.py"
-        self.fake.write_text(FAKE_HARBOR)
+        self.fake.write_text(FAKE_HARBOR.replace("INSTALLER, ", f"{str(run_exam.INSTALLER)!r}, ", 1)
+                             .replace("AW_ROOT, ", f"{str(run_exam.AW_ROOT)!r}, ", 1))
         self.log = self.root / "harbor.log"
         self.spec = self.root / "spec.json"
         self.spec.write_text("{}")
@@ -309,6 +321,27 @@ class RunExamTest(unittest.TestCase):
         res = self.results(self.only_run())
         self.assertEqual((res["t1"]["status"], res["t2"]["status"]), ("error", "ok"))
 
+    def test_try_that_installed_another_harness_version_is_an_error(self):
+        """
+        Each try installs the harness itself; if its installed HARNESS_VERSION
+        (e.g. a different add-on hash) differs from the preflight's, the try
+        did not sit the exam this run claims and must not be scored.
+        """
+        # GIVEN t1's agent recorded another add-on hash, t2's matches, t3 recorded none
+        m = self.manifest({"t1": 2, "t2": 2, "t3": 2})
+        other = {"commit": self.sha, "addon": "/elsewhere", "addon_sha256": "0" * 64}
+        self.spec.write_text(json.dumps({"t1": {"harness_version": other}, "t3": {"harness_version": None}}))
+        # WHEN run_exam runs
+        self.run_exam("--tasks", m, "--budget-usd", 100)
+        # THEN t1 and t3 are errors carrying their own versions, t2 is ok
+        run = self.only_run()
+        res = self.results(run)
+        meta = json.loads((run / "run.json").read_text())
+        self.assertEqual([res[t]["status"] for t in ("t1", "t2", "t3")], ["error", "ok", "error"])
+        self.assertEqual(res["t1"]["harness_version"], other)
+        self.assertIsNone(res["t3"]["harness_version"])
+        self.assertEqual(res["t2"]["harness_version"], meta["harness_version"])
+
     def test_every_try_errored_exits_nonzero(self):
         """A run where nothing worked must not look like a run that scored 0."""
         # GIVEN one task whose verifier gives no reward
@@ -332,6 +365,9 @@ class RunExamTest(unittest.TestCase):
         run = self.only_run()
         res = self.results(run)
         self.assertEqual((res["t1"]["status"], res["t2"]["status"]), ("error", "ok"))
+        # AND the crashed try still names the harness version the run installed
+        self.assertEqual(res["t1"]["harness_version"], json.loads((run / "run.json").read_text())["harness_version"])
+        self.assertIsNotNone(res["t1"]["harness_version"])
         self.assertEqual(json.loads((run / "run.json").read_text())["status"], "incomplete")
         self.assertEqual((run / "summary.sha256").read_text(), compare.listing(run))
 
@@ -577,6 +613,99 @@ class RunExamTest(unittest.TestCase):
         self.assertEqual(run_exam.branch_of(repo, "exam-control/planted-harm"), "exam-control/planted-harm")
         self.assertIsNone(run_exam.branch_of(repo, sha))
         self.assertIsNone(run_exam.branch_of(repo, "HEAD"))
+
+    def addon_dir(self):
+        """An add-on with one skill and a private task folder listed in .installignore."""
+        addon = self.root / "addon"
+        (addon / "skills").mkdir(parents=True)
+        (addon / "skills/x.md").write_text("X")
+        (addon / "private/t1").mkdir(parents=True)
+        (addon / "private/t1/hidden.txt").write_text("hidden")
+        (addon / ".installignore").write_text("private\n")
+        data = b"X"
+        want = hashlib.sha256(b"skills/x.md\0" + str(len(data)).encode() + b"\0" + data).hexdigest()
+        return addon, want
+
+    def test_addon_reaches_harbor_and_its_hash_is_recorded(self):
+        """
+        A private task set runs under the harness plus an add-on. The add-on
+        must reach WorkflowAgent, and the installed HARNESS_VERSION (with the
+        add-on hash) must be in run.json and every result.json, or a result
+        could not say which add-on produced it.
+        """
+        # GIVEN two tasks and an add-on
+        m = self.manifest({"t1": 2, "t2": 2})
+        addon, want = self.addon_dir()
+        # WHEN run_exam runs with --addon
+        self.run_exam("--tasks", m, "--budget-usd", 100, "--addon", addon)
+        # THEN every harbor call carries --ak harness_addon=<abs dir>
+        for a in self.argvs():
+            self.assertIn(f"harness_addon={addon.resolve()}", a)
+        # AND run.json and every result.json record the installed version
+        run = self.only_run()
+        meta = json.loads((run / "run.json").read_text())
+        self.assertEqual(meta["harness_version"],
+                         {"commit": self.sha, "addon": str(addon.resolve()), "addon_sha256": want})
+        self.assertEqual(meta["addon"], str(addon.resolve()))
+        for r in self.results(run).values():
+            self.assertEqual(r["harness_version"], meta["harness_version"])
+
+    def test_workflow_run_without_addon_records_null_addon_hash(self):
+        """Without --addon the version still names the commit, with a null add-on hash."""
+        # GIVEN one task
+        m = self.manifest({"t1": 2})
+        # WHEN run_exam runs without --addon
+        self.run_exam("--tasks", m, "--budget-usd", 100)
+        # THEN no harness_addon kwarg and the version has null add-on fields
+        self.assertFalse(any(x.startswith("harness_addon=") for x in self.argvs()[0]))
+        r = self.results(self.only_run())["t1"]
+        self.assertEqual(r["harness_version"], {"commit": self.sha, "addon": None, "addon_sha256": None})
+
+    def test_controls_run_with_addon_records_null_harness_version(self):
+        """Oracle and nop install no harness, so their version is null; the add-on is still recorded."""
+        # GIVEN one task and an add-on
+        m = self.manifest({"t1": 2})
+        addon, _ = self.addon_dir()
+        # WHEN a controls run is given --addon
+        self.run_exam("--tasks", m, "--budget-usd", 10, "--agent", "controls", "--addon", addon)
+        # THEN run.json and both results have a null harness_version, and no kwarg reached harbor
+        run = self.only_run()
+        meta = json.loads((run / "run.json").read_text())
+        self.assertIsNone(meta["harness_version"])
+        self.assertEqual(meta["addon"], str(addon.resolve()))
+        for agent in ("oracle", "nop"):
+            self.assertIsNone(json.loads((run / agent / "t1/try-1/result.json").read_text())["harness_version"])
+        self.assertFalse(any(x.startswith("harness_addon=") for a in self.argvs() for x in a))
+
+    def test_missing_addon_dir_exits_before_any_run(self):
+        """A mistyped --addon must fail before spend, not run the exam without it."""
+        # GIVEN one task and a path that does not exist
+        m = self.manifest({"t1": 2})
+        # WHEN run_exam runs / THEN it exits non-zero and Harbor never ran
+        p = self.run_exam("--tasks", m, "--budget-usd", 100, "--addon", self.root / "nope", check=False)
+        self.assertNotEqual(p.returncode, 0)
+        self.assertFalse(self.log.exists())
+
+    def test_addon_run_in_the_default_loop_home_is_refused(self):
+        """
+        The improver reads ~/.harness-loop/runs/ and writes public PRs, so a
+        private (--addon) run must never land there: run_exam refuses before
+        any Harbor call.
+        """
+        # GIVEN HARNESS_LOOP_HOME that is the user's default ~/.harness-loop
+        m = self.manifest({"t1": 2})
+        addon, _ = self.addon_dir()
+        user = self.root / "user"
+        user.mkdir()
+        (user / ".harness-loop").symlink_to(self.home)
+        # WHEN run_exam runs with --addon
+        p = self.run_exam("--tasks", m, "--budget-usd", 100, "--addon", addon, check=False,
+                          extra_env={"HOME": str(user)})
+        # THEN refused naming the rule, Harbor never ran, no run dir
+        self.assertNotEqual(p.returncode, 0)
+        self.assertIn("HARNESS_LOOP_HOME", p.stderr)
+        self.assertFalse(self.log.exists())
+        self.assertFalse((self.home / "runs").exists() and any((self.home / "runs").iterdir()))
 
 
 if __name__ == "__main__":

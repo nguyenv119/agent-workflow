@@ -347,7 +347,6 @@ class InstallHarnessTest(unittest.TestCase):
         self.assertEqual(result.returncode, 2)
         self.assertFalse(target.exists())
 
-
     def test_symlinked_dir_in_target_is_refused_before_writing(self):
         """
         Real targets link some .claude/skills/* dirs into a nested repo. An
@@ -492,6 +491,98 @@ class InstallHarnessTest(unittest.TestCase):
         self.assertEqual(result.returncode, 2)
         self.assertIn("add-on dir", result.stderr)
         self.assertEqual(tree_hashes(target), before)
+
+    def test_installignore_keeps_private_task_folders_out_of_install_and_hash(self):
+        """
+        A private add-on dir may also hold exam task folders (hidden tests plus
+        the reference fix). Prefixes listed in .installignore, and the file
+        itself, must not be installed into the agent's sandbox and must not
+        change addon_sha256; otherwise the agent could read its own grader and
+        rebuilding a task would change the harness version label.
+        """
+        # GIVEN an add-on with a skill, a private task dir, a private file and an .installignore
+        addon = self.tmp / "addon"
+        (addon / "skills").mkdir(parents=True)
+        (addon / "skills/a.md").write_text("A")
+        (addon / "sidecheck/task1/tests").mkdir(parents=True)
+        (addon / "sidecheck/task1/tests/hidden.test.js").write_text("secret test")
+        (addon / "notes.md").write_text("private")
+        (addon / "sidecheck2").mkdir()
+        (addon / "sidecheck2/kept.md").write_text("kept: prefix match is per path part")
+        (addon / ".installignore").write_text("# private tasks\n\nsidecheck/\nnotes.md\n")
+        target = self.tmp / "t"
+        # WHEN installed with the add-on
+        self.install(self.sha1, target, "--addon", str(addon))
+        # THEN the ignored files and .installignore are absent from the target and the manifest
+        manifest = (target / ".claude/HARNESS_MANIFEST").read_text()
+        for rel in ("sidecheck/task1/tests/hidden.test.js", "notes.md", ".installignore"):
+            self.assertFalse((target / ".claude" / rel).exists(), rel)
+            self.assertNotIn(f".claude/{rel}\n", manifest)
+        self.assertTrue((target / ".claude/skills/a.md").is_file())
+        self.assertTrue((target / ".claude/sidecheck2/kept.md").is_file())
+        # AND the hash equals the hash of the add-on without the ignored files
+        bare = self.tmp / "bare"
+        (bare / "skills").mkdir(parents=True)
+        (bare / "skills/a.md").write_text("A")
+        (bare / "sidecheck2").mkdir()
+        (bare / "sidecheck2/kept.md").write_text("kept: prefix match is per path part")
+        version = json.loads((target / ".claude/HARNESS_VERSION").read_text())
+        self.assertEqual(version["addon_sha256"], addon_hash(bare))
+
+
+    def addon_with_ignore(self, ignore, extra=()):
+        addon = self.tmp / "addon"
+        (addon / "skills").mkdir(parents=True)
+        (addon / "skills/a.md").write_text("A")
+        for rel in extra:
+            (addon / rel).parent.mkdir(parents=True, exist_ok=True)
+            (addon / rel).write_text("x")
+        (addon / ".installignore").write_text(ignore)
+        return addon
+
+    def test_unignored_private_task_folder_is_refused(self):
+        """
+        A private task folder (it has a task.toml) that .installignore does not
+        cover would ship its hidden tests and reference fix into the agent's
+        sandbox. Refuse rather than install it.
+        """
+        # GIVEN an add-on whose task folder sits outside every ignored prefix
+        addon = self.addon_with_ignore("private/\n", extra=("private/t0/task.toml", "tasks/t1/task.toml",
+                                                             "tasks/t1/tests/hidden.test.js"))
+        target = self.tmp / "t"
+        # WHEN installed
+        result = self.install(self.sha1, target, "--addon", str(addon), check=False)
+        # THEN exit 2 naming the file, and nothing written
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("tasks/t1/task.toml", result.stderr)
+        self.assertFalse(target.exists())
+
+    def test_installignore_line_matching_nothing_is_refused(self):
+        """A typo in .installignore (e.g. `sidechek/`) would silently ignore nothing; refuse it."""
+        # GIVEN an ignore line naming no add-on file
+        addon = self.addon_with_ignore("private/\nsidechek/\n", extra=("private/x.md",))
+        target = self.tmp / "t"
+        # WHEN installed / THEN exit 2 naming the line, nothing written
+        result = self.install(self.sha1, target, "--addon", str(addon), check=False)
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("sidechek", result.stderr)
+        self.assertFalse(target.exists())
+
+    def test_installignore_absolute_or_parent_line_is_refused(self):
+        """Ignore lines are add-on-relative prefixes; `/x` or `..` cannot mean that."""
+        for line in ("/private", "private/../skills", ".."):
+            with self.subTest(line=line):
+                # GIVEN an ignore line that is absolute or climbs out
+                addon = self.addon_with_ignore(f"{line}\n", extra=("private/x.md",))
+                target = self.tmp / "t"
+                # WHEN installed / THEN exit 2 naming the line, nothing written
+                result = self.install(self.sha1, target, "--addon", str(addon), check=False)
+                self.assertEqual(result.returncode, 2)
+                self.assertIn(line, result.stderr)
+                self.assertIn("add-on-relative", result.stderr)
+                self.assertFalse(target.exists())
+                run(["rm", "-rf", str(addon)], "/")
+
 
 if __name__ == "__main__":
     unittest.main()

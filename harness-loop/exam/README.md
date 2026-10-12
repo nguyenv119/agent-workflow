@@ -136,6 +136,15 @@ as unsolved at the full cap. The screen also fails on more candidate errors or a
 candidate run (details in `controls.md`). Harbor gets only an allowlisted host env (`HARBOR_ENV` in
 `run_exam.py`), so whoever launches a run cannot change what it measures.
 
+A private task set (built with `tasks/build_from_pr.py`) runs with its add-on:
+`HARNESS_LOOP_HOME=<private dir> run_exam.py --tasks <private manifest> --addon <add-on dir>`. An add-on run
+refuses the default `~/.harness-loop`, whose `runs/` the improver reads. The add-on reaches the
+preflight install and WorkflowAgent (`harness_addon`); list the add-on's task folders in its
+`.installignore` so they never enter the sandbox. The installed `HARNESS_VERSION` (commit and
+`addon_sha256`) is recorded as `harness_version` in run.json; each workflow result.json
+records the version that try's own install wrote, and a try whose version differs from the
+preflight's is status `error`.
+
 Task folders come from the manifest's `cache/` (git-ignored); in a worktree, symlink it from the
 main clone. A task asking for more CPUs or memory than one sandbox has is capped to it: on daytona
 4 CPUs and 8 GiB, on docker the engine's CPUs and its memory less 1 GiB.

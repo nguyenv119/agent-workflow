@@ -49,7 +49,7 @@ Your message lists the paths you need: `skill`, `worktree` (your branch, already
    developer working on many unfamiliar repos? No parameter tweaks (a count, a timeout, a
    threshold) without a new mechanism behind them.
 7. **Do not repeat a failed idea.** If a history row with the same idea says `dropped`,
-   `rejected`, `screen-fail`, `closed` or a `full` verdict of `lose`/`tie`, either pick
+   `rejected`, `screen-fail`, `side-fail`, `closed` or a `full` verdict of `lose`/`tie`, either pick
    another idea or name in `Risk:` what is different this time.
 8. **Never remove or weaken a quality gate, reviewer or test** (Long, 12 Oct 2026). No
    deleting or loosening a reviewer, the test-runner, a standards rule, a Quality Gates step,

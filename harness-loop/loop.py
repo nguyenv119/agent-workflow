@@ -2,7 +2,8 @@
 """The harness loop: one improvement round at a time, checked and scored by scripts, never by Claude.
 
     loop.py round --tasks <manifest> [--improver-cmd CMD] [--no-screen] [--budget-usd X]
-                  [--improver-budget-usd Y]
+                  [--improver-budget-usd Y] [--sidecheck <manifest> --sidecheck-addon <dir>
+                  [--sidecheck-env docker|daytona] [--sidecheck-budget-usd Z]]
     loop.py monthly [--budget-usd X]
     loop.py sync
     loop.py guard <commit> [--base <ref>]
@@ -19,19 +20,26 @@ Idea: line and >= 2 try folders on disk; load check); then, unless --no-screen, 
 candidate against main with run_exam.py --screen and compare.py --screen-rule, push, and open
 one PR whose score block is written here from compare's output. Screen pass: ready PR, queued.
 Screen fail: draft PR titled "[screen fail] ...". The loop never merges.
+Side check (--sidecheck, a private task set run with its add-on): only after a screen pass, main
+and the candidate sit it; the score block gets a "side check" line with guard=pass iff the
+candidate solves at least as many as main and neither side run was cut short. A guard fail is a
+guard, not a score: draft PR titled "[side check fail] ...", not queued. Side runs go under
+<side manifest dir>/loop-home/runs, never $HARNESS_LOOP_HOME/runs (the improver reads that), and no
+side run name (it carries the private set name) reaches the PR, history.jsonl or spend.jsonl.
 
 monthly: full exam (--tries 2, no --screen) on main twice and each queued branch; compare.py
---margin-from; rewrites each PR's score block (screen + full line, verdict). sync: reads PR
+--margin-from; rewrites each PR's score block (screen, side check and full lines, verdict). sync: reads PR
 states with gh and records merged/closed. guard: the round's gate guard on <commit>^..<commit>
 (exit 1 and "rejected: weakens gates" on rejection).
 
-Outcomes in history.jsonl: queued (screen pass, PR open), screen-fail (draft PR), dropped (a
+Outcomes in history.jsonl: queued (screen pass, PR open), screen-fail (draft PR), side-fail
+(screen pass, side check guard fail, draft PR), dropped (a
 check failed), rejected (the gate guard: the change weakens a gate, reviewer or test),
 checked (--no-screen, all checks pass), error, merged, closed.
 
 Budget: WEEKLY_BUDGET_USD over a rolling 7 days of $HARNESS_LOOP_HOME/spend.jsonl, which only
 this script writes (improver cost from claude's result line, exam cost from each run's
-summary.json). A round that could take the week past the cap (improver budget + exam budget)
+summary.json). A round that could take the week past the cap (improver + exam + side check budgets)
 is refused before anything starts; so is a monthly.
 
 Leak scan: /Users/ always; tool names (EXAMPLE_LEAK) unless the line has "e.g."; plus private
@@ -64,6 +72,10 @@ WEEKLY_BUDGET_USD = 50.0  # Long, 12 Oct 2026
 IMPROVER_MAX_USD = 10.0
 IMPROVER_TIMEOUT_S = 3600
 DEFAULT_EXAM_BUDGET_USD = 30.0
+# ponytail: improver 10 + exam 30 + side 10 = the weekly 50; a real side check (5 tasks x 2 runs)
+# costs more, so raise it with the weekly cap.
+DEFAULT_SIDECHECK_BUDGET_USD = 10.0
+SIDE_HOME = "loop-home"  # side runs live next to the private manifest: <manifest dir>/loop-home/runs
 
 SCORES_OPEN = "<!-- harness-loop:scores v1 -->"
 SCORES_CLOSE = "<!-- /harness-loop:scores -->"
@@ -489,22 +501,27 @@ def exam_env():
     return {**os.environ, "PYTHONDONTWRITEBYTECODE": "1", "HARNESS_LOOP_HOME": str(HOME)}
 
 
-def run_exam(sha, manifest, kind, budget, round_n, screen=True, tries=1):
-    """Run one exam, book its cost, return the run dir."""
+def run_exam(sha, manifest, kind, budget, round_n, screen=True, tries=1, extra=(), side_home=None):
+    """Run one exam, book its cost, return the run dir.
+
+    side_home: a private side check. Its run goes under side_home/runs, never HOME/runs (which the
+    improver reads), and its ledger row names neither the run nor its set."""
     cmd = tool("LOOP_RUN_EXAM", "run_exam.py") + ["--harness", sha, "--tasks", str(manifest),
                                                    "--budget-usd", f"{budget:.2f}", "--kind", kind,
-                                                   "--tries", str(tries)] + (["--screen"] if screen else [])
+                                                   "--tries", str(tries)] + (["--screen"] if screen else []) + list(extra)
+    label = f"sidecheck-{kind}" if side_home else f"exam-{kind}"
+    env = {**exam_env(), "HARNESS_LOOP_HOME": str(side_home)} if side_home else exam_env()
     try:
-        p = subprocess.run(cmd, capture_output=True, text=True, env=exam_env())
+        p = subprocess.run(cmd, capture_output=True, text=True, env=env)
     except BaseException:
-        book(f"exam-{kind}", budget, round_n, "interrupted: booked at budget")
+        book(label, budget, round_n, "interrupted: booked at budget")
         raise
     m = re.search(r"^run_exam: (\S+) (complete|incomplete)", p.stdout, re.M)
     if not m:
         raise RuntimeError(f"run_exam left no run (exit {p.returncode}): {p.stderr.strip()[-300:]}")
     run = Path(m[1])
     cost = json.loads((run / "summary.json").read_text()).get("total_cost_usd") or 0
-    book(f"exam-{kind}", cost, round_n, run.name)
+    book(label, cost, round_n, "side check" if side_home else run.name)
     return run
 
 
@@ -662,6 +679,23 @@ def cleanup(wt, branch, keep_branch):
         git("branch", "-D", branch, check=False)
 
 
+def side_home_ok(side_home, addon):
+    """Side runs inside the add-on would be installed into the next sandbox (and change its hash
+    mid-run) unless the add-on's .installignore covers them; refuse that layout."""
+    if side_home.resolve() == HOME.resolve() or HOME.resolve() in side_home.resolve().parents:
+        die(f"side runs ({side_home}) must not live under {HOME}: the improver reads it")
+    if addon not in side_home.parents:
+        return
+    # install_harness.addon_files' rule (prefix lines in .installignore), copied: importing it writes
+    # harness-loop/__pycache__, which hash_tree(LOOP_DIR) hashes and which the tests' throwaway loop
+    # checkouts (no .gitignore) report as untracked. ponytail: re-sync if the installer's rule changes.
+    ignore = addon / ".installignore"
+    lines = [s.strip().rstrip("/") for s in (ignore.read_text().splitlines() if ignore.is_file() else [])]
+    rel = side_home.relative_to(addon)
+    if not any(ln and not ln.startswith("#") and (rel == Path(ln) or Path(ln) in rel.parents) for ln in lines):
+        die(f"side runs would land in the add-on at {rel}; list the side manifest's folder in {ignore}")
+
+
 def cmd_round(args):
     default = not args.improver_cmd
     if default:
@@ -669,6 +703,10 @@ def cmd_round(args):
             die("the default improver runs on Bedrock only: set CLAUDE_CODE_USE_BEDROCK=1 and AWS_ACCESS_KEY_ID")
         if args.improver_budget_usd > IMPROVER_MAX_USD:
             die(f"--improver-budget-usd is capped at ${IMPROVER_MAX_USD:.2f}")
+    if bool(args.sidecheck) != bool(args.sidecheck_addon):
+        die("--sidecheck and --sidecheck-addon go together")
+    if args.sidecheck:
+        side_home_ok(Path(args.sidecheck).resolve().parent / SIDE_HOME, Path(args.sidecheck_addon).resolve())
     private = private_patterns()
     if git("status", "--porcelain"):
         die(f"loop checkout {AW_ROOT} is not clean; run from a clean, dedicated clone")
@@ -677,6 +715,8 @@ def cmd_round(args):
     manifest = Path(args.tasks).resolve()
     base_run = None if args.no_screen else find_base_run(base_sha, manifest)
     exam_budget = 0.0 if args.no_screen else args.budget_usd
+    if args.sidecheck and not args.no_screen:
+        exam_budget += args.sidecheck_budget_usd
     check_budget((args.improver_budget_usd if default else 0.0) + exam_budget, "this round")
 
     n = next_round()
@@ -684,7 +724,7 @@ def cmd_round(args):
     round_dir.mkdir(parents=True)
     git("worktree", "add", "-q", "-b", branch, str(wt), base_sha)
     row = {"round": n, "improver": "default" if default else "stub", "tasks_manifest": args.tasks, "branch": branch,
-           "pr": None, "idea": None, "files": [], "base_sha": base_sha, "cand_sha": None, "screen": None,
+           "pr": None, "idea": None, "files": [], "base_sha": base_sha, "cand_sha": None, "screen": None, "sidecheck": None,
            "full": None, "outcome": None, "reason": None, "improver_cost_usd": None, "ts": None}
 
     def finish(outcome, reason="", keep_branch=False):
@@ -741,15 +781,19 @@ def cmd_round(args):
         if args.no_screen:
             return finish("checked", "checks pass (--no-screen: no exam, no push, no PR)", keep_branch=True)
 
-        per_run = exam_budget if base_run else exam_budget / 2
+        per_run = args.budget_usd if base_run else args.budget_usd / 2
         if base_run is None:
             base_run = run_exam(base_sha, manifest, "baseline", per_run, n)
             before["main screen run"] = hash_tree(base_run)
         cand_run = run_exam(cand, manifest, "candidate", per_run, n)
-        changes = tampered(before, snapshot(branch, base_run), ignore_pycache=True, skip_state=("spend.jsonl",))
-        if changes:
-            restore_state(before["state"])
-            return finish("dropped", "tamper during screen: " + "; ".join(changes))
+        def tamper():
+            changes = tampered(before, snapshot(branch, base_run), ignore_pycache=True, skip_state=("spend.jsonl",))
+            if changes:
+                restore_state(before["state"])
+            return "; ".join(changes)
+        bad = tamper()
+        if bad:
+            return finish("dropped", "tamper during screen: " + bad)
         b_meta, c_meta = (json.loads((Path(r) / "run.json").read_text()) for r in (base_run, cand_run))
         differ = [k for k in ("model", "max_budget_usd", "tries") if b_meta.get(k) != c_meta.get(k)]
         if differ:  # a reused main run made under other exam settings would give a wrong verdict
@@ -766,10 +810,33 @@ def cmd_round(args):
         line = score_line("screen", stats, base_sha, cand, tries_of(cand_run), f"screen={verdict}")
         print(f"checks: pass | screen: main {stats['solvedA']}/{stats['n']} ${float(stats['costA']):.2f}, "
               f"candidate {stats['solvedB']}/{stats['n']} ${float(stats['costB']):.2f} -> {verdict}")
+        lines, ready, prefix = [line], verdict == "pass", "[screen fail] "
+        if ready and args.sidecheck:
+            side = Path(args.sidecheck).resolve()
+            kw = {"screen": False, "side_home": side.parent / SIDE_HOME,
+                  "extra": ("--addon", args.sidecheck_addon, "--env", args.sidecheck_env)}
+            sa = run_exam(base_sha, side, "baseline", args.sidecheck_budget_usd / 2, n, **kw)
+            sc = run_exam(cand, side, "candidate", args.sidecheck_budget_usd / 2, n, **kw)
+            bad = tamper()
+            if bad:
+                return finish("dropped", "tamper during side check: " + bad)
+            s = compare(sa, sc)
+            # A budget-cut side run is a few tasks, not the set: no pass from it.
+            complete = all(json.loads((r / "run.json").read_text()).get("status") == "complete" for r in (sa, sc))
+            guard = "pass" if complete and int(s["solvedB"]) >= int(s["solvedA"]) else "fail"
+            lines.append(score_line("side check", s, base_sha, cand, 1,
+                                    f"env={args.sidecheck_env} guard={guard}" + ("" if complete else " (cut short)")))
+            # No run paths: side run names carry the private set name, and HOME is the improver's to read.
+            row["sidecheck"] = {"solved_base": int(s["solvedA"]), "solved_cand": int(s["solvedB"]),
+                                "cost_base": float(s["costA"]), "cost_cand": float(s["costB"]), "n": int(s["n"]),
+                                "complete": complete, "guard": guard,
+                                "line": lines[-1]}  # monthly keeps the line in the rewritten score block
+            print(lines[-1])
+            ready, prefix = guard == "pass", "[side check fail] "
 
         label = "harness-loop" if default else "harness-loop-test"
         body = "\n\n".join([
-            proposal_for_body(proposal, existing), scores_block(line),
+            proposal_for_body(proposal, existing), scores_block(*lines),
             f"Runs (under the loop home): `{rel_home(base_run)}` (main), `{rel_home(cand_run)}` (candidate)",
             f"Round {n}, improver: {row['improver']}. Opened by harness-loop/loop.py; scores are written by the "
             "script from compare.py, never by the improver. The loop never merges."])
@@ -779,15 +846,16 @@ def cmd_round(args):
         git("-c", "core.hooksPath=/dev/null", "push", "-q", "--no-verify", "origin",
             f"refs/heads/{branch}:refs/heads/{branch}")
         gh = ["gh", "pr", "create", "--repo", GH_REPO, "--head", branch, "--base", "main",
-              "--title", ("[screen fail] " if verdict != "pass" else "") + title,
-              "--body", body + "\n", "--label", label] + (["--draft"] if verdict != "pass" else [])
+              "--title", ("" if ready else prefix) + title,
+              "--body", body + "\n", "--label", label] + ([] if ready else ["--draft"])
         url = subprocess.run(gh, capture_output=True, text=True, check=True).stdout.strip().splitlines()[-1]
         row["pr"] = int(url.rstrip("/").rsplit("/", 1)[1])
-        if verdict == "pass":
+        if ready:
             write_queue(read_queue() + [{"round": n, "branch": branch, "base_sha": base_sha, "cand_sha": cand,
                                          "manifest": str(manifest), "pr": row["pr"]}])
-        print(f"PR {url} (label {label}){', queued' if verdict == 'pass' else ', draft (screen fail)'}")
-        return finish("queued" if verdict == "pass" else "screen-fail", keep_branch=True)
+        print(f"PR {url} (label {label}){', queued' if ready else ', draft ' + prefix.strip()}")
+        outcome = "queued" if ready else "screen-fail" if verdict != "pass" else "side-fail"
+        return finish(outcome, keep_branch=True)
     except BaseException as e:  # every started round gets a history row, Ctrl-C included
         if before and row["pr"] is None:  # an error the improver provoked must not keep what it wrote
             restore_state(before["state"])
@@ -840,6 +908,8 @@ def cmd_monthly(args):
                                                    "solvedB": screen["solved_cand"], "costA": screen["cost_base"],
                                                    "costB": screen["cost_cand"]},
                                         q["base_sha"], q["cand_sha"], 1, f"screen={screen['verdict']}"))
+            if row.get("sidecheck"):
+                lines.append(row["sidecheck"]["line"])
             lines.append(score_line("full", stats, main_sha, q["cand_sha"], tries_of(b),
                                     f"diff={stats['diff']} margin={stats['margin']} verdict={stats['verdict']}"))
             # record and dequeue first: the exam is paid, so a failed PR edit must not make a rerun pay again
@@ -870,7 +940,7 @@ def cmd_sync(_args):
     rows = read_jsonl(HOME / "history.jsonl")
     closed = set()
     for r in rows:
-        if r.get("pr") and r["outcome"] in ("queued", "screen-fail"):
+        if r.get("pr") and r["outcome"] in ("queued", "screen-fail", "side-fail"):
             state = gh_json("pr", "view", str(r["pr"]), "--json", "state")["state"]
             if state in ("MERGED", "CLOSED"):
                 r["outcome"] = state.lower()
@@ -900,6 +970,10 @@ def main(argv=None):
     r.add_argument("--budget-usd", type=float, default=DEFAULT_EXAM_BUDGET_USD,
                    help="most the round's exam runs may spend together")
     r.add_argument("--improver-budget-usd", type=float, default=IMPROVER_MAX_USD)
+    r.add_argument("--sidecheck", help="private manifest sat by main and candidate after a screen pass")
+    r.add_argument("--sidecheck-addon", help="the add-on dir for --sidecheck (passed to run_exam.py --addon)")
+    r.add_argument("--sidecheck-env", default="docker", choices=["docker", "daytona"])
+    r.add_argument("--sidecheck-budget-usd", type=float, default=DEFAULT_SIDECHECK_BUDGET_USD)
     m = sub.add_parser("monthly")
     m.add_argument("--budget-usd", type=float, default=DEFAULT_EXAM_BUDGET_USD)
     sub.add_parser("sync")

@@ -14,6 +14,15 @@ at the same relative path). Then it writes:
 addon_sha256 = sha256 over the add-on's files sorted by posix relpath, each fed
 as `relpath \\0 len(bytes) \\0 bytes`.
 
+An optional `<addon>/.installignore` lists add-on-relative path prefixes, one
+per line (blank lines and `#` comments ignored, trailing `/` optional; a line
+that is absolute, holds `..` or matches no file is refused). Files under them,
+and `.installignore` itself, are neither installed nor hashed: a
+private add-on dir may also hold private exam task folders (hidden tests and
+the reference fix), which must never reach the agent's sandbox, and rebuilding
+one must not change the harness version label. Any add-on file still to be
+installed that is named `task.toml` (a task folder left un-ignored) is refused.
+
 A previous manifest blocks a reinstall (exit 2) unless --force, which deletes
 ONLY the files that manifest lists. Without a manifest, files are overlaid and
 nothing is deleted. Before touching anything it refuses if any component of
@@ -48,10 +57,32 @@ def git(repo, *args):
     return result.stdout
 
 
+IGNORE_FILE = ".installignore"
+
+
 def addon_files(addon):
-    """Sorted (posix relpath, Path) of every file in the add-on tree."""
-    files = [p for p in addon.rglob("*") if p.is_file()]
-    return sorted((p.relative_to(addon).as_posix(), p) for p in files)
+    """Sorted (posix relpath, Path) of every add-on file not ignored by .installignore.
+
+    Dies on an ignore line that is absolute, holds `..` or matches no file, and
+    on any file left to install that is named task.toml (an un-ignored task folder).
+    """
+    ignore = addon / IGNORE_FILE
+    lines = ignore.read_text().splitlines() if ignore.is_file() else []
+    patterns = [s for s in (ln.strip() for ln in lines) if s and not s.startswith("#")]
+    for s in patterns:
+        if s.startswith("/") or ".." in Path(s).parts:
+            die(f"{ignore}: line {s!r} must be an add-on-relative prefix (no leading /, no ..)")
+    skip = [Path(s.rstrip("/")) for s in patterns]
+    rels = [p.relative_to(addon) for p in addon.rglob("*") if p.is_file()]
+    for s, line in zip(skip, patterns):
+        if not any(inside(r, s) for r in rels):
+            die(f"{ignore}: line {line!r} matches no add-on file")
+    skip.append(Path(IGNORE_FILE))
+    files = sorted((r.as_posix(), addon / r) for r in rels if not any(inside(r, s) for s in skip))
+    for rel, _ in files:
+        if Path(rel).name == "task.toml":
+            die(f"add-on file {rel} looks like a private exam task folder; list it in {IGNORE_FILE}")
+    return files
 
 
 def addon_sha256(files):

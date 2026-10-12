@@ -2,7 +2,8 @@
 """Fake run_exam.py for loop.py tests (LOOP_RUN_EXAM points here). No Harbor, no spend.
 
 Writes a sealed, read-only run dir the way run_exam.py does, under
-$HARNESS_LOOP_HOME/runs/, from $FAKE_EXAM_SPEC: {"<kind>": {"<task>": [reward, cost]}}.
+$HARNESS_LOOP_HOME/runs/, from $FAKE_EXAM_SPEC: {"<kind>": {"<task>": [reward, cost]}}
+("side-<kind>" when called with --addon).
 Logs its argv to $FAKE_EXAM_LOG and prints run_exam's last line. $FAKE_EXAM_INCOMPLETE
 (space-separated kinds) marks those runs incomplete, as a budget stop would.
 """
@@ -25,18 +26,23 @@ ap.add_argument("--budget-usd", type=float, required=True)
 ap.add_argument("--screen", action="store_true")
 ap.add_argument("--tries", type=int, default=1)
 ap.add_argument("--kind", required=True)
+ap.add_argument("--addon")
+ap.add_argument("--env")
 args = ap.parse_args()
 
-spec = json.loads(os.environ["FAKE_EXAM_SPEC"])[args.kind]
+# A side check (run with --addon) reads "side-<kind>" from the spec and $FAKE_EXAM_INCOMPLETE.
+key = f"side-{args.kind}" if args.addon else args.kind
+spec = json.loads(os.environ["FAKE_EXAM_SPEC"])[key]
 runs = Path(os.environ["HARNESS_LOOP_HOME"]) / "runs"
 runs.mkdir(parents=True, exist_ok=True)
-base = f"fake-{args.harness[:7]}{'-screen' if args.screen else ''}"
+set_name = json.loads(Path(args.tasks).read_text()).get("set")  # run_exam names runs after the set
+base = f"fake-{args.harness[:7]}{'-' + set_name if set_name else ''}{'-screen' if args.screen else ''}"
 n = 1
 while (runs / (base if n == 1 else f"{base}-{n}")).exists():
     n += 1
 run = runs / (base if n == 1 else f"{base}-{n}")
 total = 0.0
-status = "incomplete" if args.kind in os.environ.get("FAKE_EXAM_INCOMPLETE", "").split() else "complete"
+status = "incomplete" if key in os.environ.get("FAKE_EXAM_INCOMPLETE", "").split() else "complete"
 for task, (reward, cost) in spec.items():
     for t in range(1, args.tries + 1):
         d = run / task / f"try-{t}"

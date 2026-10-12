@@ -25,13 +25,15 @@ def task_dir(manifest_path, harbor_path):
 def hidden_paths(tdir):
     """Hidden test paths for a cached task (None if tests/ is not downloaded).
 
-    Files under tests/ (relative to it, harness files skipped), plus files test.sh
-    writes from heredocs, with any leading `$VAR/` stripped.
+    Files under tests/ (relative to it, harness files skipped, a leading `files/`
+    stripped: build_from_pr.py keeps tests/files/<repo path> and test.sh copies
+    them over the repo), plus files test.sh writes from heredocs, with any
+    leading `$VAR/` stripped.
     """
     tests = Path(tdir) / "tests"
     if not tests.is_dir():
         return None
-    out = {p.relative_to(tests).as_posix() for p in tests.rglob("*")
+    out = {re.sub(r"^files/", "", p.relative_to(tests).as_posix()) for p in tests.rglob("*")
            if p.is_file() and p.name not in HARNESS_FILES}
     sh = tests / "test.sh"
     if sh.is_file():
@@ -51,6 +53,12 @@ def _names(tok, path):
     return tok == path or tok.endswith("/" + path)
 
 
+def leaked(cmd, hidden):
+    """Sorted hidden paths that a token of shell command `cmd` names."""
+    toks = list(_tokens(cmd))
+    return sorted(h for h in hidden if any(_names(tok, h) for tok in toks))
+
+
 def _check_types(tid, t):
     checks = (("screen", isinstance(t["screen"], bool), "a bool"),
               ("test_command", t["test_command"] is None or isinstance(t["test_command"], str),
@@ -68,7 +76,11 @@ def load(path, require_cache=False):
     Adds an absolute `task_dir` to each row. With require_cache, every task folder
     must be downloaded so the hidden-test leak check actually runs.
     """
-    data = json.loads(Path(path).read_text())
+    return check(json.loads(Path(path).read_text()), path, require_cache)
+
+
+def check(data, path, require_cache=False):
+    """load() on already-parsed manifest `data` that lives (or will live) at `path`."""
     if not isinstance(data, dict):
         raise ValueError(f"{path}: manifest must be a JSON object")
     for key, typ in (("set", str), ("source", str), ("tasks", list)):
@@ -99,9 +111,9 @@ def load(path, require_cache=False):
         toks = list(_tokens(cmd))
         if any(tok == "/tests" or tok.startswith("/tests/") for tok in toks):
             raise ValueError(f"{tid}: test_command uses the hidden /tests/ mount: {cmd}")
-        leaked = sorted(h for h in hidden or () if any(_names(tok, h) for tok in toks))
-        if leaked:
-            raise ValueError(f"{tid}: test_command names hidden test file(s) {', '.join(leaked)}")
+        named = leaked(cmd, hidden or ())
+        if named:
+            raise ValueError(f"{tid}: test_command names hidden test file(s) {', '.join(named)}")
     return data
 
 
