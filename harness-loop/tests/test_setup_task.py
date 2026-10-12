@@ -543,5 +543,104 @@ class FinishTaskTest(TaskRepoCase):
         self.assertEqual((self.logs / "branch.txt").read_text().strip(), "fix-counter")
 
 
+
+class PinnedToolsTest(unittest.TestCase):
+    """`setup_task.sh pin` and `tools` under a faked `uname` (no network, no bd/dolt needed)."""
+
+    PINS = {  # (tool, arch) -> sha256 as the upstream release publishes it
+        ("dolt", "amd64"): "620fb5503ea4d1011ae731008c27fcc35bd8a1dad9746b8a0a054afe397e9ecb",
+        ("dolt", "arm64"): "1c55949f48d895c73348c3ad8cfd3605d9d4210eff70b58706f3f516281b225e",
+        ("bd", "amd64"): "d4395c4d3ab6312c50f8c3db4eeb97a357aec6716354a2c9318de3f33350702f",
+        ("bd", "arm64"): "3be77b876d71bb7dd6bf2bd556f3b797152f91e1da7e25db196566b3da48b59f",
+    }
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        self.bin = self.tmp / "bin"
+        self.bin.mkdir()
+        self.curl_log = self.tmp / "curl.log"
+        self.fake("uname", 'case "$1" in -s) echo "$FAKE_OS" ;; -m) echo "$FAKE_M" ;;'
+                           ' *) echo "$FAKE_OS $FAKE_M" ;; esac')
+        self.fake("curl", f'echo "$@" >> {self.curl_log}; exit 1')
+        for t in ("jq", "git", "python3", "tar"):
+            self.fake(t, "exit 0")
+
+    def fake(self, name, body):
+        f = self.bin / name
+        f.write_text(f"#!/bin/sh\n{body}\n")
+        f.chmod(0o755)
+
+    def setup(self, *args, os_name="Linux", machine="x86_64"):
+        env = {"PATH": f"{self.bin}:/usr/bin:/bin", "HOME": str(self.tmp),
+               "FAKE_OS": os_name, "FAKE_M": machine}
+        return subprocess.run(["bash", str(SETUP), *args], env=env, text=True, capture_output=True)
+
+    def test_each_machine_gets_its_own_pinned_build(self):
+        """
+        Docker on an Apple-silicon Mac runs linux/arm64 containers (uname -m
+        aarch64); Daytona runs x86_64. If the arm64 container got the amd64
+        build (or none), bd/dolt would not run and every WorkflowAgent run on
+        the laptop would die in setup before Claude starts.
+        """
+        for machine, arch in (("x86_64", "amd64"), ("aarch64", "arm64"), ("arm64", "arm64")):
+            for tool in ("dolt", "bd"):
+                with self.subTest(machine=machine, tool=tool):
+                    # GIVEN a Linux machine of this architecture
+                    # WHEN the tool's pin is asked for
+                    r = self.setup("pin", tool, machine=machine)
+                    # THEN it is that architecture's release asset with its published sha256
+                    self.assertEqual(r.returncode, 0, r.stderr)
+                    url, sha, member = r.stdout.split()
+                    self.assertEqual(sha, self.PINS[(tool, arch)])
+                    self.assertTrue(url.startswith("https://github.com/"), url)
+                    self.assertIn(f"linux_{arch}.tar.gz" if tool == "bd" else f"linux-{arch}.tar.gz", url)
+                    self.assertEqual(member, f"dolt-linux-{arch}/bin/dolt" if tool == "dolt" else "bd")
+
+    def test_unpinned_machine_fails_naming_tool_and_machine(self):
+        """
+        A machine with no pinned build must stop with a message naming the
+        tool and the machine, not fetch some other build.
+        """
+        for os_name, machine in (("Linux", "riscv64"), ("Darwin", "arm64")):
+            with self.subTest(os=os_name, machine=machine):
+                # GIVEN a machine with no pinned build
+                # WHEN dolt's pin is asked for
+                r = self.setup("pin", "dolt", os_name=os_name, machine=machine)
+                # THEN it fails and says which tool and which machine
+                self.assertEqual(r.returncode, 1)
+                self.assertIn("dolt", r.stderr)
+                self.assertIn(f"{os_name} {machine}", r.stderr)
+                self.assertEqual(r.stdout, "")
+
+    def test_tools_phase_downloads_nothing_on_an_unpinned_machine(self):
+        """
+        The tools phase is where the pin is used. On a machine with no pin it
+        must fail before any download, naming the missing tool.
+        """
+        # GIVEN dolt is not installed and the machine has no pinned build
+        # WHEN the tools phase runs
+        r = self.setup("tools", machine="riscv64")
+        # THEN it fails naming dolt and curl was never called
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("dolt: no pinned build for Linux riscv64", r.stderr)
+        self.assertFalse(self.curl_log.exists())
+
+    def test_tools_phase_fetches_the_arm64_asset_on_aarch64(self):
+        """
+        On aarch64 the tools phase must download the arm64 asset. If it kept
+        a hard-coded amd64 url, the checksum would still be checked against
+        the wrong file and setup would fail on every laptop run.
+        """
+        # GIVEN dolt is missing on an aarch64 Linux machine (curl is faked to fail)
+        # WHEN the tools phase runs
+        r = self.setup("tools", machine="aarch64")
+        # THEN the one download attempted is dolt's linux-arm64 release asset
+        self.assertNotEqual(r.returncode, 0)
+        calls = self.curl_log.read_text().splitlines()
+        self.assertEqual(len(calls), 1, calls)
+        self.assertIn("/v1.83.4/dolt-linux-arm64.tar.gz", calls[0])
+
+
 if __name__ == "__main__":
     unittest.main()

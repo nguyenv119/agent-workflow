@@ -2,11 +2,15 @@
 # Prepare one exam task repo for a headless `/work <bead>` run, in three phases:
 #
 #   setup_task.sh tools                                                  (root, install)
+#   setup_task.sh pin <dolt|bd>                                          (prints url sha256 member)
 #   setup_task.sh repo <repo_dir> <harness_tarball> <test_command> <logs_dir>   (agent user, install)
 #   setup_task.sh bead <repo_dir> <title> <instruction_file> <run_name> <logs_dir>  (agent user, run)
 #
 # tools: installs jq, git, python3, curl, tar (package manager) and pinned
-#   dolt + bd (release tarballs, sha256-checked) when missing.
+#   dolt + bd (release tarballs, sha256-checked) when missing. Pins exist for
+#   Linux x86_64 and aarch64 (Docker on Apple silicon runs arm64 containers).
+# pin: prints one tool's pinned url, sha256 and tarball member for this
+#   machine, or fails naming the tool and machine when there is no pinned build.
 # repo: refuses `/` and a repo whose parent dir the agent user cannot write
 #   (the coordinator makes sibling worktrees there); puts the task state on
 #   `main` as `exam: base` (git init if needed; a detached HEAD is fine) with a
@@ -26,6 +30,7 @@ set -euo pipefail
 usage() {
   cat >&2 <<'EOF'
 usage: setup_task.sh tools
+       setup_task.sh pin <dolt|bd>
        setup_task.sh repo <repo_dir> <harness_tarball> <test_command> <logs_dir>
        setup_task.sh bead <repo_dir> <title> <instruction_file> <run_name> <logs_dir>
 EOF
@@ -33,15 +38,17 @@ EOF
 }
 [ $# -ge 1 ] || usage
 phase=$1; shift
-case "$phase:$#" in tools:0|repo:4|bead:5) ;; *) usage ;; esac
+case "$phase:$#" in tools:0|pin:1|repo:4|bead:5) ;; *) usage ;; esac
 started=$SECONDS
 
+# sha256 per release asset, as each upstream release publishes it (beads:
+# checksums.txt; dolt: the asset digests on its GitHub release).
 BD_VERSION=0.59.0
-BD_URL=https://github.com/steveyegge/beads/releases/download/v$BD_VERSION/beads_${BD_VERSION}_linux_amd64.tar.gz
-BD_SHA256=d4395c4d3ab6312c50f8c3db4eeb97a357aec6716354a2c9318de3f33350702f
+BD_SHA256_amd64=d4395c4d3ab6312c50f8c3db4eeb97a357aec6716354a2c9318de3f33350702f
+BD_SHA256_arm64=3be77b876d71bb7dd6bf2bd556f3b797152f91e1da7e25db196566b3da48b59f
 DOLT_VERSION=1.83.4
-DOLT_URL=https://github.com/dolthub/dolt/releases/download/v$DOLT_VERSION/dolt-linux-amd64.tar.gz
-DOLT_SHA256=620fb5503ea4d1011ae731008c27fcc35bd8a1dad9746b8a0a054afe397e9ecb
+DOLT_SHA256_amd64=620fb5503ea4d1011ae731008c27fcc35bd8a1dad9746b8a0a054afe397e9ecb
+DOLT_SHA256_arm64=1c55949f48d895c73348c3ad8cfd3605d9d4210eff70b58706f3f516281b225e
 # Dependency dirs never committed when setup has to `git init` a plain dir.
 PLAIN_DIR_EXCLUDES="node_modules/ .venv/ venv/ __pycache__/ target/ .gradle/"
 
@@ -50,6 +57,24 @@ die() { log "$*"; exit 1; }
 as_root() { if [ "$(id -u)" = 0 ]; then "$@"; else sudo "$@"; fi; }
 exclude() { grep -qxF "$1" .git/info/exclude 2>/dev/null || echo "$1" >> .git/info/exclude; }
 abspath() { echo "$(cd "$(dirname "$1")" && pwd)/$(basename "$1")"; }
+# The pinned build of one tool for this machine: "<url> <sha256> <tarball member>".
+pin() {
+  local name=$1 arch sha
+  case "$(uname -s)-$(uname -m)" in
+    Linux-x86_64|Linux-amd64) arch=amd64 ;;
+    Linux-aarch64|Linux-arm64) arch=arm64 ;;
+    *) die "$name: no pinned build for $(uname -sm) (pinned: Linux x86_64, aarch64)" ;;
+  esac
+  case "$name" in
+    dolt) sha=DOLT_SHA256_$arch
+          echo "https://github.com/dolthub/dolt/releases/download/v$DOLT_VERSION/dolt-linux-$arch.tar.gz" \
+               "${!sha}" "dolt-linux-$arch/bin/dolt" ;;
+    bd) sha=BD_SHA256_$arch
+        echo "https://github.com/steveyegge/beads/releases/download/v$BD_VERSION/beads_${BD_VERSION}_linux_$arch.tar.gz" \
+             "${!sha}" bd ;;
+    *) die "no pinned build of $name" ;;
+  esac
+}
 need_file() { [ -f "$1" ] || { echo "setup_task: no such file: $1" >&2; exit 2; }; }
 unset BEADS_DIR BEADS_DB  # never let an inherited setting point bd at another database
 export PATH="/usr/local/bin:$HOME/.local/bin:$PATH"
@@ -69,11 +94,12 @@ phase_tools() {
     else die "no package manager to install ${missing[*]}"
     fi
   fi
-  install_bin() {  # name version url sha256 member-in-tarball
-    local name=$1 version=$2 url=$3 sha=$4 member=$5 tmp
+  install_bin() {  # name version
+    local name=$1 version=$2 p url sha member tmp
     # Capture first: `grep -q` exiting early would SIGPIPE the writer under pipefail.
     if command -v "$name" >/dev/null && [[ "$("$name" version 2>/dev/null)" == *"$version"* ]]; then return; fi
-    [ "$(uname -s)-$(uname -m)" = Linux-x86_64 ] || die "$name $version missing and no pinned build for $(uname -sm)"
+    p=$(pin "$name")
+    read -r url sha member <<<"$p"
     log "installing $name $version"
     tmp=$(mktemp -d)
     curl -fsSL -o "$tmp/t.tgz" "$url"
@@ -82,9 +108,11 @@ phase_tools() {
     install -m 0755 "$tmp/$member" "$bin_dir/$name"
     rm -rf "$tmp"
   }
-  install_bin dolt "$DOLT_VERSION" "$DOLT_URL" "$DOLT_SHA256" dolt-linux-amd64/bin/dolt
-  install_bin bd "$BD_VERSION" "$BD_URL" "$BD_SHA256" bd
+  install_bin dolt "$DOLT_VERSION"
+  install_bin bd "$BD_VERSION"
 }
+
+phase_pin() { pin "$1"; }
 
 phase_repo() {
   local repo=$1 tarball=$2 test_command=$3 logs=$4 origin=${EXAM_ORIGIN:-/tmp/origin.git}
