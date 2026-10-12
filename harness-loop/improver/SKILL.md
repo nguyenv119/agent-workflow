@@ -24,6 +24,9 @@ Your message lists the paths you need: `skill`, `worktree` (your branch, already
    `transcript.jsonl`, and `inner/` with the harness's own saved tries) and under `tries/`
    (`<bead>/try-<n>/`, same files). Read raw transcripts, not just notes: find the step where
    the run went wrong and which harness file told the agent to do what it did.
+   Use only runs whose `run.json` has `kind` of `baseline`, `candidate` or `pick` and a `set`
+   that names a manifest in `harness-loop/tasks/`. Skip `harm` and `controls` runs (they fail
+   on purpose) and any run of another set (it may hold private code).
 3. **One falsifiable idea:** "Changing <file/section> so that <behaviour> will raise solved
    tasks because <evidence from >= 2 cited try folders>." If no score could prove it wrong,
    it is not an idea yet.
@@ -33,9 +36,10 @@ Your message lists the paths you need: `skill`, `worktree` (your branch, already
    depends on `EXAM_MODE`, and any edit to the coordinator's "Exam mode" section. A harness
    that behaves differently when it is examined is cheating.
 5. **No leaks.** Never copy a task name, repo name, private path, code or text from a try
-   folder into the change or the commit message. Cite try folders only in `proposal.md`, and
-   only as `runs/...` (relative to the loop home) or `~/.claude/tries/agent-workflow/...`
-   (with a literal `~`). The script scans the change, the commit message and `proposal.md`:
+   folder into the change, the commit message or any `proposal.md` line except the Evidence
+   paths (say "one task" or "three tries", never its name). Cite try folders only in
+   `proposal.md`'s Evidence, and only as `runs/...` (relative to the loop home) or
+   `~/.claude/tries/agent-workflow/...` (with a literal `~`). The script scans the change, the commit message and `proposal.md`:
    no absolute paths, and tool names (a test runner, a package manager) only on a line that
    says "e.g.".
 6. **Generalize.** No task-specific or repo-specific hints. The test: would this help a
@@ -60,7 +64,9 @@ Your message lists the paths you need: `skill`, `worktree` (your branch, already
    which step of `/work`.
 3. Pick the failures. In `runs/`, open each run's `index.tsv` and `result.json` files; take
    tries with `reward` 0 or a non-`ok` status first. In `tries/`, read `index.tsv`.
-4. Read at least two failing transcripts end to end. Write down, for each: the step that went
+4. Read at least two failing transcripts end to end, each opened by its full folder path in
+   its own command (no loops over folders): a citation counts only if your tool calls show
+   that path. Write down, for each: the step that went
    wrong, what the agent did instead, and the harness line that led it there (or the missing
    line that would have stopped it).
 5. Find the pattern shared by two or more tries. That is the evidence for your idea.
@@ -84,5 +90,5 @@ Risk: <what this could break or cost; for a repeated idea, what is different>
 ```
 
 All five fields are required; `Evidence:` needs at least two try folders that exist and that
-you actually opened. The one-line notes stay in the loop home; the public PR shows only the
+you opened by their full path. The one-line notes stay in the loop home; the public PR shows only the
 paths, with task folder names masked.
