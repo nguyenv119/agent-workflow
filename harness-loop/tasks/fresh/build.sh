@@ -1,82 +1,124 @@
 #!/usr/bin/env bash
 # Build the fresh exam set from candidates-<YYYY-MM>.json with SWE-gen. PAID.
 #
-#   build.sh [--candidates FILE] [--per-task-usd 12] [--cc-timeout 3200] [--confirm-budget USD]
+#   build.sh [--candidates FILE] [--limit N] [--per-task-usd 12] [--usd-per-hour 13.5]
+#            [--cc-timeout 3200] [--tasks-dir DIR] [--confirm-budget USD]
 #
 # 1. Prints the candidate count and estimated cost, and stops unless --confirm-budget
-#    covers it. Nothing is spent before this.
-# 2. Checks that swegen and docker are installed.
-# 3. Per candidate: `swegen create` through swegen_shim.py (instruction writer on Gemini,
-#    build session on Bedrock Opus, capped by --cc-timeout). SWE-gen exits non-zero
-#    unless its own nop=0 / oracle=1 validation passes; only passing ids go to passed.txt.
-#    Ids already in passed.txt or failed.txt are skipped, so a rerun resumes.
-# 4. Writes ../fresh-<YYYY-MM>.json via collect.py (test_command, workdir, leak check).
+#    is at least the estimate. Nothing is spent before this.
+# 2. Checks swegen, docker, GITHUB_TOKEN, GEMINI_API_KEY_DEV and the AWS key + region.
+# 3. Per candidate (the first --limit N, default all): `swegen create` through
+#    swegen_shim.py, in a scratch folder, under `env -i` with only an allowlisted env.
+#    SWE-gen exits non-zero unless its own nop=0 / oracle=1 validation passes; only
+#    passing ids go to passed.txt. Ids already in passed.txt / failed.txt are skipped.
+#    After each task its cost (measured from the log, else elapsed x --usd-per-hour) is
+#    added to a running total; the loop stops once the total reaches --confirm-budget.
+# 4. Writes <tasks-dir>/fresh-<YYYY-MM>.json via collect.py (test_command, workdir,
+#    leak check).
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 TASKS="$(dirname "$HERE")"
+SHIM="$HERE/swegen_shim.py"
 CANDIDATES=""
+LIMIT=""
 PER_TASK_USD=12
+USD_PER_HOUR=13.5
 CC_TIMEOUT=3200
 BUDGET=""
+
+die() { echo "build.sh: $*" >&2; exit "${CODE:-2}"; }
 
 while [ $# -gt 0 ]; do
   case "$1" in
     --candidates) CANDIDATES="$2"; shift 2 ;;
+    --limit) LIMIT="$2"; shift 2 ;;
     --per-task-usd) PER_TASK_USD="$2"; shift 2 ;;
+    --usd-per-hour) USD_PER_HOUR="$2"; shift 2 ;;
     --cc-timeout) CC_TIMEOUT="$2"; shift 2 ;;
+    --tasks-dir) TASKS="$(cd "$2" && pwd)"; shift 2 ;;
     --confirm-budget) BUDGET="$2"; shift 2 ;;
-    -h|--help) sed -n '2,15p' "$0"; exit 0 ;;
-    *) echo "build.sh: unknown argument $1" >&2; exit 2 ;;
+    -h|--help) sed -n '2,19p' "$0"; exit 0 ;;
+    *) die "unknown argument $1" ;;
   esac
 done
 
 if [ -z "$CANDIDATES" ]; then
   CANDIDATES="$(ls "$HERE"/candidates-*.json 2>/dev/null | sort | tail -n 1 || true)"
-  [ -n "$CANDIDATES" ] || { echo "build.sh: no candidates-*.json; run pick_prs.py first" >&2; exit 2; }
+  [ -n "$CANDIDATES" ] || die "no candidates-*.json; run pick_prs.py first"
 fi
 MONTH="$(basename "$CANDIDATES" | grep -oE '[0-9]{4}-[0-9]{2}')" \
-  || { echo "build.sh: candidates file name must contain YYYY-MM" >&2; exit 2; }
+  || die "candidates file name must contain YYYY-MM"
 
 # 1. Cost gate (exit 3 = refused, nothing spent).
 python3 "$HERE/collect.py" plan "$CANDIDATES" --per-task-usd "$PER_TASK_USD" \
-  ${BUDGET:+--confirm-budget "$BUDGET"}
+  ${LIMIT:+--limit "$LIMIT"} ${BUDGET:+--confirm-budget "$BUDGET"}
 
-# 2. Tools.
-if ! command -v swegen >/dev/null 2>&1; then
-  echo "build.sh: swegen is not installed. Installing it (uv pip install swegen) needs Long's OK." >&2
-  exit 4
-fi
-command -v docker >/dev/null 2>&1 || { echo "build.sh: docker is required by swegen create" >&2; exit 4; }
+# 2. Tools and credentials, all before any paid work.
+CODE=4
+command -v swegen >/dev/null 2>&1 \
+  || die "swegen is not installed. Installing it (uv pip install swegen) needs Long's OK."
+command -v docker >/dev/null 2>&1 || die "docker is required by swegen create"
+[ -n "${GITHUB_TOKEN:-}" ] \
+  || die "set GITHUB_TOKEN to a fine-grained, read-only, public-repositories token (see README)"
+[ -n "${GEMINI_API_KEY_DEV:-}" ] || die "set GEMINI_API_KEY_DEV (the instruction writer runs on Gemini)"
+for v in AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_REGION; do
+  [ -n "${!v:-}" ] || die "set $v (the build session runs on Bedrock)"
+done
+CODE=2
 
-# Model routing (see the README): Gemini for the instruction writer, Bedrock for Claude Code.
-: "${GEMINI_API_KEY_DEV:?build.sh: set GEMINI_API_KEY_DEV (the instruction writer runs on Gemini)}"
-: "${GITHUB_TOKEN:=$(gh auth token)}"
-export GITHUB_TOKEN
-export OPENAI_BASE_URL="${OPENAI_BASE_URL:-https://generativelanguage.googleapis.com/v1beta/openai/}"
-export OPENAI_API_KEY="$GEMINI_API_KEY_DEV"
-export SWEGEN_LLM_MODEL="${SWEGEN_LLM_MODEL:-gemini-pro-latest}"
-export SWEGEN_CLAUDE_MODEL="${SWEGEN_CLAUDE_MODEL:-global.anthropic.claude-opus-5-5}"
-export CLAUDE_CODE_USE_BEDROCK=1
-unset ANTHROPIC_API_KEY CLAUDE_CODE_OAUTH_TOKEN
+# The only env the SWE-gen child sees. Its Claude session runs with permission checks
+# off, so nothing else (admin keys, other tokens, personal logins) may reach it.
+CHILD_ENV=(
+  "PATH=$PATH" "HOME=$HOME" "TMPDIR=${TMPDIR:-/tmp}"
+  "GITHUB_TOKEN=$GITHUB_TOKEN"
+  "OPENAI_BASE_URL=${OPENAI_BASE_URL:-https://generativelanguage.googleapis.com/v1beta/openai/}"
+  "OPENAI_API_KEY=$GEMINI_API_KEY_DEV"
+  "SWEGEN_LLM_MODEL=${SWEGEN_LLM_MODEL:-gemini-pro-latest}"
+  "SWEGEN_CLAUDE_MODEL=${SWEGEN_CLAUDE_MODEL:-global.anthropic.claude-opus-5-5}"
+  "CLAUDE_CODE_USE_BEDROCK=1"
+  "AWS_ACCESS_KEY_ID=$AWS_ACCESS_KEY_ID" "AWS_SECRET_ACCESS_KEY=$AWS_SECRET_ACCESS_KEY"
+  "AWS_REGION=$AWS_REGION"
+)
+[ -n "${AWS_SESSION_TOKEN:-}" ] && CHILD_ENV+=("AWS_SESSION_TOKEN=$AWS_SESSION_TOKEN")
+while IFS= read -r v; do
+  case "$v" in SWEGEN_LLM_MODEL|SWEGEN_CLAUDE_MODEL) ;; *) CHILD_ENV+=("$v=${!v}") ;; esac
+done < <(compgen -e | grep '^SWEGEN_' || true)
 
-# 3. Build.
+LIST="$(python3 "$HERE/collect.py" list "$CANDIDATES" ${LIMIT:+--limit "$LIMIT"})" \
+  || die "collect.py list failed"
+
+# 3. Build, from a scratch folder.
 OUT="$TASKS/cache/fresh-$MONTH"
 mkdir -p "$OUT"
-touch "$OUT/passed.txt" "$OUT/failed.txt"
+touch "$OUT/passed.txt" "$OUT/failed.txt" "$OUT/spend.tsv"
+WORK="$(mktemp -d "$OUT/work.XXXXXX")"
+cd "$WORK"
+SPENT=0
 while read -r id repo pr; do
+  [ -n "$id" ] || continue
   if grep -qxF "$id" "$OUT/passed.txt" "$OUT/failed.txt"; then
     echo "skip $id (already built)"; continue
   fi
+  if python3 -c "import sys; sys.exit(float(sys.argv[1]) < float(sys.argv[2]))" "$SPENT" "$BUDGET"; then
+    echo "stopping: spent \$$SPENT of the \$$BUDGET budget"; break
+  fi
   echo "== $id ($repo#$pr)"
-  if python3 "$HERE/swegen_shim.py" create --repo "$repo" --pr "$pr" \
+  start=$SECONDS
+  if env -i "${CHILD_ENV[@]}" python3 "$SHIM" create --repo "$repo" --pr "$pr" \
        --output "$OUT/$id" --state-dir "$OUT/.swegen" --cc-timeout "$CC_TIMEOUT" </dev/null \
        >"$OUT/$id.log" 2>&1; then
-    echo "$id" >>"$OUT/passed.txt"; echo "   passed"
+    echo "$id" >>"$OUT/passed.txt"; result=passed
   else
-    echo "$id" >>"$OUT/failed.txt"; echo "   failed (see $OUT/$id.log)"
+    echo "$id" >>"$OUT/failed.txt"; result="failed (see $OUT/$id.log)"
   fi
-done < <(python3 "$HERE/collect.py" list "$CANDIDATES")
+  COST="$(python3 "$HERE/collect.py" cost "$OUT/$id.log" \
+    --seconds "$((SECONDS - start))" --usd-per-hour "$USD_PER_HOUR")" || die "collect.py cost failed"
+  read -r usd how <<<"$COST"
+  printf '%s\t%s\t%s\n' "$id" "$usd" "$how" >>"$OUT/spend.tsv"
+  SPENT="$(python3 -c "import sys; print(round(float(sys.argv[1]) + float(sys.argv[2]), 2))" "$SPENT" "$usd")"
+  echo "   $result; \$$usd ($how), running total \$$SPENT"
+done <<<"$LIST"
 
 # 4. Manifest.
 python3 "$HERE/collect.py" manifest "$CANDIDATES" "$OUT" "$TASKS/fresh-$MONTH.json"

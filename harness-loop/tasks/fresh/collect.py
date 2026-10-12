@@ -1,10 +1,13 @@
 """Offline helpers for build.sh: cost gate, candidate list, manifest from built tasks.
 
-  collect.py plan CANDIDATES --per-task-usd X [--confirm-budget USD]
+  collect.py plan CANDIDATES --per-task-usd X [--limit N] [--confirm-budget USD]
       Print the candidate count and estimated cost. Exit 0 only if --confirm-budget
       covers the estimate; exit 3 otherwise (nothing is spent).
-  collect.py list CANDIDATES
+  collect.py list CANDIDATES [--limit N]
       One "id repo pr" line per candidate, for build.sh's loop.
+  collect.py cost LOG --seconds S --usd-per-hour R
+      One task's cost as "<usd> measured" (sum of total_cost_usd in the log) or, when the
+      log has none, "<usd> elapsed" (S / 3600 x R). build.sh adds it to a running total.
   collect.py manifest CANDIDATES BUILD_DIR OUT.json
       Rows for every candidate listed in BUILD_DIR/passed.txt, validated by manifest.py
       (including its hidden-test leak check), written to OUT.json.
@@ -39,6 +42,19 @@ def load_candidates(path):
     return json.loads(Path(path).read_text())["candidates"]
 
 
+# The Claude session's result reports its cost as total_cost_usd (JSON or repr form).
+COST = re.compile(r"""total_cost_usd['"]?\s*[:=]\s*([0-9]+(?:\.[0-9]+)?)""")
+
+
+def cost(log, seconds, usd_per_hour):
+    """(usd, how) for one task. Sums every reported total_cost_usd: overcounting a
+    repeated report only stops the loop early, never late."""
+    found = [float(x) for x in COST.findall(log)]
+    if found:
+        return round(sum(found), 2), "measured"
+    return round(seconds / 3600 * usd_per_hour, 2), "elapsed"
+
+
 def plan(cands, per_task_usd, budget=None):
     """Return (message, ok). ok only when a budget is given and covers the estimate."""
     n = len(cands)
@@ -47,7 +63,8 @@ def plan(cands, per_task_usd, budget=None):
     kind = Counter(c["kind"] for c in cands)
     msg = (f"{n} candidates ({lang['python']} python, {lang['typescript']} typescript; "
            f"{kind['bugfix']} bugfix, {kind['feature']} feature)\n"
-           f"estimated cost: up to ${est:,.2f} ({n} x ${per_task_usd:,.2f} per-task cap; "
+           f"estimated cost: ${est:,.2f} ({n} x ${per_task_usd:,.2f} per task, an estimate, "
+           f"not a cap; build.sh stops starting tasks once measured spend reaches the budget; "
            f"instruction writer on Gemini credits, not counted)")
     if budget is None:
         return msg + "\nrefusing to spend: pass --confirm-budget <usd> once the estimate is approved", False
@@ -154,13 +171,28 @@ def main(argv=None):
     p.add_argument("candidates")
     p.add_argument("--per-task-usd", type=float, required=True)
     p.add_argument("--confirm-budget", type=float)
-    sub.add_parser("list").add_argument("candidates")
+    p.add_argument("--limit", type=int)
+    li = sub.add_parser("list")
+    li.add_argument("candidates")
+    li.add_argument("--limit", type=int)
+    co = sub.add_parser("cost")
+    co.add_argument("log")
+    co.add_argument("--seconds", type=float, required=True)
+    co.add_argument("--usd-per-hour", type=float, required=True)
     m = sub.add_parser("manifest")
     m.add_argument("candidates")
     m.add_argument("build_dir")
     m.add_argument("out")
     a = ap.parse_args(argv)
+    if a.cmd == "cost":
+        log = Path(a.log).read_text(errors="replace") if Path(a.log).is_file() else ""
+        print(*cost(log, a.seconds, a.usd_per_hour))
+        return 0
     cands = load_candidates(a.candidates)
+    if getattr(a, "limit", None) is not None:
+        if a.limit < 1:
+            ap.error("--limit must be at least 1")
+        cands = cands[:a.limit]
     if a.cmd == "plan":
         msg, ok = plan(cands, a.per_task_usd, a.confirm_budget)
         print(msg)

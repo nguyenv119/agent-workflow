@@ -39,7 +39,8 @@ ENTRY_POINT = "swegen"                # console_scripts name of SWE-gen's CLI
 
 # Env the build needs: calls must go to Gemini and Bedrock, never OpenAI or a personal login.
 REQUIRED_ENV = ("SWEGEN_LLM_MODEL", "SWEGEN_CLAUDE_MODEL", "OPENAI_BASE_URL", "OPENAI_API_KEY")
-FORBIDDEN_ENV = ("ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN")
+FORBIDDEN_ENV = ("ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_AUTH_TOKEN")
+FORBIDDEN_PREFIXES = ("AWS_ADMIN_",)  # admin AWS keys must never reach the build session
 
 
 class ShimError(RuntimeError):
@@ -53,6 +54,7 @@ def check_env(env):
     if env.get("CLAUDE_CODE_USE_BEDROCK") != "1":
         raise ShimError("CLAUDE_CODE_USE_BEDROCK must be 1 (the build session runs on Bedrock)")
     present = [k for k in FORBIDDEN_ENV if env.get(k)]
+    present += sorted(k for k in env if k.startswith(FORBIDDEN_PREFIXES))
     if present:
         raise ShimError(f"unset {', '.join(present)}: the build session must not use a direct key or login")
 

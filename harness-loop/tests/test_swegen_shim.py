@@ -196,10 +196,13 @@ class EnvTest(unittest.TestCase):
         no_base = {k: v for k, v in ENV.items() if k != "OPENAI_BASE_URL"}
         direct = dict(ENV, ANTHROPIC_API_KEY="x")
         not_bedrock = dict(ENV, CLAUDE_CODE_USE_BEDROCK="0")
+        auth_token = dict(ENV, ANTHROPIC_AUTH_TOKEN="x")
+        admin = dict(ENV, AWS_ADMIN_ACCESS_KEY_ID="x")
         # WHEN each is checked
         # THEN each is refused with the reason
         for env, why in ((no_base, "OPENAI_BASE_URL"), (direct, "ANTHROPIC_API_KEY"),
-                         (not_bedrock, "CLAUDE_CODE_USE_BEDROCK")):
+                         (not_bedrock, "CLAUDE_CODE_USE_BEDROCK"),
+                         (auth_token, "ANTHROPIC_AUTH_TOKEN"), (admin, "AWS_ADMIN_ACCESS_KEY_ID")):
             with self.assertRaisesRegex(swegen_shim.ShimError, why):
                 swegen_shim.check_env(env)
 

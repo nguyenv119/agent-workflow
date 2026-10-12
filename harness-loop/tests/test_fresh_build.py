@@ -58,7 +58,7 @@ class BuildShGateTest(Tmp):
         # THEN it prints the split and 3 x $12 = $36, and refuses
         self.assertEqual(r.returncode, collect.PLAN_REFUSED, r.stderr)
         self.assertIn("3 candidates (2 python, 1 typescript; 2 bugfix, 1 feature)", r.stdout)
-        self.assertIn("up to $36.00", r.stdout)
+        self.assertIn("estimated cost: $36.00 (3 x $12.00 per task, an estimate, not a cap", r.stdout)
         self.assertIn("pass --confirm-budget", r.stdout)
 
     def test_refuses_budget_below_estimate(self):
@@ -84,6 +84,121 @@ class BuildShGateTest(Tmp):
         self.assertEqual(r.returncode, 4, r.stdout + r.stderr)
         self.assertIn("budget $5.00 confirmed", r.stdout)
         self.assertIn("swegen is not installed", r.stderr)
+
+
+class BuildShLoopTest(Tmp):
+    """build.sh past the gate, with fake swegen/docker and a python3 wrapper that stands in
+    for swegen_shim.py: it records the child's env and cwd and prints a cost line."""
+
+    PARENT_ENV = {
+        "GITHUB_TOKEN": "gh-test", "GEMINI_API_KEY_DEV": "gem-test",
+        "AWS_ACCESS_KEY_ID": "AKIATEST", "AWS_SECRET_ACCESS_KEY": "secret-test", "AWS_REGION": "us-east-1",
+        "SWEGEN_EXTRA": "kept",
+        # planted: none of these may reach the child
+        "AWS_ADMIN_X": "admin-test", "ANTHROPIC_AUTH_TOKEN": "auth-test", "ANTHROPIC_API_KEY": "key-test",
+        "CLAUDE_CODE_OAUTH_TOKEN": "oauth-test", "GEMINI_API_KEY_PROD": "prod-test",
+    }
+
+    def build(self, *args, cost=1.0, drop=()):
+        bin_dir = self.dir / "bin"
+        bin_dir.mkdir(exist_ok=True)
+        calls = self.dir / "calls"
+        calls.mkdir(exist_ok=True)
+        for tool in ("swegen", "docker"):
+            (bin_dir / tool).write_text("#!/bin/sh\nexit 0\n")
+            (bin_dir / tool).chmod(0o755)
+        wrapper = bin_dir / "python3"
+        wrapper.write_text(
+            "#!/bin/bash\n"
+            'case "$1" in */swegen_shim.py)\n'
+            f'  n=$(ls "{calls}" | wc -l | tr -d " "); env > "{calls}/$n.env"; pwd > "{calls}/$n.cwd"\n'
+            f'  echo "total_cost_usd: {cost}"; exit 1 ;;\n'
+            "esac\n"
+            f'exec "{sys.executable}" "$@"\n')
+        wrapper.chmod(0o755)
+        env = {"PATH": f"{bin_dir}:/usr/bin:/bin", "HOME": str(self.dir),
+               **{k: v for k, v in self.PARENT_ENV.items() if k not in drop}}
+        r = subprocess.run(["bash", str(FRESH / "build.sh"), "--tasks-dir", str(self.dir), *args],
+                           capture_output=True, text=True, env=env)
+        envs = [dict(l.split("=", 1) for l in f.read_text().splitlines() if "=" in l)
+                for f in sorted(calls.glob("*.env"))]
+        cwds = [f.read_text().strip() for f in sorted(calls.glob("*.cwd"))]
+        return r, envs, cwds
+
+    def test_child_gets_only_the_allowlisted_env(self):
+        """
+        The SWE-gen child runs a Claude session with permission checks off, so
+        planted admin keys and other tokens must never reach it.
+        """
+        # GIVEN a parent env holding the needed vars plus planted secrets
+        p = self.candidates([cand()])
+        # WHEN build.sh runs one task
+        r, envs, cwds = self.build("--candidates", str(p), "--confirm-budget", "12")
+        # THEN the child saw only the allowlist
+        self.assertEqual(len(envs), 1, r.stdout + r.stderr)
+        child = envs[0]
+        for planted in ("AWS_ADMIN_X", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_API_KEY",
+                        "CLAUDE_CODE_OAUTH_TOKEN", "GEMINI_API_KEY_PROD", "GEMINI_API_KEY_DEV"):
+            self.assertNotIn(planted, child)
+        self.assertNotIn("admin-test", "\n".join(child.values()))
+        self.assertEqual(child["OPENAI_API_KEY"], "gem-test")
+        self.assertEqual(child["GITHUB_TOKEN"], "gh-test")
+        self.assertEqual(child["CLAUDE_CODE_USE_BEDROCK"], "1")
+        self.assertEqual(child["SWEGEN_EXTRA"], "kept")
+        self.assertNotIn("ANTHROPIC_MODEL", child)
+        self.assertNotIn("AWS_SESSION_TOKEN", child)
+        # AND it ran from a scratch folder under the cache, not the caller's cwd
+        self.assertIn("/cache/fresh-2026-10/work.", cwds[0])
+
+    def test_stops_once_measured_spend_reaches_budget(self):
+        """
+        The estimate is not a cap: after each task its measured cost is added,
+        and no new task starts once the running total reaches the budget.
+        """
+        # GIVEN 3 candidates, an estimate of $30 and tasks that really cost $20 each
+        p = self.candidates([cand(pr=i) for i in (1, 2, 3)])
+        # WHEN build.sh runs with a $30 budget
+        r, envs, _ = self.build("--candidates", str(p), "--per-task-usd", "10",
+                                "--confirm-budget", "30", cost=20)
+        # THEN only 2 tasks start ($20, then $40 >= $30 stops the loop)
+        self.assertEqual(len(envs), 2, r.stdout + r.stderr)
+        self.assertIn("stopping: spent $40.0 of the $30 budget", r.stdout)
+        spend = (self.dir / "cache/fresh-2026-10/spend.tsv").read_text().splitlines()
+        self.assertEqual([l.split("\t")[1:] for l in spend], [["20.0", "measured"]] * 2)
+
+    def test_limit_runs_a_small_first_batch(self):
+        """--limit N plans and builds only the first N candidates."""
+        # GIVEN 3 candidates
+        p = self.candidates([cand(pr=i) for i in (1, 2, 3)])
+        # WHEN build.sh runs with --limit 1
+        r, envs, _ = self.build("--candidates", str(p), "--limit", "1", "--confirm-budget", "12")
+        # THEN the plan covers 1 task and only 1 task runs
+        self.assertIn("1 candidates", r.stdout)
+        self.assertEqual(len(envs), 1, r.stdout + r.stderr)
+
+    def test_missing_credentials_stop_before_any_task(self):
+        """GITHUB_TOKEN (no gh login fallback) and the AWS key + region are required up front."""
+        p = self.candidates([cand()])
+        for var in ("GITHUB_TOKEN", "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_REGION"):
+            with self.subTest(var=var):
+                # GIVEN the var unset
+                # WHEN build.sh runs with a confirmed budget
+                r, envs, _ = self.build("--candidates", str(p), "--confirm-budget", "12", drop=(var,))
+                # THEN it exits 4 naming the var, and no task ran
+                self.assertEqual(r.returncode, 4, r.stdout + r.stderr)
+                self.assertIn(var, r.stderr)
+                self.assertEqual(envs, [])
+
+
+class CostTest(unittest.TestCase):
+    def test_measured_cost_is_summed_from_the_log(self):
+        """Every total_cost_usd reported in the log counts (JSON or key=value form)."""
+        log = 'x\n{"type": "result", "total_cost_usd": 3.5}\nResultMessage(total_cost_usd=1.25)\n'
+        self.assertEqual(collect.cost(log, 600, 13.5), (4.75, "measured"))
+
+    def test_elapsed_time_when_log_has_no_cost(self):
+        """With no reported cost the task is charged elapsed hours x rate."""
+        self.assertEqual(collect.cost("no cost here", 1800, 13.5), (6.75, "elapsed"))
 
 
 class TestCommandTest(unittest.TestCase):
@@ -130,6 +245,20 @@ class TestCommandTest(unittest.TestCase):
         # WHEN extracted
         # THEN the folder is kept
         self.assertEqual(self.cmd("pytest -q tests/\n"), "pytest -q tests/")
+
+    def test_hidden_path_without_a_test_name_is_dropped(self):
+        """
+        A hidden file whose name does not look like a test (a fixture, a check
+        script) is dropped only because it is in the hidden list.
+        """
+        # GIVEN a runner naming two such files
+        sh = "pytest src/check_x.py fixtures/data.json -q\n"
+        # WHEN they are hidden, and as a control when nothing is hidden
+        hidden = collect.test_command(sh, {"src/check_x.py", "fixtures/data.json"})
+        control = collect.test_command(sh, set())
+        # THEN only the hidden run drops them
+        self.assertEqual(hidden, "pytest -q")
+        self.assertEqual(control, "pytest src/check_x.py fixtures/data.json -q")
 
     def test_no_runner_gives_none(self):
         """A test.sh with no recognisable runner yields null ('no visible tests')."""
