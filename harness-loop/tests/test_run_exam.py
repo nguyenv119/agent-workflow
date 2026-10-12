@@ -4,7 +4,9 @@ The fake writes the trial dir a real Harbor + WorkflowAgent run leaves behind
 (result.json, verifier/reward.txt, agent/exam/*, agent/tries/), driven by a
 JSON spec per task, and logs its argv and env keys so what run_exam passes is
 visible. Its log and spec paths come first on its own command line, because
-run_exam passes Harbor only an allowlisted env.
+run_exam passes Harbor only an allowlisted env. A fake `docker` (EXAM_DOCKER)
+answers `docker info` like a 10-CPU / 7.65 GiB Docker Desktop, lists the
+containers in its own spec file, and logs every call.
 """
 import json
 import os
@@ -15,12 +17,14 @@ import sys
 import tempfile
 import textwrap
 import unittest
+import unittest.mock
 from pathlib import Path
 
 from helpers import make_repo
 
 EXAM = Path(__file__).resolve().parents[1] / "exam"
 SCRIPT = EXAM / "run_exam.py"
+VENV_PY = EXAM.parent / ".venv/bin/python"
 sys.path.insert(0, str(EXAM))
 import compare  # noqa: E402
 import run_exam  # noqa: E402
@@ -48,6 +52,7 @@ FAKE_HARBOR = textwrap.dedent('''\
     cost = 0 if agent in ("oracle", "nop") else spec.get("cost", 8.0)
     trial = Path(opt("-o")) / opt("--job-name") / (task[:20] + "__abc")
     (trial / "verifier").mkdir(parents=True)
+    (trial / "config.json").write_text("{}")  # Harbor writes it when the trial starts
     (trial / "verifier/reward.txt").write_text(f"{reward}\\n")
     (trial / "verifier/test-stdout.txt").write_text("tests ran\\n")
     (trial / "result.json").write_text(json.dumps({
@@ -79,6 +84,24 @@ FAKE_HARBOR = textwrap.dedent('''\
     (inner / "note.md").write_text("inner try\\n")
 ''')
 
+FAKE_DOCKER = textwrap.dedent('''\
+    import json, sys
+    log, spec_path, argv = sys.argv[1], sys.argv[2], sys.argv[3:]
+    spec = json.load(open(spec_path))
+    with open(log, "a") as fh:
+        fh.write(json.dumps(argv) + "\\n")
+    if spec.get("down"):
+        sys.exit("Cannot connect to the Docker daemon")
+    if spec.get("ps_fails") and argv[0] != "info":
+        sys.exit("error listing")
+    if argv[0] == "info":
+        print(spec.get("info", "10 8217473024"))  # Docker Desktop's default share of a 16 GiB Mac
+    elif argv[:2] == ["ps", "-a"]:
+        print("\\n".join(spec.get("containers", [])))
+    elif argv[:2] == ["network", "ls"]:
+        print("\\n".join(spec.get("networks", [])))
+''')
+
 
 class RunExamTest(unittest.TestCase):
     def setUp(self):
@@ -89,6 +112,11 @@ class RunExamTest(unittest.TestCase):
         self.log = self.root / "harbor.log"
         self.spec = self.root / "spec.json"
         self.spec.write_text("{}")
+        self.fake_docker = self.root / "fake_docker.py"
+        self.fake_docker.write_text(FAKE_DOCKER)
+        self.docker_log = self.root / "docker.log"
+        self.docker_spec = self.root / "docker.json"
+        self.docker_spec.write_text("{}")
         self.sha = subprocess.run(["git", "-C", str(EXAM), "rev-parse", "HEAD"],
                                   text=True, capture_output=True, check=True).stdout.strip()
 
@@ -117,7 +145,8 @@ class RunExamTest(unittest.TestCase):
 
     def run_exam(self, *args, check=True, extra_env=None):
         env = {**os.environ, **(extra_env or {}), "HARNESS_LOOP_HOME": str(self.home),
-               "EXAM_HARBOR": f"{sys.executable} {self.fake} {self.log} {self.spec} run"}
+               "EXAM_HARBOR": f"{sys.executable} {self.fake} {self.log} {self.spec} run",
+               "EXAM_DOCKER": f"{sys.executable} {self.fake_docker} {self.docker_log} {self.docker_spec}"}
         p = subprocess.run([sys.executable, str(SCRIPT), "--harness", "HEAD", *map(str, args)],
                            env=env, text=True, capture_output=True)
         if check:
@@ -137,6 +166,11 @@ class RunExamTest(unittest.TestCase):
 
     def envs(self):
         return [json.loads(l)["env"] for l in self.log.read_text().splitlines()]
+
+    def docker_calls(self):
+        if not self.docker_log.exists():
+            return []
+        return [json.loads(l) for l in self.docker_log.read_text().splitlines()]
 
     def test_complete_run_writes_one_try_folder_per_task(self):
         """
@@ -234,8 +268,8 @@ class RunExamTest(unittest.TestCase):
         m = self.manifest({"t1": 2})
         planted = {"AWS_ADMIN_X": "x", "ANTHROPIC_API_KEY": "x", "CLAUDE_CODE_MAX_OUTPUT_TOKENS": "1",
                    "AWS_ACCESS_KEY_ID": "id", "DAYTONA_API_KEY": "d"}
-        # WHEN run_exam runs
-        self.run_exam("--tasks", m, "--budget-usd", 100, extra_env=planted)
+        # WHEN run_exam runs on Daytona
+        self.run_exam("--tasks", m, "--budget-usd", 100, "--env", "daytona", extra_env=planted)
         # THEN none of the planted vars reached Harbor, but the Bedrock and Daytona keys did
         env = self.envs()[0]
         for k in ("AWS_ADMIN_X", "ANTHROPIC_API_KEY", "CLAUDE_CODE_MAX_OUTPUT_TOKENS"):
@@ -331,13 +365,13 @@ class RunExamTest(unittest.TestCase):
         """Daytona caps sandboxes at 4 CPUs; every workflow run gets max_budget_usd."""
         # GIVEN one task asking for 6 CPUs and one asking for 2
         m = self.manifest({"big": 6, "small": 2})
-        # WHEN run_exam runs with the default per-run cap
-        self.run_exam("--tasks", m, "--budget-usd", 100)
+        # WHEN run_exam runs on Daytona with the default per-run cap
+        self.run_exam("--tasks", m, "--budget-usd", 100, "--env", "daytona")
         # THEN only the big task gets the CPU/memory override
         by_task = {Path(a[a.index("-p") + 1]).name: a for a in self.argvs()}
         big, small = by_task["big"], by_task["small"]
         self.assertEqual(big[big.index("--override-cpus") + 1], "4")
-        self.assertEqual(big[big.index("--override-memory-mb") + 1], "8192")
+        self.assertEqual(big[big.index("--override-memory-mb") + 1], "4096")  # what it asked for
         self.assertNotIn("--override-cpus", small)
         # AND both get the workflow agent, the sha and the $12.05 cap
         for a in (big, small):
@@ -384,6 +418,155 @@ class RunExamTest(unittest.TestCase):
         names = sorted(d.name for d in (self.home / "runs").iterdir() if d.is_dir())
         self.assertEqual(len(names), 2)
         self.assertEqual(names[1], names[0] + "-2")
+
+    def test_docker_is_the_default_env(self):
+        """
+        Local Docker is free, so it is the default: each try is a fresh container
+        Harbor deletes, and Daytona keys never reach a local run.
+        """
+        # GIVEN a host env with a Daytona key and a Docker host
+        m = self.manifest({"t1": 2})
+        planted = {"DAYTONA_API_KEY": "d", "DOCKER_HOST": "unix:///tmp/d.sock", "AWS_ACCESS_KEY_ID": "id"}
+        # WHEN run_exam runs with no --env
+        self.run_exam("--tasks", m, "--budget-usd", 100, extra_env=planted)
+        # THEN Harbor runs it in docker and deletes the environment afterwards
+        argv = self.argvs()[0]
+        self.assertEqual(argv[argv.index("-e") + 1], "docker")
+        self.assertIn("--delete", argv)
+        # AND Harbor sees the Docker host and the Bedrock key but not the Daytona key
+        env = self.envs()[0]
+        self.assertIn("DOCKER_HOST", env)
+        self.assertIn("AWS_ACCESS_KEY_ID", env)
+        self.assertNotIn("DAYTONA_API_KEY", env)
+        # AND run.json records the env and the concurrency picked from docker info
+        meta = json.loads((self.only_run() / "run.json").read_text())
+        self.assertEqual((meta["env"], meta["concurrency"]), ("docker", 1))
+
+    def test_daytona_flag_skips_docker(self):
+        """--env daytona never asks the local Docker anything and runs one at a time by default."""
+        # GIVEN a machine whose Docker is down
+        m = self.manifest({"t1": 2})
+        self.docker_spec.write_text(json.dumps({"down": True}))
+        # WHEN run_exam runs on Daytona
+        self.run_exam("--tasks", m, "--budget-usd", 100, "--env", "daytona")
+        # THEN it ran, made no docker call, and used concurrency 1
+        self.assertEqual(self.docker_calls(), [])
+        argv = self.argvs()[0]
+        self.assertEqual(argv[argv.index("-e") + 1], "daytona")
+        self.assertEqual(json.loads((self.only_run() / "run.json").read_text())["concurrency"], 1)
+
+    def test_docker_down_fails_before_any_run(self):
+        """A stopped Docker must fail fast with what to do, not hang or file error tries."""
+        # GIVEN Docker is not running
+        m = self.manifest({"t1": 2})
+        self.docker_spec.write_text(json.dumps({"down": True}))
+        # WHEN run_exam runs with the default env
+        p = self.run_exam("--tasks", m, "--budget-usd", 100, check=False)
+        # THEN it exits non-zero naming Docker Desktop, and Harbor never ran
+        self.assertNotEqual(p.returncode, 0)
+        self.assertIn("Docker Desktop", p.stderr)
+        self.assertFalse(self.log.exists())
+
+    def test_controls_get_no_model_keys(self):
+        """Oracle and nop never call a model, so the Bedrock keys stay on the host."""
+        # GIVEN Bedrock keys on the host
+        m = self.manifest({"t1": 2})
+        planted = {"AWS_ACCESS_KEY_ID": "id", "AWS_SECRET_ACCESS_KEY": "s"}
+        # WHEN a controls run happens
+        self.run_exam("--tasks", m, "--budget-usd", 1, "--agent", "controls", extra_env=planted)
+        # THEN neither Harbor run saw them
+        for env in self.envs():
+            self.assertNotIn("AWS_ACCESS_KEY_ID", env)
+            self.assertNotIn("AWS_SECRET_ACCESS_KEY", env)
+
+    def test_leftover_containers_of_the_try_are_removed(self):
+        """
+        If Harbor dies before `compose down`, the try's containers would pile up;
+        run_exam removes those of this trial only, never anyone else's.
+        """
+        # GIVEN Docker holds the trial's main and verifier containers and its network, plus a
+        # concurrent try of the same task, a task whose name extends this trial's, an unlabelled
+        # container and an unrelated network
+        m = self.manifest({"t1": 2})
+        self.docker_spec.write_text(json.dumps({
+            "containers": ["c1\tt1__abc__env", "c2\tt1__abc__verifier__tests", "c3\tt1__xyz__env",
+                           "c4\tt1__abcd__env", "c5\t", "c6\tsomeone-else"],
+            "networks": ["n1\tt1__abc__env", "n2\tbridge-of-someone"]}))
+        # WHEN run_exam runs the try (the fake Harbor's trial dir is t1__abc)
+        self.run_exam("--tasks", m, "--budget-usd", 100)
+        # THEN exactly the trial's containers and network were removed
+        calls = self.docker_calls()
+        self.assertIn(["rm", "-f", "-v", "c1", "c2"], calls)
+        self.assertIn(["network", "rm", "n1"], calls)
+        removed = [c for c in calls if c[0] == "rm" or c[:2] == ["network", "rm"]]
+        self.assertEqual(len(removed), 2)
+        # AND the job log says so
+        log = next((self.only_run() / "harbor").glob("t1-try1.log")).read_text()
+        self.assertIn("removed leftover docker objects: c1 c2 n1", log)
+
+    def test_only_trial_dirs_name_projects(self):
+        """A non-trial dir in the job dir (Harbor's .sources) must not become a match prefix."""
+        # GIVEN a job dir with one trial and a .sources dir, and containers for both names
+        job = self.root / "job"
+        (job / "t1__abc").mkdir(parents=True)
+        (job / "t1__abc/config.json").write_text("{}")
+        (job / ".sources").mkdir()
+        self.docker_spec.write_text(json.dumps({"containers": ["c1\tt1__abc__env", "c2\t0-sources__env"]}))
+        env = {"EXAM_DOCKER": f"{sys.executable} {self.fake_docker} {self.docker_log} {self.docker_spec}"}
+        # WHEN the cleanup runs
+        with unittest.mock.patch.dict(os.environ, env):
+            removed = run_exam.remove_leftovers(job)
+        # THEN only the trial's container went
+        self.assertEqual(removed, ["c1"])
+
+    def test_failed_cleanup_keeps_the_try(self):
+        """If docker cannot list containers after a try, the try is still filed with its reward."""
+        # GIVEN docker answers info but fails every listing
+        m = self.manifest({"t1": 2})
+        self.docker_spec.write_text(json.dumps({"ps_fails": True}))
+        # WHEN run_exam runs
+        self.run_exam("--tasks", m, "--budget-usd", 100)
+        # THEN the try is ok with its reward and nothing was removed
+        r = self.results(self.only_run())["t1"]
+        self.assertEqual((r["status"], r["reward"]), ("ok", 1))
+        self.assertFalse(any(c[0] == "rm" for c in self.docker_calls()))
+
+    def test_local_concurrency_fits_docker_memory_and_cpus(self):
+        """Each task takes 2 CPUs and 4 GiB; 1 GiB stays for the engine; at least one runs."""
+        for cpus, mem, want in [(10, 7837, 1),    # Docker Desktop default on a 16 GiB Mac
+                                (10, 10240, 2),   # 10 GiB given to Docker
+                                (10, 16384, 3),
+                                (4, 65536, 2),    # CPU-bound
+                                (1, 1024, 1)]:    # never zero
+            self.assertEqual(run_exam.local_concurrency(cpus, mem), want, (cpus, mem))
+
+    def test_resource_overrides_cap_to_the_sandbox(self):
+        """A task asking for more than one sandbox has is capped to it, per resource."""
+        # GIVEN a task asking 4 CPUs / 8 GiB, its verifier 6 CPUs / 12 GiB, and a 2 CPU / 4 GiB task
+        big, small = self.root / "big", self.root / "small"
+        big.mkdir()
+        small.mkdir()
+        (big / "task.toml").write_text("[environment]\ncpus = 4\nmemory_mb = 8192\n"
+                                       "[verifier.environment]\ncpus = 6\nmemory_mb = 12288\n")
+        (small / "task.toml").write_text("[environment]\ncpus = 2\nmemory_mb = 4096\n")
+        # WHEN/THEN Daytona (4 / 8192) caps both resources of the big task
+        self.assertEqual(run_exam.resource_overrides(big, 4, 8192),
+                         ["--override-cpus", "4", "--override-memory-mb", "8192"])
+        # AND a 10-CPU / 6813 MB Docker keeps its 6 CPUs but caps memory
+        self.assertEqual(run_exam.resource_overrides(big, 10, 6813),
+                         ["--override-cpus", "6", "--override-memory-mb", "6813"])
+        # AND the small task is untouched in both
+        self.assertEqual(run_exam.resource_overrides(small, 4, 8192), [])
+        self.assertEqual(run_exam.resource_overrides(small, 10, 6813), [])
+
+    @unittest.skipUnless(VENV_PY.exists(), "needs harness-loop/.venv with harbor installed")
+    def test_compose_project_matches_harbor(self):
+        """The cleanup must name projects exactly as Harbor does, or it would miss them."""
+        names = ["ibm__sarama_19952bd2_ff06f3a2__LL5VSTR__env", "_x.Y__abc", "a/b c"]
+        code = ("import json, sys; from harbor.environments.docker.docker import "
+                "_sanitize_docker_compose_project_name as f; print(json.dumps([f(n) for n in sys.argv[1:]]))")
+        r = subprocess.run([str(VENV_PY), "-c", code, *names], text=True, capture_output=True, check=True)
+        self.assertEqual([run_exam.compose_project(n) for n in names], json.loads(r.stdout))
 
     def test_branch_of_names_a_branch_ref_only(self):
         """A harm run records its branch name; a sha or HEAD records none."""

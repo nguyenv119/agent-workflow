@@ -14,4 +14,5 @@ absolute `task_dir`). Cache layout: `cache/terminal-bench-v4.0.0/tasks/<id>` (sp
 and `cache/monthly-swebench-2026-05/{bugfix,non_bugfix}/<id>` (the two dataset archives, unpacked).
 
 `payments-pipeline-fix` asks for 6 CPUs; Daytona caps a sandbox at 4, so run it with
-`--override-cpus 4 --override-memory-mb 8192` (oracle passes that way).
+`--override-cpus 4 --override-memory-mb 8192` (oracle passes that way). `run_exam.py` adds the
+override itself, capped to the sandbox it runs in (Daytona, or what local Docker has).
