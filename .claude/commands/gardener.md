@@ -2,7 +2,7 @@
 
 Run the gardener skill for **$ARGUMENTS** (a repo name, or empty for this repo).
 
-Proposals only: writes its report dir and nothing else.
+Proposals only: writes only its report dir, a scratch dir and prune's own files.
 
 ---
 

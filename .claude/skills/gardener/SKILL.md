@@ -1,6 +1,6 @@
 ---
 name: gardener
-description: Weekly weeding pass for a repo and its harness. Runs /prune in report mode, then a correct pass that groups the week's repeated corrections into mistake classes and proposes, for each, the strongest check that would have caught it. Proposals only; writes nothing but its report, merges nothing, files nothing. Invoked via /gardener or a weekly routine.
+description: Weekly weeding pass for a repo and its harness. Runs /prune in report mode, then a correct pass that groups the week's repeated corrections into mistake classes and proposes, for each, the strongest check that would have caught it. Proposals only; writes only its report dir, a scratch dir and prune's own files, merges nothing, files nothing. Invoked via /gardener or a weekly routine.
 ---
 
 # Gardener
