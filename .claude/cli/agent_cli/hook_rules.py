@@ -50,9 +50,8 @@ def builtin(cmd):
         {"id": "hand-worktree-add-other", "mode": "warn", "requires": "agent-cli", "on": "code",
          "match": cmd + WT_ADD + r"(?![^;&|\n]*\s-[bB])", "unless": r"--detach\b",
          "message": "For an existing branch: agent-cli wt new <id> <slug> --existing <branch>"},
-        # Proves warn mode end to end; remove once the wait/lock bead ships its own warn rule.
-        # Deliberately unanchored (no cmd prefix): acceptance runs `true agent-cli-warn-demo`, an argument.
-        {"id": "agent-cli-demo-warn", "mode": "warn", "requires": "agent-cli",
-         "match": r"\bagent-cli-warn-demo\b",
-         "message": "agent-cli-demo-warn: demo warn rule fired; this text is hook context, the command still ran."},
+        {"id": "hand-sleep-poll", "mode": "warn", "requires": "agent-cli", "on": "code", "needs": r"\bsleep\s+\d",
+         "match": cmd + r"(?:while|until)\b" + body_re(cmd) + cmd + r"sleep\s+(?:\d{2,}|[3-9])\b",
+         "message": "Waiting on something? agent-cli wait --until '<status cmd>' --every 60 --cap 30m "
+                    "(run_in_background) stops on success, passes through refused/blocked, exits 4 on timeout."},
     ]
