@@ -1,0 +1,14 @@
+#!/usr/bin/env python3
+"""agent-cli: shared chores for agent sessions. Run `agent-cli --help`. Needs Python 3.9+."""
+import sys
+
+if sys.version_info < (3, 9):
+    sys.stderr.write("agent-cli: needs Python 3.9 or newer, this is %d.%d\n" % sys.version_info[:2])
+    sys.exit(3)
+sys.dont_write_bytecode = True  # never leave __pycache__ in a project's .claude/
+from pathlib import Path  # noqa: E402
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "cli"))
+from agent_cli.main import main  # noqa: E402
+
+sys.exit(main())

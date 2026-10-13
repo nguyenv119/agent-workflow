@@ -3,7 +3,7 @@
 
     install_harness.py --commit <ref> --target <dir> [--addon <dir>] [--repo <path>] [--force]
 
-Installs the committed `.claude/` (minus `.claude/loop-evals/`) and `AGENTS.md`
+Installs the committed `.claude/` (minus `.claude/loop-evals/` and `.claude/cli/tests/`) and `AGENTS.md`
 from <ref> via `git archive`, so a dirty worktree never leaks in. An optional
 add-on dir is copied over `<target>/.claude/` (add-on files replace core files
 at the same relative path). Then it writes:
@@ -66,7 +66,7 @@ from pathlib import Path
 
 VERSION = ".claude/HARNESS_VERSION"
 MANIFEST = ".claude/HARNESS_MANIFEST"
-EXCLUDED = ".claude/loop-evals"
+EXCLUDED = (".claude/loop-evals", ".claude/cli/tests")  # local eval data; agent-cli's own tests + corpus
 
 
 def die(msg):
@@ -207,7 +207,7 @@ def install(argv):
     # Read the whole archive first: every guard runs before anything is written.
     tar = tarfile.open(fileobj=io.BytesIO(git(args.repo, "archive", sha, ".claude", "AGENTS.md")))
     members = [m for m in tar.getmembers()
-               if not inside(Path(m.name), Path(EXCLUDED)) and not m.isdir()]
+               if not any(inside(Path(m.name), Path(x)) for x in EXCLUDED) and not m.isdir()]
     for line, prefix in skip_paths:
         hit = [m for m in members if inside(Path(m.name), prefix)]
         if not hit:

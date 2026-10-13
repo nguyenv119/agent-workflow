@@ -1,0 +1,49 @@
+# Everyday commands no built-in PreToolUse rule may deny (test_hook.AllowCorpus runs each one
+# through `agent-cli hook test`). One command per line; a multi-line command sits between two
+# `---` lines. A line expected to warn ends with `  # expect-warn: <rule-id>`.
+# Every bead that adds a rule adds 5+ near-miss commands for it here.
+git status
+git worktree list
+git worktree remove x
+git log --oneline -5
+git diff --stat origin/main...HEAD
+git commit -m "fix: echo the WIN line from the verdict lib, not by hand"
+gh pr checks 12
+gh pr view 12 --json state
+gh pr create --title "x" --body "step 1\necho <promise>WIN</promise> by hand"
+sleep 5
+bd ready --json
+bd update x --notes "ran it; echo <promise>WIN</promise> printed"
+python3 -m unittest
+python3 -m unittest discover -s .claude/cli/tests
+npm test
+grep -rn DATABASE_URL src/
+grep -n '<promise>WIN</promise>' .claude/skills/win-condition/SKILL.md
+grep -rn "echo \"<promise>WIN</promise>\"" .
+cat .env.example
+ls -la
+echo "$out" | tail -1 | grep -Fxq '<promise>WIN</promise>'
+[ "$(printf '%s\n' "$out" | tail -1)" = '<promise>WIN</promise>' ]
+test $(echo $last) = '<promise>WIN</promise>'
+[ "$(tail -1 out)" = "<promise>WIN</promise>" ] && echo PASS || echo FAIL
+echo "done: 3 checks passed"
+printf '%s\n' "ok"
+source "$(agent-cli eval lib --sh)" && win
+bash eval.sh | tail -1
+for f in *.md; do echo "$f"; done
+while read -r line; do echo "$line"; done < list.txt
+echo '<promise>WIN</promise> is printed by the verdict lib' > notes.txt
+true agent-cli-warn-demo  # expect-warn: agent-cli-demo-warn
+---
+git commit -m "$(cat <<'EOF'
+fix(eval): print the sentinel from the lib
+echo "<promise>WIN</promise>" moved to lib
+EOF
+)"
+---
+---
+cat > eval.sh <<'EOF'
+#!/usr/bin/env bash
+echo "<promise>WIN</promise>"
+EOF
+---

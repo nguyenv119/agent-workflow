@@ -8,6 +8,7 @@
     loop.py exam --pr N --tasks <manifest> [--budget-usd X] [--check-only]
     loop.py sync
     loop.py guard <commit> [--base <ref>]
+    loop.py leak [--diff <ref>] [--body <file>]
 
 round: make worktree $HARNESS_LOOP_HOME/wt/<n> on branch harness-loop/<n> off origin/main;
 write rounds/<n>/message.txt (paths only; a `proposals:` line when --proposals names a file that
@@ -59,6 +60,9 @@ Budget: WEEKLY_BUDGET_USD over a rolling 7 days of $HARNESS_LOOP_HOME/spend.json
 this script writes (improver cost from claude's result line, exam cost from each run's
 summary.json). A round that could take the week past the cap (improver + exam + side check budgets)
 is refused before anything starts; so is a monthly or an exam.
+
+leak: the same leak scan, free and on its own, over the lines added in <ref>...HEAD and a PR body
+file; prints each hit, exits 1 on any, 3 when leak-patterns.txt is missing, 0 clean. Run it before a push.
 
 Leak scan: /Users/ always; tool names (EXAMPLE_LEAK) unless the line has "e.g."; plus private
 names, one regex per line, from $HARNESS_LOOP_HOME/leak-patterns.txt, which must exist (an
@@ -1247,6 +1251,27 @@ def cmd_guard(args):
     print("guard: pass")
 
 
+def cmd_leak(args):
+    if not args.diff and not args.body:
+        die("leak: give --diff <ref> and/or --body <file>, e.g. leak --diff origin/main --body pr.md")
+    if not (HOME / "leak-patterns.txt").is_file():
+        die(f"{HOME / 'leak-patterns.txt'} is missing: put private names there, one regex per line "
+            "(an empty file means none)", code=3)
+    lines = []
+    if args.diff:
+        diff = git("diff", "-M", "--no-color", "--no-ext-diff", "--no-textconv", "--text", f"{args.diff}...HEAD",
+                   cwd=Path.cwd())
+        lines += [t for f in parse_diff(diff) for kind, _, t in f["lines"] if kind == "+"]
+    if args.body:
+        lines += Path(args.body).read_text().splitlines()
+    hits = leak_hits(lines, private_patterns())
+    for h in hits:
+        print(f"leak: {h.strip()[:200]}")
+    if hits:
+        sys.exit(1)
+    print(f"leak: clean ({len(lines)} lines)")
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -1273,8 +1298,12 @@ def main(argv=None):
     g = sub.add_parser("guard", help="run the round's gate guard on one commit (exit 1 = rejected)")
     g.add_argument("commit")
     g.add_argument("--base", help="diff base (default: <commit>^)")
+    lk = sub.add_parser("leak", help="free leak scan of a branch's added lines and a PR body (exit 1 = hits)")
+    lk.add_argument("--diff", metavar="REF", help="scan lines added in REF...HEAD")
+    lk.add_argument("--body", help="PR body file to scan")
     args = ap.parse_args(argv)
-    {"round": cmd_round, "monthly": cmd_monthly, "sync": cmd_sync, "exam": cmd_exam, "guard": cmd_guard}[args.cmd](args)
+    {"round": cmd_round, "monthly": cmd_monthly, "sync": cmd_sync, "exam": cmd_exam, "guard": cmd_guard,
+     "leak": cmd_leak}[args.cmd](args)
 
 
 if __name__ == "__main__":
