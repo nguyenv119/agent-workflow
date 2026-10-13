@@ -211,17 +211,12 @@ bd dep add <later-bead-id> <earlier-bead-id> --json
 For each bead, create a named worktree **before** spawning its implementer. Run from the main repo root:
 
 ```bash
-MAIN_ROOT=$(git worktree list --porcelain | grep '^worktree' | head -1 | awk '{print $2}')
-BRANCH="feature/bd-<id>-<slug>"
-# slug = first 4 words of title, kebab-cased, e.g. bd-42-add-user-login
-WORKTREE_PATH="${MAIN_ROOT}/../$(basename $MAIN_ROOT)-bd-<id>-<slug>"
-
-git -C "$MAIN_ROOT" worktree add "$WORKTREE_PATH" -b "$BRANCH" origin/main
+agent-cli wt new <id> <slug> --base origin/main   # slug = first 4 words of title, kebab-cased
 ```
 
 The worktree persists until `/merged` cleans it up. Reviewers, fixes, and quality gates all run in the same worktree path.
 
-**CRITICAL:** Install dependencies in each worktree BEFORE spawning parallel implementers. If multiple worktrees share a package manager cache (e.g. `node_modules`), run installs sequentially, not concurrently.
+**CRITICAL:** the project's wt-setup hook installs deps; if the project has none, install before spawning. If multiple worktrees share a package manager cache (e.g. `node_modules`), run installs sequentially, not concurrently.
 
 #### Spawn implementers
 
@@ -614,7 +609,7 @@ information. Phase 3 is a short wrap-up only.
 - Sharing a worktree across multiple beads — each bead gets its own named worktree
 - Running dependency installs concurrently across multiple worktrees
 - Fixing non-trivial review issues inline — file issues and spawn implementers instead
-- Using `isolation: "worktree"` for implementers — worktrees are ephemeral and disappear before reviews run; always create worktrees manually with `git worktree add`
+- Using `isolation: "worktree"` for implementers — worktrees are ephemeral and disappear before reviews run; always create worktrees manually with `agent-cli wt new`
 - Omitting `--repo` from `gh` commands — always derive it from `git remote get-url origin`
 - (Autonomous Loop Mode) Performing irreversible actions inside the loop — merging, deploying, deleting data, and rotating secrets all stay outside the loop body
 - (Autonomous Loop Mode) Committing the loop eval into the repo or filing it as a bead/PR — it is local-only scaffolding under the outer `.claude/loop-evals/<epic-id>/`

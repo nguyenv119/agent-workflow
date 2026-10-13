@@ -79,13 +79,10 @@ Create the worktree and branch exactly like `coordinator` does — no
 shortcut here, this was a deliberate call, not an oversight:
 
 ```bash
-MAIN_ROOT=$(git worktree list --porcelain | grep '^worktree' | head -1 | awk '{print $2}')
-BRANCH="feature/bd-<id>-<slug>"
-WORKTREE_PATH="${MAIN_ROOT}/../$(basename $MAIN_ROOT)-bd-<id>-<slug>"
-git -C "$MAIN_ROOT" worktree add "$WORKTREE_PATH" -b "$BRANCH" origin/main
+agent-cli wt new <id> <slug> --base origin/main
 ```
 
-Install dependencies in the worktree before doing anything else in it.
+The project's wt-setup hook installs deps; if the project has none, install them before doing anything else in it.
 
 ## Step 3 — Implement
 
