@@ -33,6 +33,7 @@ ID = re.compile(r"[a-z0-9]{3,5}")
 # Hyphen-only ids need a letter+digit mix that is not a common word shape: units and decades
 # (10k, 2fa, 90s, 1990s) or numeronyms (e2e, k8s). Letter-only ids need .N or --prefix.
 NOT_ID = re.compile(r"\d+[a-z]+|[a-z]\d+[a-z]+")
+LAYER_HEAD = re.compile(r"Layer\s+\d")  # "Layer 2. ...", not "Layers at a glance"
 VERSION = re.compile(r"[a-z]+\d+")  # web3.0, python3.12: a name and a version, not an id
 def bead_ids(text, prefixes=()):
     """Yield tracker-id-shaped strings: prefix-ID, prefix-ID.N, or a bare 4-5 char ID.N."""
@@ -71,6 +72,7 @@ class _Page(HTMLParser):
         self.legend_div = 0
         self.swatches = 0
         self.heading, self.in_heading = "top of page", None
+        self.second_h3 = False    # an h3 inside a layer that already has one: its div was never closed
 
     def handle_starttag(self, tag, attrs):
         cls = (dict(attrs).get("class") or "").split()
@@ -98,6 +100,7 @@ class _Page(HTMLParser):
         if self.layer_div:
             has = self.layers[-1]["has"]
             if tag == "h3":
+                self.second_h3 = "h3" in has
                 has.add("h3")
             elif tag == "p" and "pain" in cls:
                 has.add("pain")
@@ -117,9 +120,11 @@ class _Page(HTMLParser):
         if tag == self.in_heading:
             self.in_heading = None
             self.heading = " ".join(self.heading.split())
-            if tag == "h3" and self.layer_div:
+            if tag == "h3" and self.layer_div and self.second_h3:
+                self.out.append(f"unclosed div.layer before '{self.heading}'")
+            elif tag == "h3" and self.layer_div:
                 self.layers[-1]["name"] = self.heading
-            elif tag == "h3" and self.heading.startswith("Layer"):
+            elif tag == "h3" and not self.agents and LAYER_HEAD.match(self.heading):
                 self.out.append(f"'{self.heading}': layer not wrapped in div.layer")
 
     def handle_data(self, data):

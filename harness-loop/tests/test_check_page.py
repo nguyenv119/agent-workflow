@@ -180,6 +180,27 @@ class PageRules(unittest.TestCase):
         self.assertIn("Layer 2. Misses go to the database", out[0])
         self.assertIn("p.done", out[0])
 
+    def test_unclosed_layer_before_a_bare_heading_is_reported(self):
+        """A complete layer 1 left open swallows a later bare <h3>Layer 2</h3>, which would rename
+        layer 1 and inherit its parts. A second h3 in one layer means its div was never closed."""
+        # GIVEN a complete layer 1 with no closing div, then a bare layer 2 heading
+        html = page([layer()[:-len("</div>")] + "<h3>Layer 2. Misses go to the database</h3>"])
+        # WHEN it is checked
+        out = check_page.check_page(html)
+        # THEN the unclosed layer is reported before the layer 2 heading
+        self.assertEqual(len(out), 1, out)
+        self.assertIn("unclosed div.layer before 'Layer 2. Misses go to the database'", out[0])
+
+    def test_layer_words_that_are_not_layer_headings_pass(self):
+        """Old layer notes belong in For agents, and "Layers at a glance" is not a numbered layer;
+        neither is a bare layer heading on the main page."""
+        # GIVEN a numbered layer heading inside For agents and an unnumbered "Layers" h3 outside
+        extra = ('<h3>Layers at a glance</h3><details class="agents"><summary>For agents</summary>'
+                 "<h3>Layer 3. Old note from an earlier turn</h3></details>")
+        # WHEN it is checked
+        # THEN nothing is reported
+        self.assertEqual(check_page.check_page(page(extra=extra)), [])
+
     def test_template_passes_its_own_checker(self):
         """Every new page starts as a copy of template.html; if the template fails, every new page
         fails before anyone writes a word."""
