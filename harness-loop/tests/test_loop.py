@@ -1304,7 +1304,7 @@ class Budget(LoopTestCase):
         loop.py's copy of the first-try estimate must be run_exam.py's; if one moves alone, the up-front
         budget check passes a budget under which run_exam starts nothing, or refuses one that would run.
         """
-        # GIVEN run_exam.py loaded by path, without touching sys.path
+        # GIVEN run_exam.py loaded by path (its own imports add exam/ and tasks/ to sys.path, as other test files do)
         spec = importlib.util.spec_from_file_location("run_exam", LOOP_DIR / "exam/run_exam.py")
         run_exam = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(run_exam)
