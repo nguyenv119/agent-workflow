@@ -15,8 +15,8 @@ screen run it will reuse, history.jsonl, queue.json, spend.jsonl, and this check
 .git config/hooks/info and the user's git config); run the
 improver (default: `claude -p --model opus` on Bedrock, see IMPROVER_ENV); re-check all of it
 and drop the round on any change; run the checks (one commit; only .claude/** or AGENTS.md;
-no EXAM_MODE; Exam mode section untouched; the gate guard; leak scan; proposal.md with an
-Idea: line and >= 2 try folders on disk; load check); then, unless --no-screen, screen the
+no EXAM_MODE; Exam mode section untouched; the gate guard; leak scan; project check; proposal.md
+with an Idea: line and >= 2 try folders on disk; load check); then, unless --no-screen, screen the
 candidate against main with run_exam.py --screen and compare.py --screen-rule, push, and open
 one PR whose score block is written here from compare's output. Screen pass: ready PR, queued.
 Screen fail: draft PR titled "[screen fail] ...". The loop never merges.
@@ -44,10 +44,19 @@ is refused before anything starts; so is a monthly.
 
 Leak scan: /Users/ always; tool names (EXAMPLE_LEAK) unless the line has "e.g."; plus private
 names, one regex per line, from $HARNESS_LOOP_HOME/leak-patterns.txt, which must exist (an
-empty file is a decision; a missing one is a mistake, so the round refuses).
+empty file is a decision; a missing one is a mistake, so the round refuses). It reads the added
+lines, the commit message and proposal.md as the PR body shows it (Evidence reduced to masked paths).
+Project check: project_check.py, one Sonnet call over the same text, blocks a line that names or
+points to one specific project (or carries a rule only one project needs) with none of those
+words; it fails closed. Its cost is booked as project-check.
+
+Tries: the improver reads real /work try folders from every repo under ~/.claude/tries/ (Long,
+13 Oct); a cited ~/.claude/tries/<repo>/<bead>/try-N reaches the PR only as tries/<k>/try-N
+(the k-th cited try).
 
 Env: HARNESS_LOOP_HOME (default ~/.harness-loop); LOOP_RUN_EXAM / LOOP_COMPARE replace the
-run_exam.py / compare.py command (tests use fakes).
+run_exam.py / compare.py command; PROJECT_CHECK_CLAUDE replaces project_check.py's claude command
+(tests use fakes).
 """
 import argparse
 import datetime
@@ -65,7 +74,7 @@ from pathlib import Path
 LOOP_DIR = Path(__file__).resolve().parent
 AW_ROOT = LOOP_DIR.parent
 HOME = Path(os.environ.get("HARNESS_LOOP_HOME") or Path.home() / ".harness-loop")
-TRIES = Path.home() / ".claude/tries/agent-workflow"
+TRIES = Path.home() / ".claude/tries"  # every repo's /work tries: <repo>/<bead>/try-<n>
 GH_REPO = "nguyenv119/agent-workflow"
 
 WEEKLY_BUDGET_USD = 50.0  # Long, 12 Oct 2026
@@ -83,7 +92,7 @@ STATE_FILES = ("history.jsonl", "queue.json", "spend.jsonl", "leak-patterns.txt"
 ALLOWED_PATH = re.compile(r"^(\.claude/.+|AGENTS\.md)$")
 EXAM_WORDS = re.compile(r"EXAM_MODE|exam mode", re.I)
 EXAMPLE_LEAK = re.compile(r"Neon|NEON_|pnpm|turbo|vitest|VITEST|rtk |PGlite|Trigger\.dev|Vercel|race-|svc-", re.I)
-TRY_PATH = re.compile(r"(?<![\w/.~-])((?:runs/|~/\.claude/tries/agent-workflow/)[^\s`'\"<>()\[\],;]+)")
+TRY_PATH = re.compile(r"(?<![\w/.~-])((?:runs/|~/\.claude/tries/)[^\s`'\"<>()\[\],;]+)")
 # The improver gets Bedrock only: never an Anthropic API key, OAuth token or admin AWS key.
 SCRUB_ENV = re.compile(r"^(ANTHROPIC_BASE_URL|AWS_ADMIN_.*|AWS_PROFILE"
                        r"|.*(TOKEN(?!S)|SECRET|KEY|PASSWORD|CREDENTIAL).*)$", re.I)
@@ -413,12 +422,14 @@ def existing_dirs():
 
 def try_folders(text, existing=None):
     """(valid, invalid) try-folder citations: runs/... under $HARNESS_LOOP_HOME/runs or
-    ~/.claude/tries/agent-workflow/..., each an existing dir inside its root (and in `existing`, if given)."""
+    ~/.claude/tries/<repo>/..., each an existing dir inside its root (and in `existing`, if given)."""
     valid, invalid = [], []
     for p in dict.fromkeys(m.rstrip(".:") for m in TRY_PATH.findall(text)):
-        root, rest = (HOME / "runs", p[len("runs/"):]) if p.startswith("runs/") else (TRIES, p.split("agent-workflow/", 1)[1])
+        root, rest = (HOME / "runs", p[len("runs/"):]) if p.startswith("runs/") else (TRIES, p[len("~/.claude/tries/"):])
         target = (root / rest).resolve()
-        ok = (target.is_dir() and target.is_relative_to(root.resolve()) and target != root.resolve()
+        # a tries citation names at least <repo>/<bead>: a whole repo's folder is not one try
+        deep = root is not TRIES or target.parent != TRIES.resolve()
+        ok = (target.is_dir() and target.is_relative_to(root.resolve()) and target != root.resolve() and deep
               and (existing is None or target in existing))
         (valid if ok else invalid).append(p)
     return valid, invalid
@@ -454,7 +465,27 @@ def load_check(cand):
         return bad
 
 
-def run_checks(base, cand, proposal, private, existing=None):
+def project_check(base, cand, body, round_n):
+    """(ok, detail) from project_check.py over base..cand and the PR body; books its cost. Fails closed."""
+    with tempfile.NamedTemporaryFile("w", suffix=".md", prefix="loop-body-") as fh:
+        fh.write(body)
+        fh.flush()
+        p = subprocess.run([sys.executable, str(LOOP_DIR / "project_check.py"), base, cand, fh.name], cwd=AW_ROOT,
+                           capture_output=True, text=True, env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"})
+    try:
+        v = json.loads(p.stdout.strip().splitlines()[-1])
+    except (ValueError, IndexError):
+        return False, f"no verdict (exit {p.returncode}): {p.stderr.strip()[:200]}"
+    if v.get("cost_usd") is not None:
+        book("project-check", v["cost_usd"], round_n)
+    if p.returncode == 0 and v.get("clean") is True:
+        return True, f"${float(v.get('cost_usd') or 0):.4f}"
+    if v.get("error"):
+        return False, "error: " + str(v["error"])[:200]
+    return False, "; ".join(f"{h.get('line')}: {h.get('why')}"[:160] for h in v.get("hits") or []) or "blocked"
+
+
+def run_checks(base, cand, proposal, private, existing=None, round_n=0):
     """[(name, ok, detail)] for every check. The gate guard's rows are named 'gate guard'."""
     out = []
     count = int(git("rev-list", "--count", f"{base}..{cand}"))
@@ -477,8 +508,10 @@ def run_checks(base, cand, proposal, private, existing=None):
     out.append(("gate guard", not reasons, "; ".join(reasons)))
     message = git("log", "-1", "--format=%B", cand)
     added = [t for f in files for kind, _, t in f["lines"] if kind == "+"]
-    hits = leak_hits(added + message.splitlines() + proposal.splitlines(), private)
+    body = proposal_for_body(proposal, existing)  # what the PR shows: Evidence as masked paths, notes stay local
+    hits = leak_hits(added + message.splitlines() + body.splitlines(), private)
     out.append(("leak scan", not hits, "leak: " + "; ".join(h.strip()[:80] for h in hits) if hits else ""))
+    out.append(("project check", *project_check(base, cand, body, round_n)))
     idea = re.search(r"^Idea:\s*\S", proposal, re.M)
     valid, invalid = try_folders(proposal, existing)
     ok = bool(proposal) and bool(idea) and len(valid) >= 2
@@ -585,24 +618,29 @@ def scores_block(*lines):
     return "\n".join([SCORES_OPEN, *lines, SCORES_CLOSE])
 
 
-def mask_task(path):
-    """runs/<run>/<task>/try-N -> runs/<run>/task-<sha8>/try-N: the PR names no exam task (proposal.md keeps it)."""
+def mask_task(path, k=1):
+    """runs/<run>/<task>/try-N -> runs/<run>/task-<sha8>/try-N, and the k-th ~/.claude/tries/<repo>/<bead>/try-N ->
+    tries/<k>/try-N: the PR names no exam task, repo or bead (proposal.md keeps them). A plain count, not a
+    hash: a hash of a guessable repo and bead name could be confirmed offline."""
     parts = path.split("/")
     if parts[0] == "runs" and len(parts) > 3:
         parts[2] = "task-" + hashlib.sha256(parts[2].encode()).hexdigest()[:8]
+    elif parts[:3] == ["~", ".claude", "tries"]:
+        parts = ["tries", str(k), *parts[5:]]
     return "/".join(parts)
 
 
 def proposal_for_body(proposal, existing=None):
-    """proposal.md with its Evidence list reduced to the cited paths (exam task dirs masked) and no marker lines."""
+    """proposal.md with its Evidence list reduced to the cited paths (exam task, repo and bead dirs masked) and no
+    marker lines."""
     out, skip = [], False
     proposal = re.sub(re.escape(SCORES_OPEN) + r".*?" + re.escape(SCORES_CLOSE), "", proposal, flags=re.S)
     for line in proposal.splitlines():
         if re.match(r"^[A-Z][\w ]*:", line):
             skip = line.startswith("Evidence:")
             if skip:
-                out.append("Evidence (task dirs masked; notes in the round's proposal.md):")
-                out += [f"  {mask_task(t)}" for t in try_folders(proposal, existing)[0]]
+                out.append("Evidence (task, repo and bead dirs masked; notes in the round's proposal.md):")
+                out += [f"  {mask_task(t, k)}" for k, t in enumerate(try_folders(proposal, existing)[0], 1)]
                 continue
         if not skip and "harness-loop:scores" not in line:
             out.append(line)
@@ -764,7 +802,7 @@ def cmd_round(args):
         proposal = prop_f.read_text(errors="replace") if prop_f.is_file() else ""
         idea = re.search(r"^Idea:\s*(.+)$", proposal, re.M)
         row["idea"] = idea[1].strip() if idea else None
-        checks, files = run_checks(base_sha, cand, proposal, private, existing)
+        checks, files = run_checks(base_sha, cand, proposal, private, existing, round_n=n)
         row["files"] = sorted({f["new"] if f["status"] != "D" else f["old"] for f in files})
         (round_dir / "checks.json").write_text(json.dumps([{"check": c, "ok": ok, "detail": d}
                                                            for c, ok, d in checks], indent=2) + "\n")

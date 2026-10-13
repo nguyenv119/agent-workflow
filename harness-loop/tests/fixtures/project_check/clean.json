@@ -1,0 +1,7 @@
+{
+  "type": "result",
+  "subtype": "success",
+  "is_error": false,
+  "result": "{\"clean\": true, \"hits\": []}",
+  "total_cost_usd": 0.0074814999999999994
+}

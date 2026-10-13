@@ -1,0 +1,7 @@
+{
+  "type": "result",
+  "subtype": "success",
+  "is_error": false,
+  "result": "{\"clean\": false, \"hits\": [{\"line\": \"L1\", \"why\": \"References a specific invoices_v2 table, a nightly ledger reconciliation job, and the #billing-ops channel, all specific to one project's data and infrastructure.\"}, {\"line\": \"L2\", \"why\": \"Commit message encodes the project-specific rule about reconciling ledgers after invoice changes.\"}, {\"line\": \"L3\", \"why\": \"PR body describes the same project-specific ledger/invoice reconciliation convention.\"}]}",
+  "total_cost_usd": 0.008949
+}

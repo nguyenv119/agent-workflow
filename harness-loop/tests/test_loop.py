@@ -95,7 +95,7 @@ class LoopRepo:
         self.origin = self.tmp / "origin.git"
         run(GIT + ["init", "-q", "--bare", str(self.origin)], self.tmp)
         files = dict(BASE_FILES)
-        for rel in ("loop.py", "install_harness.py", "exam/compare.py"):
+        for rel in ("loop.py", "install_harness.py", "project_check.py", "exam/compare.py"):
             files[f"harness-loop/{rel}"] = (LOOP_DIR / rel).read_text()
         self.aw, self.base_sha = make_repo(self.tmp / "aw", files)
         run(GIT + ["remote", "add", "origin", str(self.origin)], self.aw)
@@ -120,6 +120,7 @@ class LoopRepo:
             "HARNESS_LOOP_HOME": str(self.home), "FAKE_GH_LOG": str(self.gh_log),
             "FAKE_EXAM_LOG": str(self.exam_log), "FAKE_EXAM_SPEC": json.dumps(SPEC_PASS),
             "LOOP_RUN_EXAM": f"{sys.executable} {FIXTURES / 'fake_run_exam.py'}",
+            "PROJECT_CHECK_CLAUDE": f"{sys.executable} {FIXTURES / 'fake_claude.py'}",
             "STUB_TRY_PATHS": "~/.claude/tries/agent-workflow/b-1/try-1 ~/.claude/tries/agent-workflow/b-2/try-1",
         }
 
@@ -366,14 +367,16 @@ class RoundOpensPR(LoopTestCase):
         self.assertEqual(self.r.history()[0]["outcome"], "screen-fail")
 
     def test_exam_spend_is_booked_in_the_loop_ledger(self):
-        """Each exam run's total cost lands in the loop's own spend ledger, tagged with the round."""
+        """Each exam run's total cost, and the project check's, lands in the loop's own spend ledger, tagged
+        with the round."""
         # GIVEN no earlier spend
-        # WHEN a screened stub round runs (two fake runs at $10 each)
+        # WHEN a screened stub round runs (the recorded clean project check, then two fake runs at $10 each)
         p = self.r.round()
-        # THEN the ledger holds both runs for round 1
+        # THEN the ledger holds the check and both runs for round 1
         self.assertEqual(p.returncode, 0, p.stderr)
         rows = [json.loads(line) for line in (self.r.home / "spend.jsonl").read_text().splitlines()]
-        self.assertEqual([(r["round"], r["usd"]) for r in rows], [(1, 10.0), (1, 10.0)])
+        self.assertEqual([(r["round"], r["usd"]) for r in rows], [(1, 0.0075), (1, 10.0), (1, 10.0)])
+        self.assertEqual(rows[0]["kind"], "project-check")
 
 
 SIDE = {"t1": [1, 3.0], "t2": [1, 3.0], "t3": [0, 3.0]}
@@ -684,6 +687,72 @@ class RoundChecksDrop(LoopTestCase):
         masked = "task-" + loop.hashlib.sha256(b"t4").hexdigest()[:8]
         self.assertIn(f"runs/{base.name}/{masked}/try-1", body)
         self.assertNotIn("/t4/", body)
+
+    def test_tries_from_another_repo_count_and_reach_the_pr_masked(self):
+        """
+        A try folder of another repo (~/.claude/tries/<repo>/<bead>/try-N) is valid evidence; the PR
+        cites it as tries/<k>/try-N, and a repo name that is on the private list does not drop the round.
+        """
+        # GIVEN a try folder under a repo folder whose name matches the private leak pattern
+        (self.r.user / ".claude/tries/secretco-app/secretco-app-7/try-2").mkdir(parents=True)
+        paths = "~/.claude/tries/agent-workflow/b-1/try-1 ~/.claude/tries/secretco-app/secretco-app-7/try-2"
+        # WHEN the round runs
+        p = self.r.round(env={"STUB_TRY_PATHS": paths})
+        # THEN it opens a PR whose body cites both tries by count, never the repo or bead names
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertEqual(self.r.history()[0]["outcome"], "queued", self.r.history()[0]["reason"])
+        body = [c for c in self.r.gh_calls() if "body" in c][0]["body"]
+        self.assertIn("tries/1/try-1", body)
+        self.assertIn("tries/2/try-2", body)
+        for name in ("secretco", "agent-workflow/b-1", "b-1", ".claude/tries"):
+            self.assertNotIn(name, body)
+
+    def test_a_whole_repo_tries_folder_is_not_a_try(self):
+        """~/.claude/tries/<repo> alone (no bead) is not a try folder citation."""
+        # GIVEN one valid try folder and one bare repo folder
+        paths = "~/.claude/tries/agent-workflow/b-1/try-1 ~/.claude/tries/agent-workflow"
+        # WHEN the round runs
+        p = self.r.round(env={"STUB_TRY_PATHS": paths})
+        # THEN it is dropped: only one citation counts
+        self.assertDropped(p, "1 valid try folders")
+
+    def test_project_check_hit_drops_the_round(self):
+        """A change the project check flags is dropped before any exam, with the model's reason in history."""
+        # GIVEN the model's recorded reply for a project-only rule
+        reply = FIXTURES / "project_check/project.json"
+        # WHEN the round runs
+        p = self.r.round(env={"FAKE_CLAUDE_REPLY": str(reply)})
+        # THEN it is dropped by the project check, no exam ran, and its cost is booked
+        row = self.assertDropped(p, "project check: L1: References a specific invoices_v2 table")
+        self.assertEqual(self.r.exam_calls(), [])
+        spend = [json.loads(ln) for ln in (self.r.home / "spend.jsonl").read_text().splitlines()]
+        self.assertEqual([(s["kind"], s["usd"], s["round"]) for s in spend], [("project-check", 0.0089, row["round"])])
+
+    def test_project_check_error_drops_the_round(self):
+        """A failed model call is a block, not a pass (fail closed)."""
+        # GIVEN a claude command that exits 1
+        # WHEN the round runs
+        p = self.r.round(env={"FAKE_CLAUDE_EXIT": "1"})
+        # THEN it is dropped by the project check with the error named
+        self.assertDropped(p, "project check: error: RuntimeError: claude exited 1")
+
+    def test_project_check_reads_the_masked_pr_body_and_the_change(self):
+        """The model sees the added line, the commit message and the PR body with masked Evidence only."""
+        # GIVEN a log of what the fake model is sent
+        log = self.r.tmp / "claude.jsonl"
+        # WHEN a round runs
+        p = self.r.round(env={"FAKE_CLAUDE_LOG": str(log)})
+        # THEN one call saw the added line, the commit message, the Idea line and masked tries, no notes
+        self.assertEqual(p.returncode, 0, p.stderr)
+        calls = [json.loads(ln) for ln in log.read_text().splitlines()]
+        self.assertEqual(len(calls), 1)
+        prompt = calls[0]["prompt"]
+        self.assertIn("[.claude/skills/implementer/SKILL.md] - Before committing, re-read", prompt)
+        self.assertIn("[commit message] implementer: re-read the acceptance criteria", prompt)
+        self.assertIn("[PR body] Idea: The implementer re-reads", prompt)
+        self.assertIn("[PR body]   tries/1/try-1", prompt)
+        self.assertNotIn("stub citation", prompt)
+        self.assertNotIn("b-1", prompt)
 
     def test_try_folders_the_improver_created_do_not_count(self):
         """Folders the improver makes itself (mkdir) are not evidence: only those present before it ran count."""
