@@ -4,15 +4,12 @@ import io
 import json
 import os
 import re
-import shutil
 import subprocess
 import sys
-import tempfile
 import unittest
 from contextlib import redirect_stdout
-from pathlib import Path
 
-from helpers import CLAUDE, CLEAN, agent_cli, make_project
+from helpers import CLAUDE, CLEAN, TmpCase, agent_cli, make_project
 
 sys.path.insert(0, str(CLAUDE / "cli"))
 from agent_cli import log  # noqa: E402
@@ -20,10 +17,9 @@ from agent_cli import log  # noqa: E402
 HEADER = "ts\tphase\taction\tresult\tevidence\tverdict\tcost_usd\tnote"
 
 
-class Log(unittest.TestCase):
+class Log(TmpCase):
     def setUp(self):
-        self.tmp = Path(os.path.realpath(tempfile.mkdtemp(prefix="agent-cli-log-")))
-        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+        super().setUp()
         self.p = make_project(self.tmp / "proj")
         self.f = self.tmp / "loop-demo.tsv"
 
@@ -85,16 +81,16 @@ class Log(unittest.TestCase):
 
     def test_show_filters_by_phase_and_keeps_the_last_n(self):
         """--phase keeps exact phase matches; --last N keeps the final N of what is left."""
-        # GIVEN five rows over three phases
-        for i, ph in enumerate(["start", "iter-1", "iter-2", "iter-1", "iter-1"]):
+        # GIVEN five rows over three phases, the last one not iter-1 (so --last alone and --phase + --last differ)
+        for i, ph in enumerate(["start", "iter-1", "iter-1", "iter-1", "iter-2"]):
             self.assertEqual(self.append(phase=ph, action=f"a{i}").returncode, 0)
         # WHEN filtered
         last2 = self.show_json("--last", "2")
         it1 = self.show_json("--phase", "iter-1", "--last", "2")
-        # THEN the right rows come back in file order
+        # THEN the right rows come back in file order: --last applies after --phase
         self.assertEqual([r["action"] for r in last2], ["a3", "a4"])
-        self.assertEqual([r["action"] for r in it1], ["a3", "a4"])
-        self.assertEqual([r["action"] for r in self.show_json("--phase", "iter-1")], ["a1", "a3", "a4"])
+        self.assertEqual([r["action"] for r in it1], ["a2", "a3"])
+        self.assertEqual([r["action"] for r in self.show_json("--phase", "iter-1")], ["a1", "a2", "a3"])
 
     def test_show_text_prints_non_empty_fields_per_row(self):
         """Without --json each row is `key: value` lines (empty fields left out), rows split by a blank line."""
@@ -113,15 +109,15 @@ class Log(unittest.TestCase):
 
     def test_twenty_parallel_appends_give_twenty_intact_rows(self):
         """Concurrent appenders never interleave or lose a row, and each gets its own row number."""
-        # GIVEN 20 appenders started at once on one new file
+        # GIVEN one new file and a clean environment
         env = {k: v for k, v in os.environ.items() if k not in CLEAN}
+        # WHEN 20 appenders run at once
         procs = [subprocess.Popen([sys.executable, str(self.p / ".claude/bin/agent-cli"), "log", "append",
                                    str(self.f), "--phase", "iter-1", "--action", f"lane {i}", "--result", "pass",
                                    "--note", "x" * 3000 + f"\n{i}", "--json"],
                                   env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
                  for i in range(20)]
         outs = [p.communicate() for p in procs]
-        # WHEN they all finish
         self.assertEqual([p.returncode for p in procs], [0] * 20, [e for _, e in outs])
         # THEN header + 20 rows of 8 fields, rows 1..20 each handed out once, every lane present
         lines = self.f.read_text().split("\n")[:-1]
@@ -164,6 +160,70 @@ class Log(unittest.TestCase):
             self.assertIn(msg, r.stderr)
         self.assertEqual(other.read_text(), "a\tb\n1\t2\n")
 
+    def test_show_refuses_a_row_with_the_wrong_field_count(self):
+        """A hand-edited row that lost its tabs fails show with exit 1, naming the row and its field count."""
+        # GIVEN a log whose only row has 2 fields
+        self.f.write_text(HEADER + "\na\tb\n")
+        # WHEN shown
+        r = self.log("show", str(self.f))
+        # THEN exit 1 naming row 1
+        self.assertEqual(r.returncode, 1, r.stderr)
+        self.assertIn("row 1 has 2 fields", r.stderr)
+
+    def test_a_missing_parent_dir_is_refused_with_an_example(self):
+        """Appending into a directory that does not exist exits 2 with the reason and an example, no traceback."""
+        # GIVEN a path under a missing directory
+        f = self.tmp / "no-such-dir" / "loop-demo.tsv"
+        # WHEN appended to
+        r = self.log("append", str(f), "--phase", "p", "--action", "a", "--result", "r")
+        # THEN a clean refusal
+        self.assertEqual(r.returncode, 2, r.stderr)
+        self.assertIn(f"cannot open {f}: No such file or directory", r.stderr)
+        self.assertIn("example: agent-cli log ", r.stderr)
+        self.assertNotIn("Traceback", r.stderr)
+        self.assertFalse(f.parent.exists())
+
+    def test_a_non_utf8_log_is_refused_with_an_example(self):
+        """Appending to or showing a .tsv that is not UTF-8 exits 2 with an example and leaves it unchanged."""
+        # GIVEN a binary .tsv
+        raw = HEADER.encode() + b"\n\xff\xfe\n"
+        self.f.write_bytes(raw)
+        # WHEN appended to and shown
+        for r in (self.append(), self.log("show", str(self.f))):
+            # THEN each refuses cleanly
+            self.assertEqual(r.returncode, 2, r.stderr)
+            self.assertIn("is not UTF-8 text", r.stderr)
+            self.assertIn("example: agent-cli log ", r.stderr)
+        self.assertEqual(self.f.read_bytes(), raw)
+
+    def test_a_last_line_without_a_newline_is_ended_before_the_next_row(self):
+        """When the file does not end in a newline, the next row starts on its own line and a note says so."""
+        # GIVEN a log whose last row lost its trailing newline
+        self.assertEqual(self.append(action="a0").returncode, 0)
+        self.f.write_bytes(self.f.read_bytes()[:-1])
+        # WHEN another row is appended
+        r = self.append(action="a1")
+        # THEN it is row 2 on its own line, and stderr notes the repair
+        self.assertEqual((r.returncode, r.stdout), (0, "row: 2\n"), r.stderr)
+        self.assertEqual(r.stderr, "repaired: missing newline\n")
+        lines = self.f.read_text().split("\n")
+        self.assertEqual(len(lines), 4)
+        self.assertEqual({len(ln.split("\t")) for ln in lines[:-1]}, {8})
+        self.assertEqual([x["action"] for x in self.show_json()], ["a0", "a1"])
+
+    def test_cost_must_be_a_finite_number_and_is_stored_stripped(self):
+        """--cost-usd nan, inf and -inf exit 2; a padded number is stored without the padding."""
+        # GIVEN an installed project
+        # WHEN non-finite costs and a padded one are appended
+        bad = [self.append(f"--cost-usd={v}") for v in ("nan", "inf", "-inf", "Infinity")]
+        good = self.append("--cost-usd", " 0.80 ")
+        # THEN the non-finite ones refuse, the padded one is stored stripped
+        for r in bad:
+            self.assertEqual(r.returncode, 2, r.stderr)
+            self.assertIn("is not a finite number", r.stderr)
+        self.assertEqual(good.returncode, 0, good.stderr)
+        self.assertEqual([x["cost_usd"] for x in self.show_json()], ["0.80"])
+
     def test_help_has_examples_and_bare_group_prints_help(self):
         """R2: `log` alone and each verb's --help end in an Examples block."""
         # GIVEN an installed project
@@ -175,12 +235,11 @@ class Log(unittest.TestCase):
             self.assertIn("Examples:\n  agent-cli log ", r.stdout)
 
 
-class Duplicate(unittest.TestCase):
+class Duplicate(TmpCase):
     """R4 in-process with a fixed clock, so the same-second case is not a race against the wall clock."""
 
     def setUp(self):
-        self.tmp = Path(os.path.realpath(tempfile.mkdtemp(prefix="agent-cli-log-dup-")))
-        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+        super().setUp()
         self.f = self.tmp / "loop-demo.tsv"
 
     def run_append(self, ts, json_mode=False, **kw):
@@ -189,6 +248,7 @@ class Duplicate(unittest.TestCase):
         vars(a).update(kw)
         buf = io.StringIO()
         with redirect_stdout(buf):
+            # REVIEW: mocking core dependency — test may not reflect real behavior
             code = log.append(a, now=lambda: ts)
         return code, buf.getvalue()
 
@@ -216,10 +276,9 @@ class Duplicate(unittest.TestCase):
         self.assertEqual(changed, (0, "row: 3\n"))
 
 
-class HookRule(unittest.TestCase):
+class HookRule(TmpCase):
     def setUp(self):
-        self.tmp = Path(os.path.realpath(tempfile.mkdtemp(prefix="agent-cli-log-hook-")))
-        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+        super().setUp()
         self.p = make_project(self.tmp / "proj")
 
     def test_hand_appended_loop_log_warns(self):

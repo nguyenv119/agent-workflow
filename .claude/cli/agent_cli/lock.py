@@ -108,13 +108,6 @@ def check_name(name, example):
         core.die(Exit.REFUSED, f"bad lock name {name!r}: letters, digits, . _ - only", example)
 
 
-def out(a, row, text):
-    if a.json:
-        core.emit(row, True)
-    else:
-        print(text)
-
-
 def try_take(name, pid, cap, dry_run=False):
     """One acquire attempt under the guard; never exits. Returns (status, owner):
     ("acquired", reaped owner or None), ("already-held", None) or ("held", the live holder)."""
@@ -149,12 +142,13 @@ def acquire(a):
                  f"agent-cli lock acquire {a.name} --pid $$ --wait 10m")
     status, reaped = got
     if status == "already-held":
-        return out(a, {"status": status, "name": a.name, "pid": a.pid}, f"already held: {a.name} (pid {a.pid})")
+        return core.out(a, {"status": status, "name": a.name, "pid": a.pid}, f"already held: {a.name} (pid {a.pid})")
     reaped = reaped and describe(reaped)
     if reaped and not a.json:
         print(f"reaped: {reaped}")
     verb = "would-acquire" if a.dry_run else "acquired"
-    return out(a, {"status": verb, "name": a.name, "pid": a.pid, "reaped": reaped}, f"{verb}: {a.name} (pid {a.pid})")
+    return core.out(a, {"status": verb, "name": a.name, "pid": a.pid, "reaped": reaped},
+                    f"{verb}: {a.name} (pid {a.pid})")
 
 
 def take(name, pid, cap):
@@ -177,14 +171,15 @@ def release(a):
     with guard():
         held = read(a.name)
         if not held:
-            return out(a, {"status": "already-done", "name": a.name}, f"already done: {a.name} is not held")
+            return core.out(a, {"status": "already-done", "name": a.name}, f"already done: {a.name} is not held")
         if held["pid"] != pid and not a.force:
             core.die(Exit.REFUSED, f"{a.name} is held by {describe(held)}, not pid {pid}",
                      f"agent-cli lock release {a.name} --pid $$ --force")
         if not a.dry_run:
             shutil.rmtree(root() / a.name)
     verb = "would-release" if a.dry_run else "released"
-    return out(a, {"status": verb, "name": a.name, "owner": describe(held)}, f"{verb}: {a.name} ({describe(held)})")
+    return core.out(a, {"status": verb, "name": a.name, "owner": describe(held)},
+                    f"{verb}: {a.name} ({describe(held)})")
 
 
 def status(a):
@@ -198,9 +193,9 @@ def status(a):
             rows.append({"name": n, "status": "held", "pid": o["pid"], "host": o["host"],
                          "age_s": int(time.time() - o["started"]), "cap_s": o["cap"], "alive": alive(o), "stale": stale(o), "cmdline": o["cmdline"]})
     for r in rows:
-        out(a, r, f"{r['name']}  pid {r['pid']} on {r['host']}  age {r['age_s']}s  cap {r['cap_s']}s  "
+        core.out(a, r, f"{r['name']}  pid {r['pid']} on {r['host']}  age {r['age_s']}s  cap {r['cap_s']}s  "
                   f"{'alive' if r['alive'] else 'dead'}{'  stale' if r['stale'] else ''}")
     if a.name and not rows:
-        out(a, {"name": a.name, "status": "not-held"}, f"not held: {a.name}")
+        core.out(a, {"name": a.name, "status": "not-held"}, f"not held: {a.name}")
     elif not rows and not a.json:
         print("no locks")

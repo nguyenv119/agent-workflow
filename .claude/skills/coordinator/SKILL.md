@@ -554,7 +554,7 @@ Then load `.claude/skills/win-condition/SKILL.md`.
    - **Two acceptable shapes**: fully serial (simplest; ~10–15 min wall time per bead), or overlapped — bead N+1's implementer may start in its own worktree, but its branch is **not pushed and its PR not opened** until bead N is green, so a base fix can be merged forward before the child exists.
 4. **Verify** — run `agent-cli eval run .claude/loop-evals/<epic-id>`; exit 0 = WIN (it enforces exit 0 AND the sentinel last line, printed by the eval, not the implementer). Absence of errors alone is never success.
 5. **Record** — append to the loop log: action, result, verification output (exit code + key line), files touched, the try folder(s) `save_try.py` printed, and approximate token cost (track cost-per-accepted-change; if the accept rate craters, stop and re-tune rather than burning tokens). One row per iteration:
-   `agent-cli log append .claude/loop-<epic-id>.tsv --phase iter-<n> --action "<action>" --result <pass|fail|blocked> --evidence "<path or key line>" --verdict <WIN|NO|BLOCKED> --cost-usd <x> --note "<diagnosis / try folder>"`
+   `agent-cli log append .claude/loop-<epic-id>.tsv --phase iter-<n> --action "<action>" --result <pass|fail|blocked> --evidence "<path or key line>" --verdict <WIN|NO|BLOCKED> --cost-usd <x> --note "<diagnosis; files touched; try folder>"`
 6. **Stop checks** — exit the loop if:
    - win-condition met → **SUCCESS**
    - max-iterations reached → **BLOCKED**

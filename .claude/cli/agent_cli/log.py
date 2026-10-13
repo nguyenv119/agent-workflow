@@ -5,8 +5,10 @@ Each append takes an flock on the file and writes its row with one O_APPEND writ
 """
 import fcntl
 import json
+import math
 import os
 import re
+import sys
 import time
 
 from . import core
@@ -72,45 +74,57 @@ def append(a, now=utc_now):
     for flag in ("phase", "action", "result"):
         if not getattr(a, flag).strip():
             core.die(Exit.REFUSED, f"--{flag} is empty", APPEND)
-    if a.cost_usd:
+    cost = a.cost_usd.strip()
+    if cost:
         try:
-            float(a.cost_usd)
+            ok = math.isfinite(float(cost))
         except ValueError:
-            core.die(Exit.REFUSED, f"--cost-usd {a.cost_usd!r} is not a number", APPEND)
-    fd = os.open(a.file, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o644)
+            ok = False
+        if not ok:
+            core.die(Exit.REFUSED, f"--cost-usd {a.cost_usd!r} is not a finite number", APPEND)
+    try:
+        fd = os.open(a.file, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o644)
+    except OSError as e:
+        core.die(Exit.REFUSED, f"cannot open {a.file}: {e.strerror}", INIT)
     try:
         fcntl.flock(fd, fcntl.LOCK_EX)
-        with open(a.file, encoding="utf-8", newline="") as f:
-            text = f.read()
+        text = read_text(a.file, INIT)
+        lead = ""
         if not text:
             os.write(fd, (HEADER + "\n").encode())
             text = HEADER + "\n"
+        elif not text.endswith("\n"):
+            lead = "\n"  # the last line was cut short: end it in the same write, never glue a row onto it
         rows = rows_of(text, a.file, INIT)
         line = "\t".join(escape(str(v)) for v in (now(), a.phase, a.action, a.result, a.evidence, a.verdict,
-                                                  a.cost_usd, a.note))
+                                                  cost, a.note))
         if line in rows:
             row = rows.index(line) + 1
-            if a.json:
-                core.emit({"status": "already-done", "row": row, "file": a.file}, True)
-            else:
-                print(f"already done: row {row}")
+            core.out(a, {"status": "already-done", "row": row, "file": a.file}, f"already done: row {row}")
             return Exit.OK
-        os.write(fd, (line + "\n").encode())  # one write on an O_APPEND fd: never interleaves
+        os.write(fd, (lead + line + "\n").encode())  # one write on an O_APPEND fd: never interleaves
     finally:
         os.close(fd)  # also drops the flock
-    if a.json:
-        core.emit({"status": "appended", "row": len(rows) + 1, "file": a.file}, True)
-    else:
-        print(f"row: {len(rows) + 1}")
+    if lead:
+        print("repaired: missing newline", file=sys.stderr)
+    core.out(a, {"status": "appended", "row": len(rows) + 1, "file": a.file}, f"row: {len(rows) + 1}")
     return Exit.OK
+
+
+def read_text(path, example):
+    """The file's text, or exit 2 when it is not UTF-8."""
+    try:
+        with open(path, encoding="utf-8", newline="") as f:
+            return f.read()
+    except UnicodeDecodeError:
+        core.die(Exit.REFUSED, f"{path} is not UTF-8 text, so not an agent-cli log", example)
 
 
 def show(a):
     if a.last is not None and a.last < 1:
         core.die(Exit.REFUSED, f"--last {a.last} must be 1 or more", SHOW)
     try:
-        with open(a.file, encoding="utf-8", newline="") as f:
-            text = f.read()
+        text = read_text(a.file, SHOW)
     except FileNotFoundError:
         core.die(Exit.REFUSED, f"no such log: {a.file}", SHOW)
     rows = []
