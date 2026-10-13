@@ -160,9 +160,10 @@ class RunExamTest(unittest.TestCase):
         return m
 
     def run_exam(self, *args, check=True, extra_env=None):
-        env = {**os.environ, **(extra_env or {}), "HARNESS_LOOP_HOME": str(self.home),
+        env = {**os.environ, "HARNESS_LOOP_HOME": str(self.home),
                "EXAM_HARBOR": f"{sys.executable} {self.fake} {self.log} {self.spec} run",
-               "EXAM_DOCKER": f"{sys.executable} {self.fake_docker} {self.docker_log} {self.docker_spec}"}
+               "EXAM_DOCKER": f"{sys.executable} {self.fake_docker} {self.docker_log} {self.docker_spec}",
+               **(extra_env or {})}
         p = subprocess.run([sys.executable, str(SCRIPT), "--harness", "HEAD", *map(str, args)],
                            env=env, text=True, capture_output=True)
         if check:
@@ -757,6 +758,38 @@ class RunExamTest(unittest.TestCase):
         # THEN refused naming the rule, Harbor never ran, no run dir
         self.assertNotEqual(p.returncode, 0)
         self.assertIn("HARNESS_LOOP_HOME", p.stderr)
+        self.assertFalse(self.log.exists())
+        self.assertFalse((self.home / "runs").exists() and any((self.home / "runs").iterdir()))
+
+    def test_missing_harbor_is_refused_before_any_run_dir(self):
+        """
+        A checkout with no harness-loop/.venv has no `harbor`: every try would raise and be
+        booked at max_budget_usd. run_exam exits up front naming the fix, with no run dir.
+        """
+        # GIVEN one task and EXAM_HARBOR pointing at a harbor that does not exist
+        m = self.manifest({"t1": 2})
+        missing = self.root / "no-venv/bin/harbor"
+        # WHEN run_exam runs
+        p = self.run_exam("--tasks", m, "--budget-usd", 100, check=False,
+                          extra_env={"EXAM_HARBOR": f"{missing} run"})
+        # THEN it exits non-zero naming the missing command and both fixes, and no run dir exists
+        self.assertNotEqual(p.returncode, 0)
+        self.assertNotIn("Traceback", p.stderr)
+        for part in (str(missing), "harness-loop/.venv", "EXAM_HARBOR"):
+            self.assertIn(part, p.stderr)
+        self.assertFalse((self.home / "runs").exists() and any((self.home / "runs").iterdir()))
+
+    def test_missing_task_cache_is_refused_before_any_run_dir(self):
+        """A task folder that was never downloaded stops run_exam with a one-line error, not a traceback."""
+        # GIVEN a manifest whose task folder is gone
+        m = self.manifest({"t1": 2})
+        shutil.rmtree(self.root / "cache/t1")
+        # WHEN run_exam runs
+        p = self.run_exam("--tasks", m, "--budget-usd", 100, check=False)
+        # THEN it exits non-zero naming the task, Harbor never ran, and no run dir exists
+        self.assertNotEqual(p.returncode, 0)
+        self.assertNotIn("Traceback", p.stderr)
+        self.assertIn("t1: task folder not downloaded", p.stderr)
         self.assertFalse(self.log.exists())
         self.assertFalse((self.home / "runs").exists() and any((self.home / "runs").iterdir()))
 
