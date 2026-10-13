@@ -3,6 +3,7 @@
 The harness is everything under `.claude/` plus `AGENTS.md`. A target repo's own `CLAUDE.md`
 supplies its Quality Gates table (the test, lint and typecheck commands); the loop never edits it.
 Paths are relative to the repo root. `§` numbers are the coordinator's own section numbers.
+The derived list of what /work loads is `WORK_LOADED` in `harness-loop/loop.py` (a test keeps it complete).
 
 | /work step | What happens | Steered by |
 |---|---|---|

@@ -8,6 +8,8 @@ run_exam passes Harbor only an allowlisted env. A fake `docker` (EXAM_DOCKER)
 answers `docker info` like a 10-CPU / 7.65 GiB Docker Desktop, lists the
 containers in its own spec file, and logs every call.
 """
+import argparse
+import concurrent.futures
 import hashlib
 import json
 import os
@@ -17,6 +19,8 @@ import subprocess
 import sys
 import tempfile
 import textwrap
+import threading
+import time
 import unittest
 import unittest.mock
 from pathlib import Path
@@ -755,6 +759,81 @@ class RunExamTest(unittest.TestCase):
         self.assertIn("HARNESS_LOOP_HOME", p.stderr)
         self.assertFalse(self.log.exists())
         self.assertFalse((self.home / "runs").exists() and any((self.home / "runs").iterdir()))
+
+
+class ScheduleEarlyStop(unittest.TestCase):
+    """run_exam.schedule with --early-stop-vs, run_try replaced by a stub that returns set results."""
+
+    def setUp(self):
+        self.root = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.root)
+
+    def baseline(self, tries):
+        """compare.load of a sealed main run. tries: {task: [(status, reward, cost), ...]}."""
+        run = self.root / "base"
+        for task, rows in tries.items():
+            for i, (st, reward, cost) in enumerate(rows, 1):
+                d = run / task / f"try-{i}"
+                d.mkdir(parents=True)
+                (d / "result.json").write_text(json.dumps(
+                    {"task": task, "try": i, "status": st, "reward": reward, "cost_usd": cost}))
+        (run / "run.json").write_text(json.dumps({"max_budget_usd": 12.05, "status": "complete"}))
+        compare.seal(run)
+        return compare.load(run)
+
+    def schedule(self, base, outcomes, events, wait=None):
+        """Run tasks in outcomes' order at concurrency 2 with early stop; returns schedule()'s result."""
+        lock = threading.Lock()
+
+        def run_try(ctx, task, k, agent):
+            with lock:
+                events.append(("start", task["id"]))
+            time.sleep(0.05)
+            with lock:
+                events.append(("end", task["id"]))
+            st, reward, cost = outcomes[task["id"]]
+            return {"task": task["id"], "try": k, "agent": agent, "status": st, "reward": reward, "cost_usd": cost}
+
+        args = argparse.Namespace(agent="workflow", concurrency=2, budget_usd=100.0, max_budget_usd=12.05)
+        self.ctx = {"args": args, "early": base}
+        jobs = [({"id": t}, 1, "workflow") for t in outcomes]
+        with unittest.mock.patch.object(run_exam, "run_try", run_try), \
+                unittest.mock.patch.object(run_exam, "wait", wait or run_exam.wait):
+            return run_exam.schedule(self.ctx, jobs)
+
+    def test_two_tries_finishing_in_one_batch_are_both_counted_before_deciding(self):
+        """
+        Main errored on X and solved Y and Z. The candidate solves X and errors on Y in the same batch, Z queued.
+        Errors are even (1 and 1), so the run must go on. Deciding after Y alone, with X finished but not yet
+        counted, dropped X from the pairing and wrongly stopped on "error tries 1 > main's 0".
+        """
+        # GIVEN main's run, and a batch that hands back Y's finished try before X's
+        base = self.baseline({"A": [("ok", 1, 10.0)], "X": [("error", None, 0.0)],
+                              "Y": [("ok", 1, 10.0)], "Z": [("ok", 1, 10.0)]})
+
+        def batch(fs, return_when):
+            got = concurrent.futures.wait(fs, return_when=concurrent.futures.ALL_COMPLETED)
+            return sorted(got.done, key=lambda f: f.result()["task"] != "Y"), got.not_done
+
+        # WHEN A runs, then X and Y finish together, then Z is due
+        events = []
+        complete = self.schedule(base, {"A": ("ok", 1, 1.0), "X": ("ok", 1, 1.0), "Y": ("error", None, 1.0),
+                                        "Z": ("ok", 1, 1.0)}, events, wait=batch)
+        # THEN nothing stopped early and Z ran
+        self.assertIsNone(self.ctx.get("early_stop"))
+        self.assertTrue(complete)
+        self.assertIn(("start", "Z"), events)
+
+    def test_first_try_runs_alone_before_other_slots_fill(self):
+        """With early stop the first (cheapest) try is the paid dry run: nothing else starts until it ends."""
+        # GIVEN main solved three tasks, and concurrency 2
+        base = self.baseline({t: [("ok", 1, 10.0)] for t in ("A", "B", "C")})
+        # WHEN the candidate screen runs
+        events = []
+        self.schedule(base, {t: ("ok", 1, 1.0) for t in ("A", "B", "C")}, events)
+        # THEN A ended before B started, and B and C then ran side by side
+        self.assertEqual(events[:2], [("start", "A"), ("end", "A")])
+        self.assertEqual(set(events[2:4]), {("start", "B"), ("start", "C")})
 
 
 if __name__ == "__main__":

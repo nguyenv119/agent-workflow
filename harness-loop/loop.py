@@ -29,7 +29,7 @@ guard, not a score: draft PR titled "[side check fail] ...", not queued. Side ru
 side run name (it carries the private set name) reaches the PR, history.jsonl or spend.jsonl.
 
 Early stop: every candidate screen (round and exam) runs with run_exam.py --early-stop-vs <main's run>:
-tasks go cheapest first by main's cost, so the first is a cheap dry run, and the run stops as soon as
+tasks go cheapest first by main's cost, the first runs alone as a cheap dry run, and the run stops as soon as
 the screen rule can no longer pass (its score block gets an "early stop: <reason>" line).
 
 monthly: first rebuilds each queued candidate on current main (restack: git merge-tree onto main, one
@@ -40,13 +40,15 @@ full lines, verdict). sync: reads PR states with gh and records merged/closed. g
 guard on <commit>^..<commit> (exit 1 and "rejected: weakens gates" on rejection).
 
 exam: screens one open PR, hand-made or not. Path gate first (free): a diff (main...head) touching
-nothing /work loads (WORK_LOADED) and no skill's frontmatter gets "exam: not needed (<reason>)" in its
-score block and spends nothing. Otherwise the free checks: the load check (fail: "dry run fail", no
-spend) and the gate guard, advisory for a hand-made PR (its reasons go in the block). --check-only stops
-here: it prints the verdicts and edits nothing. Then, on Bedrock and inside the weekly cap: the head is
-restacked on main (a conflict: "stale, rebase the PR onto main"), main's screen run is reused or made,
-and the candidate is screened with early stop like a round's; the block is written into the PR body.
-Spend is booked as round pr-<N>. The exam never pushes or merges.
+nothing /work loads (WORK_LOADED) and no skill's or agent's frontmatter gets "exam: not needed (<reason>)"
+in its score block and spends nothing. Otherwise the free checks, before Bedrock or the budget is asked
+for: the head is restacked on main (a conflict: "stale, rebase the PR onto main"), the load check runs on
+that restacked commit (fail: "dry run fail"), and either fail is written into the block with no spend;
+the gate guard is advisory (its reasons go in the block). --check-only runs the same checks, prints the
+verdicts and edits nothing. Then, on Bedrock and inside the weekly cap: main's screen run is reused or
+made, and the restacked commit is screened with early stop like a round's; the block is written into the
+PR body. Spend is booked as round pr-<N>. The restack ref is deleted once the exam is done (monthly too).
+The exam never pushes or merges.
 
 Outcomes in history.jsonl: queued (screen pass, PR open), screen-fail (draft PR), side-fail
 (screen pass, side check guard fail, draft PR), dropped (a
@@ -142,13 +144,14 @@ NO_RUN = re.compile(r"\b(?:do not|don't|never|no need to|without|stop|avoid)\s+(
 PROTECTED = re.compile(r"^\.claude/(skills/(reviewer-[^/]+|test-runner|standards)/|hooks/)")
 # What a /work run loads (files, or dirs ending in /): AGENTS.md (the SessionStart hook cats it), the
 # settings and their hooks, the /work command and every agent and skill it reaches. A change elsewhere
-# needs no exam, except a skill's frontmatter, which every session sees. test_loop derives this list.
+# needs no exam, except a skill's or agent's frontmatter (name, description), which every session sees.
+# test_loop derives this list.
 WORK_LOADED = ("AGENTS.md", ".claude/settings.json", ".claude/hooks/", ".claude/commands/work.md",
                ".claude/agents/implementer.md", ".claude/agents/quick-reviewer.md",
                *(f".claude/skills/{s}/" for s in ("coordinator", "implementer", "reviewer-correctness",
                                                   "reviewer-tests", "reviewer-architecture", "test-runner",
                                                   "standards", "quick", "win-condition")))
-SKILL_FILE = re.compile(r"\.claude/skills/[^/]+/SKILL\.md")
+FRONTMATTER_FILE = re.compile(r"\.claude/(skills/[^/]+/SKILL|agents/[^/]+)\.md")
 
 
 def die(msg, code=2):
@@ -431,7 +434,8 @@ def frontmatter(text):
 
 def path_gate(base, head, repo=AW_ROOT):
     """(needs_exam, reason) for the merge-base diff base...head: True when it touches a path /work loads
-    (WORK_LOADED) or the frontmatter of any skill's SKILL.md."""
+    (WORK_LOADED) or the frontmatter of any skill's SKILL.md or .claude/agents/*.md (adding or deleting one
+    changes it too)."""
     diff = git("diff", "--name-only", "--no-renames", "-z", f"{base}...{head}", cwd=repo)
     paths = [p for p in diff.split("\0") if p]
     mb = git("merge-base", base, head, cwd=repo).strip()
@@ -439,7 +443,7 @@ def path_gate(base, head, repo=AW_ROOT):
     for p in paths:
         if work_loaded(p):
             hits.append(p)
-        elif SKILL_FILE.fullmatch(p):
+        elif FRONTMATTER_FILE.fullmatch(p):
             front = frontmatter(show(mb, p, repo)) != frontmatter(show(head, p, repo))
             (hits if front else rest).append(f"{p} ({'frontmatter' if front else 'body'})")
         else:
@@ -465,6 +469,11 @@ def restack(cand, onto, repo=AW_ROOT):
               p.stdout.split()[0], "-p", onto, "-m", f"harness-loop: {cand[:7]} on {onto[:7]}", cwd=repo).strip()
     git("update-ref", f"refs/harness-loop/restack/{cand}", sha, cwd=repo)
     return sha
+
+
+def unstack(cand, repo=AW_ROOT):
+    """Delete restack()'s ref for cand once run_exam has read the commit (a no-op if it made none)."""
+    git("update-ref", "-d", f"refs/harness-loop/restack/{cand}", cwd=repo, check=False)
 
 
 # ---- checks ------------------------------------------------------------------------------
@@ -662,7 +671,7 @@ def find_base_run(base_sha, manifest):
     hashed and restored every round), so a run dir the improver forged is never reused. Matching on
     the installed tree, not the commit, lets a run survive main commits that only touch harness-loop/.
     The exam's own settings (model, per-try cap) are checked against the candidate run once it
-    exists (cmd_round); the sandbox (docker or daytona) is deliberately not part of the key."""
+    exists (screen_against_main); the sandbox (docker or daytona) is deliberately not part of the key."""
     rows = read_jsonl(HOME / "spend.jsonl")
     booked = ({r.get("note") for r in rows if r.get("kind") == "exam-baseline"}
               - {r.get("note") for r in rows if r.get("kind") == "exam-baseline-stale"})
@@ -727,6 +736,28 @@ def settings_differ(base_run, cand_run, round_n):
 def early_stop_line(run):
     why = json.loads((Path(run) / "run.json").read_text()).get("early_stop")
     return [f"early stop: {why}"] if why else []
+
+
+def screen_against_main(base_sha, cand, manifest, budget, round_n, base_run=None, after_baseline=None,
+                        after_candidate=None):
+    """Screen cand against main's screen run: base_run (find_base_run's) is reused, or main is run first
+    (then after_baseline(run)); cand runs with early stop against it. after_candidate(base_run) may return a
+    reason to stop before scoring (cmd_round's tamper check). Returns (base_run, cand_run, stop, stats):
+    stop is that reason, or the exam settings main's run differs from cand's in, with stats None."""
+    per_run = budget if base_run else budget / 2
+    if base_run is None:
+        base_run = run_exam(base_sha, manifest, "baseline", per_run, round_n)
+        if after_baseline:
+            after_baseline(base_run)
+    cand_run = run_exam(cand, manifest, "candidate", per_run, round_n, extra=("--early-stop-vs", str(base_run)))
+    stop = after_candidate(base_run) if after_candidate else ""
+    if stop:
+        return base_run, cand_run, stop, None
+    differ = settings_differ(base_run, cand_run, round_n)
+    if differ:
+        return base_run, cand_run, (f"main run {rel_home(base_run)} differs from the candidate in "
+                                    f"{', '.join(differ)}; the next screen re-runs main"), None
+    return base_run, cand_run, "", compare(base_run, cand_run, "--screen-rule")
 
 
 def mask_task(path, k=1):
@@ -940,24 +971,23 @@ def cmd_round(args):
         if args.no_screen:
             return finish("checked", "checks pass (--no-screen: no exam, no push, no PR)", keep_branch=True)
 
-        per_run = args.budget_usd if base_run else args.budget_usd / 2
-        if base_run is None:
-            base_run = run_exam(base_sha, manifest, "baseline", per_run, n)
-            before["main screen run"] = hash_tree(base_run)
-        cand_run = run_exam(cand, manifest, "candidate", per_run, n, extra=("--early-stop-vs", str(base_run)))
-        def tamper():
-            changes = tampered(before, snapshot(branch, base_run), ignore_pycache=True, skip_state=("spend.jsonl",))
+        def tamper(main_run):
+            changes = tampered(before, snapshot(branch, main_run), ignore_pycache=True, skip_state=("spend.jsonl",))
             if changes:
                 restore_state(before["state"])
             return "; ".join(changes)
-        bad = tamper()
-        if bad:
-            return finish("dropped", "tamper during screen: " + bad)
-        differ = settings_differ(base_run, cand_run, n)
-        if differ:
-            return finish("dropped", f"main run {rel_home(base_run)} differs from the candidate in "
-                                     f"{', '.join(differ)}; the next round re-runs main")
-        stats = compare(base_run, cand_run, "--screen-rule")
+
+        def fresh_main(run):
+            before["main screen run"] = hash_tree(run)
+
+        def screen_tamper(main_run):
+            bad = tamper(main_run)
+            return bad and "tamper during screen: " + bad
+
+        base_run, cand_run, stop, stats = screen_against_main(base_sha, cand, manifest, args.budget_usd, n, base_run,
+                                                              after_baseline=fresh_main, after_candidate=screen_tamper)
+        if stop:
+            return finish("dropped", stop)
         verdict = stats["screen"]
         row["screen"] = {"base_run": rel_home(base_run), "cand_run": rel_home(cand_run),
                          "solved_base": int(stats["solvedA"]), "solved_cand": int(stats["solvedB"]),
@@ -974,7 +1004,7 @@ def cmd_round(args):
                   "extra": ("--addon", args.sidecheck_addon, "--env", args.sidecheck_env)}
             sa = run_exam(base_sha, side, "baseline", args.sidecheck_budget_usd / 2, n, **kw)
             sc = run_exam(cand, side, "candidate", args.sidecheck_budget_usd / 2, n, **kw)
-            bad = tamper()
+            bad = tamper(base_run)
             if bad:
                 return finish("dropped", "tamper during side check: " + bad)
             s = compare(sa, sc)
@@ -1051,6 +1081,15 @@ def cmd_monthly(args):
     check_budget(args.budget_usd, "the monthly exam")
     git("fetch", "-q", "origin", "main")
     main_sha = git("rev-parse", "origin/main").strip()
+    try:
+        monthly_exams(args, queue, main_sha)
+    finally:  # the restacked commits are only needed until their run_exam has read them
+        for q in queue:
+            unstack(q["cand_sha"])
+
+
+def monthly_exams(args, queue, main_sha):
+    """cmd_monthly's restack and full exams of the open queued rounds, on main_sha."""
     history = {r["round"]: r for r in read_jsonl(HOME / "history.jsonl")}
     failed, groups, live = [], {}, 0
 
@@ -1139,33 +1178,42 @@ def cmd_exam(args):
         if not args.check_only:
             post(f"exam: not needed ({reason})")
         return
-    load = load_check(head)  # the free dry run; the paid one is the candidate's first (cheapest) task
-    guard, _ = guard_commits(git("merge-base", main_sha, head).strip(), head)
-    print(f"exam: load check: {'; '.join(load) or 'pass'}")
-    print(f"exam: gate guard (advisory): {'; '.join(guard) or 'pass'}")
+    cand = restack(head, main_sha)  # score the change as it would land on today's main
+    try:
+        exam_restacked(args, main_sha, head, cand, post)
+    finally:
+        unstack(head)
+
+
+def exam_restacked(args, main_sha, head, cand, post):
+    """cmd_exam after the path gate: the free checks on cand (head restacked on main, None on a conflict),
+    written to the PR before Bedrock or the budget is asked for, then the paid screen."""
+    free = None
+    if cand is None:
+        free = "exam: stale, rebase the PR onto main"
+    else:
+        load = load_check(cand)  # the free dry run; the paid one is the candidate's first (cheapest) task
+        guard, _ = guard_commits(git("merge-base", main_sha, head).strip(), head)
+        print(f"exam: load check: {'; '.join(load) or 'pass'}")
+        print(f"exam: gate guard (advisory): {'; '.join(guard) or 'pass'}")
+        if load:
+            free = f"exam: dry run fail ({'; '.join(load)})"
+    if free:
+        if args.check_only:
+            print(free)
+        else:
+            post(free)
+        die(f"PR #{args.pr}: {free.removeprefix('exam: ')} (main {main_sha[:7]})", code=1)
     if args.check_only:
         return
     if not on_bedrock(os.environ):
         die("the exam runs on Bedrock only: set CLAUDE_CODE_USE_BEDROCK=1 and AWS_ACCESS_KEY_ID")
     check_budget(args.budget_usd, "the exam")
-    cand = restack(head, main_sha)
-    if cand is None:
-        post("exam: stale, rebase the PR onto main")
-        die(f"PR #{args.pr} conflicts with main {main_sha[:7]}", code=1)
-    if load:
-        post(f"exam: dry run fail ({'; '.join(load)})")
-        die("dry run fail", code=1)
     n, manifest = f"pr-{args.pr}", Path(args.tasks).resolve()
-    base_run = find_base_run(main_sha, manifest)
-    per_run = args.budget_usd if base_run else args.budget_usd / 2
-    if base_run is None:
-        base_run = run_exam(main_sha, manifest, "baseline", per_run, n)
-    cand_run = run_exam(cand, manifest, "candidate", per_run, n, extra=("--early-stop-vs", str(base_run)))
-    differ = settings_differ(base_run, cand_run, n)
-    if differ:
-        die(f"main run {rel_home(base_run)} differs from the candidate in {', '.join(differ)}; "
-            "run the exam again (it re-runs main)", code=1)
-    stats = compare(base_run, cand_run, "--screen-rule")
+    base_run, cand_run, stop, stats = screen_against_main(main_sha, cand, manifest, args.budget_usd, n,
+                                                          find_base_run(main_sha, manifest))
+    if stop:
+        die(stop, code=1)
     post(score_line("screen", stats, main_sha, cand, tries_of(cand_run), f"screen={stats['screen']}"),
          *early_stop_line(cand_run), *([f"gate guard (advisory): {'; '.join(guard)}"] if guard else []))
 

@@ -1384,6 +1384,8 @@ class MonthlyRestack(LoopTestCase):
         # AND history records both shas
         full = self.r.history()[0]["full"]
         self.assertEqual((full["cand_sha"], full["scored_sha"]), (cand, scored))
+        # AND no restack ref outlives the run that read it
+        self.assertEqual(run(GIT + ["for-each-ref", "refs/harness-loop/restack/"], self.r.aw).stdout, "")
 
     def test_monthly_marks_a_candidate_that_conflicts_with_main_stale_and_spends_nothing(self):
         """
@@ -1496,6 +1498,25 @@ class PathGate(unittest.TestCase):
         # THEN an exam is needed, naming the frontmatter
         self.assertTrue(needs)
         self.assertIn(".claude/skills/document/SKILL.md (frontmatter)", reason)
+
+    def test_agent_frontmatter_change_or_new_agent_needs_an_exam_and_a_body_change_does_not(self):
+        """Every session sees every agent's name and description too: its frontmatter, added or deleted, needs
+        the exam; the body of an agent /work never spawns does not."""
+        agent = ".claude/agents/doc-writer.md"
+        # GIVEN / WHEN an agent is added / THEN an exam is needed, naming its frontmatter
+        needs, reason = self.gate({agent: SKILL_MD.format(name="doc-writer", desc="Writes docs.", body="Write.")})
+        self.assertTrue(needs)
+        self.assertIn(f"{agent} (frontmatter)", reason)
+        self.base = run(GIT + ["rev-parse", "HEAD"], self.repo).stdout.strip()
+        # WHEN only its body changes / THEN no exam
+        needs, reason = self.gate({agent: SKILL_MD.format(name="doc-writer", desc="Writes docs.", body="Write more.")})
+        self.assertFalse(needs)
+        self.assertIn(f"{agent} (body)", reason)
+        self.base = run(GIT + ["rev-parse", "HEAD"], self.repo).stdout.strip()
+        # WHEN it is deleted / THEN an exam is needed
+        needs, reason = self.gate({agent: None})
+        self.assertTrue(needs)
+        self.assertIn(f"{agent} (frontmatter)", reason)
 
     def test_harness_loop_only_change_needs_no_exam(self):
         """The loop's own code is not installed into the exam sandbox: no exam."""
@@ -1644,6 +1665,52 @@ class ExamPR(LoopTestCase):
         self.assertEqual(p.returncode, 1, p.stderr)
         self.assertEqual(self.block(), ["exam: stale, rebase the PR onto main"])
         self.assertEqual(self.r.exam_calls(), [])
+
+    def test_exam_scores_the_pr_restacked_on_a_moved_main_and_drops_the_restack_ref(self):
+        """
+        When main moved since the PR branched, the exam scores the PR's change on today's main (the commit that
+        holds both changes), not the PR head; scoring the head would leave main's change out of the candidate.
+        The ref that kept the restacked commit is gone once the exam is done.
+        """
+        # GIVEN a PR changing a reviewer skill, then main changes AGENTS.md
+        head = self.pr_head({self.REVIEWER: BASE_FILES[self.REVIEWER] + "Also check names.\n"})
+        self.r.commit_on_main("AGENTS.md", "# moved on\n")
+        # WHEN examined
+        p = self.exam(head)
+        # THEN the candidate run is at a commit holding main's AGENTS.md and the PR's reviewer line
+        self.assertEqual(p.returncode, 0, p.stderr)
+        call = [c for c in self.r.exam_calls() if c[c.index("--kind") + 1] == "candidate"][0]
+        cand = call[call.index("--harness") + 1]
+        self.assertNotEqual(cand, head)
+        self.assertEqual(run(GIT + ["show", f"{cand}:AGENTS.md"], self.r.aw).stdout, "# moved on\n")
+        self.assertIn("Also check names.", run(GIT + ["show", f"{cand}:{self.REVIEWER}"], self.r.aw).stdout)
+        self.assertIn(f"candidate {cand[:7]}", self.block()[0])
+        # AND no restack ref remains
+        self.assertEqual(run(GIT + ["for-each-ref", "refs/harness-loop/restack/"], self.r.aw).stdout, "")
+
+    def test_broken_pr_gets_its_dry_run_fail_without_bedrock_or_budget(self):
+        """The free verdict is written before Bedrock or the budget is asked for: a broken PR always hears why."""
+        # GIVEN a PR that breaks settings.json, no Bedrock env and the week's cap spent
+        self.r.ledger((0, 100.0))
+        head = self.pr_head({".claude/settings.json": "{not json\n"})
+        # WHEN examined
+        p = self.exam(head, bedrock=False)
+        # THEN the block says dry run fail and nothing ran or was booked
+        self.assertEqual(p.returncode, 1, p.stderr)
+        self.assertTrue(self.block()[0].startswith("exam: dry run fail (settings.json does not parse"))
+        self.assertEqual(self.r.exam_calls(), [])
+
+    def test_check_only_reports_a_stale_pr_and_edits_nothing(self):
+        """--check-only restacks too: a PR that conflicts with main is reported stale, with no PR edit."""
+        # GIVEN main and the PR both rewrote the same reviewer line
+        head = self.pr_head({self.REVIEWER: BASE_FILES[self.REVIEWER].replace("every", "each")})
+        self.r.commit_on_main(self.REVIEWER, BASE_FILES[self.REVIEWER].replace("every", "all"))
+        # WHEN examined with --check-only
+        p = self.exam(head, "--check-only", bedrock=False)
+        # THEN it prints the stale verdict, exits 1 and edits nothing
+        self.assertEqual(p.returncode, 1, p.stderr)
+        self.assertIn("exam: stale, rebase the PR onto main", p.stdout)
+        self.assertEqual([c for c in self.r.gh_calls() if c["args"][:2] == ["pr", "edit"]], [])
 
     def test_pr_whose_harness_does_not_load_fails_the_dry_run(self):
         """A harness that does not install and load would waste the paid exam: dry run fail, no exam."""

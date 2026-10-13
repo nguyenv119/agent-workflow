@@ -132,8 +132,9 @@ harness-loop/exam/compare.py <runA> <runB> --margin-from <runA2> --screen-rule
 ```
 
 `--screen --early-stop-vs <sealed baseline run>` runs the tasks cheapest first by the baseline's
-per-task cost and stops starting new ones once the screen rule can no longer pass (more cut or errored
-tries than the baseline, too few solves left, or cost past 1.25x). The run is then incomplete, with the
+per-task cost, runs the first (cheapest) try alone as a paid dry run, and stops starting new ones
+once the screen rule can no longer pass (more cut or errored tries than the baseline, too few solves
+left, or cost past 1.25x, `compare.SCREEN_COST_RATIO`). The run is then incomplete, with the
 reason in run.json `early_stop`. `loop.py` passes it for every candidate screen.
 
 Scoring: in the baseline, `budget_cut` and `error` tries are left out; in the candidate they count

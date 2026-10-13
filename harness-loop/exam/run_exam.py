@@ -41,8 +41,9 @@ max_budget_usd = --max-budget-usd (default 12.05 = 3 x the B18.2 probe's max);
 a run that hits it is status budget_cut.
 
 Early stop (--early-stop-vs, --screen workflow runs only): tasks run cheapest first by the
-baseline's per-task cost (tasks the baseline has no ok try for last), so the first task is a cheap
-dry run of the candidate. After each finished try, compare.screen_fail_decided asks whether the
+baseline's per-task cost (tasks the baseline has no ok try for last), and the first try runs alone
+before any other slot fills, so it is a cheap dry run of the candidate. After each batch of finished
+tries, compare.screen_fail_decided asks whether the
 screen rule can still pass; once it cannot, nothing more starts, runs in flight finish, and the run
 is marked incomplete with run.json early_stop = the reason (compare.py's screen then fails it).
 
@@ -333,7 +334,9 @@ def schedule(ctx, jobs):
     queue = list(jobs)
     with ThreadPoolExecutor(args.concurrency) as ex:
         while queue or pending:
-            while queue and len(pending) < args.concurrency:
+            # With early stop the first (cheapest) try runs alone: it is the paid dry run.
+            slots = 1 if ctx.get("early") and not done else args.concurrency
+            while queue and len(pending) < slots:
                 spent = sum(r["cost_usd"] for r in done)
                 est = statistics.fmean(r["cost_usd"] for r in done) if done else first
                 if spent + est * (len(pending) + 1) > args.budget_usd:
@@ -359,13 +362,15 @@ def schedule(ctx, jobs):
                     done.append(r)
                     print(f"run_exam: {r['agent']} {r['task']} try-{r['try']}: {r['status']} "
                           f"reward={r['reward']} ${r['cost_usd']}", file=sys.stderr)
-                    left = {j[0]["id"] for j in queue} | {futures[f][0]["id"] for f in pending}
-                    why = ctx.get("early") and queue and compare.screen_fail_decided(
-                        ctx["early"], done, left, args.max_budget_usd)
-                    if why:
-                        print(f"run_exam: early stop: {why}; {len(queue)} run(s) not started", file=sys.stderr)
-                        ctx["early_stop"] = why
-                        queue.clear()
+                # Decide once the whole batch is in done: a finished try not yet appended would be in
+                # neither done nor left, and its task would drop out of the pairing.
+                left = {j[0]["id"] for j in queue} | {futures[f][0]["id"] for f in pending}
+                why = ctx.get("early") and queue and compare.screen_fail_decided(
+                    ctx["early"], done, left, args.max_budget_usd)
+                if why:
+                    print(f"run_exam: early stop: {why}; {len(queue)} run(s) not started", file=sys.stderr)
+                    ctx["early_stop"] = why
+                    queue.clear()
     return not ctx.get("not_started") and not ctx.get("crashed") and not ctx.get("early_stop")
 
 
