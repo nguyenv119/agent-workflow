@@ -43,6 +43,7 @@ The harness gets agents to both with a loop.
 | `/review <source>` | Process external review feedback and fix the harness so the same miss does not recur |
 | `/handoff` | Write an end-of-session briefing for a fresh agent |
 | `/prune` | Find dead code, with a reason attached to each verdict |
+| `/gardener` | Weekly: prune report plus proposed checks for mistakes agents keep repeating (proposals only) |
 | `/gh-issue` | File a GitHub issue |
 
 **Skills you ask for by name**
