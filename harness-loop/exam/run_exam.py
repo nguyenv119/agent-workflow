@@ -5,6 +5,7 @@
                 [--screen] [--tries N] [--agent workflow|oracle|nop|controls]
                 [--kind baseline|candidate|harm|controls|pick] [--model opus|sonnet|<id>]
                 [--max-budget-usd 12.05] [--concurrency K] [--env docker|daytona] [--addon <dir>]
+                [--early-stop-vs <sealed baseline run>]
 
 Each task x try runs `harbor run` (WorkflowAgent, or Harbor's own oracle / nop
 agents; `controls` runs both) and becomes a try folder made by
@@ -38,6 +39,13 @@ Budget: before each run, if spent + (runs in flight + 1) x the mean cost so far
 starts and the run is marked incomplete. Each workflow run gets
 max_budget_usd = --max-budget-usd (default 12.05 = 3 x the B18.2 probe's max);
 a run that hits it is status budget_cut.
+
+Early stop (--early-stop-vs, --screen workflow runs only): tasks run cheapest first by the
+baseline's per-task cost (tasks the baseline has no ok try for last), and the first try runs alone
+before any other slot fills, so it is a cheap dry run of the candidate. After each batch of finished
+tries, compare.screen_fail_decided asks whether the
+screen rule can still pass; once it cannot, nothing more starts, runs in flight finish, and the run
+is marked incomplete with run.json early_stop = the reason (compare.py's screen then fails it).
 
 Where tasks run: --env docker (default) builds each task's container on this
 machine with the local Docker engine; --env daytona rents a cloud sandbox. Either
@@ -326,7 +334,9 @@ def schedule(ctx, jobs):
     queue = list(jobs)
     with ThreadPoolExecutor(args.concurrency) as ex:
         while queue or pending:
-            while queue and len(pending) < args.concurrency:
+            # With early stop the first (cheapest) try runs alone: it is the paid dry run.
+            slots = 1 if ctx.get("early") and not done else args.concurrency
+            while queue and len(pending) < slots:
                 spent = sum(r["cost_usd"] for r in done)
                 est = statistics.fmean(r["cost_usd"] for r in done) if done else first
                 if spent + est * (len(pending) + 1) > args.budget_usd:
@@ -352,7 +362,16 @@ def schedule(ctx, jobs):
                     done.append(r)
                     print(f"run_exam: {r['agent']} {r['task']} try-{r['try']}: {r['status']} "
                           f"reward={r['reward']} ${r['cost_usd']}", file=sys.stderr)
-    return not ctx.get("not_started") and not ctx.get("crashed")
+                # Decide once the whole batch is in done: a finished try not yet appended would be in
+                # neither done nor left, and its task would drop out of the pairing.
+                left = {j[0]["id"] for j in queue} | {futures[f][0]["id"] for f in pending}
+                why = ctx.get("early") and queue and compare.screen_fail_decided(
+                    ctx["early"], done, left, args.max_budget_usd)
+                if why:
+                    print(f"run_exam: early stop: {why}; {len(queue)} run(s) not started", file=sys.stderr)
+                    ctx["early_stop"] = why
+                    queue.clear()
+    return not ctx.get("not_started") and not ctx.get("crashed") and not ctx.get("early_stop")
 
 
 def crashed_try(ctx, job, exc):
@@ -428,7 +447,10 @@ def main(argv=None):
     ap.add_argument("--concurrency", type=int, help="default: what fits in Docker, or 1 on daytona")
     ap.add_argument("--env", default="docker", choices=["docker", "daytona"])
     ap.add_argument("--addon")
+    ap.add_argument("--early-stop-vs", help="sealed baseline run: stop once the screen can no longer pass")
     args = ap.parse_args(argv)
+    if args.early_stop_vs and (not args.screen or args.agent != "workflow"):
+        sys.exit("run_exam: --early-stop-vs needs --screen and --agent workflow")
     if args.addon:
         args.addon = str(Path(args.addon).resolve())
         if not Path(args.addon).is_dir():
@@ -450,6 +472,10 @@ def main(argv=None):
     tasks = [t for t in data["tasks"] if t["screen"] or not args.screen]
     if not tasks:
         sys.exit(f"run_exam: no {'screen ' if args.screen else ''}tasks in {args.tasks}")
+    early = compare.load(args.early_stop_vs) if args.early_stop_vs else None
+    if early:  # cheapest first: the first task is the dry run
+        tasks.sort(key=lambda t: (not compare.counted(early[0].get(t["id"], []), False, 0),
+                                  sum(float(r.get("cost_usd") or 0) for r in early[0].get(t["id"], []))))
     harness_version = None
     if args.agent == "workflow":
         # Fail before any spend if the harness at this sha does not install.
@@ -477,8 +503,12 @@ def main(argv=None):
     (run / "run.json").write_text(json.dumps(meta, indent=2) + "\n")
     agents = ["oracle", "nop"] if controls else [args.agent]
     jobs = [(t, n, a) for n in range(1, args.tries + 1) for t in tasks for a in agents]
-    ctx = {"args": args, "run": run, "sha": sha, "controls": controls, "harness_version": harness_version}
-    results = finish(ctx, meta, schedule(ctx, jobs))
+    ctx = {"args": args, "run": run, "sha": sha, "controls": controls, "harness_version": harness_version,
+           "early": early}
+    complete = schedule(ctx, jobs)
+    if ctx.get("early_stop"):
+        meta["early_stop"] = ctx["early_stop"]
+    results = finish(ctx, meta, complete)
     if results and all(r["status"] == "error" for r in results):
         sys.exit("run_exam: every try errored")
 

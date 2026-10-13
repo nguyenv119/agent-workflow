@@ -5,7 +5,8 @@ Writes a sealed, read-only run dir the way run_exam.py does, under
 $HARNESS_LOOP_HOME/runs/, from $FAKE_EXAM_SPEC: {"<kind>": {"<task>": [reward, cost]}}
 ("side-<kind>" when called with --addon).
 Logs its argv to $FAKE_EXAM_LOG and prints run_exam's last line. $FAKE_EXAM_INCOMPLETE
-(space-separated kinds) marks those runs incomplete, as a budget stop would.
+(space-separated kinds) marks those runs incomplete, as a budget stop would; $FAKE_EXAM_EARLY_STOP (a
+reason) does that to a run given --early-stop-vs and records the reason as run.json early_stop.
 """
 import argparse
 import json
@@ -28,6 +29,7 @@ ap.add_argument("--tries", type=int, default=1)
 ap.add_argument("--kind", required=True)
 ap.add_argument("--addon")
 ap.add_argument("--env")
+ap.add_argument("--early-stop-vs")
 args = ap.parse_args()
 
 # A side check (run with --addon) reads "side-<kind>" from the spec and $FAKE_EXAM_INCOMPLETE.
@@ -43,6 +45,8 @@ while (runs / (base if n == 1 else f"{base}-{n}")).exists():
 run = runs / (base if n == 1 else f"{base}-{n}")
 total = 0.0
 status = "incomplete" if key in os.environ.get("FAKE_EXAM_INCOMPLETE", "").split() else "complete"
+early_stop = os.environ.get("FAKE_EXAM_EARLY_STOP") if args.early_stop_vs else None
+status = "incomplete" if early_stop else status
 for task, (reward, cost) in spec.items():
     for t in range(1, args.tries + 1):
         d = run / task / f"try-{t}"
@@ -55,7 +59,7 @@ manifest = json.loads(Path(args.tasks).read_text())
     "run_id": run.name, "kind": args.kind, "harness_commit": args.harness, "screen": args.screen,
     "set": manifest.get("set"), "model": os.environ.get("FAKE_EXAM_MODEL", "m"), "tasks": sorted(t["id"] for t in manifest.get("tasks", []) if t["screen"] or not args.screen),
     "manifest": str(Path(args.tasks).resolve()), "agent": "workflow", "tries": args.tries,
-    "status": status, "max_budget_usd": float(os.environ.get("FAKE_EXAM_CAP", "12.05"))}))
+    "status": status, **({"early_stop": early_stop} if early_stop else {}), "max_budget_usd": float(os.environ.get("FAKE_EXAM_CAP", "12.05"))}))
 (run / "summary.json").write_text(json.dumps({"total_cost_usd": round(total, 4)}))
 compare.seal(run)
 subprocess.run(["chmod", "-R", "a-w", str(run)], check=True)

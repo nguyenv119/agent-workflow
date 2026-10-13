@@ -5,6 +5,7 @@
                   [--improver-budget-usd Y] [--sidecheck <manifest> --sidecheck-addon <dir>
                   [--sidecheck-env docker|daytona] [--sidecheck-budget-usd Z]]
     loop.py monthly [--budget-usd X]
+    loop.py exam --pr N --tasks <manifest> [--budget-usd X] [--check-only]
     loop.py sync
     loop.py guard <commit> [--base <ref>]
 
@@ -27,10 +28,27 @@ guard, not a score: draft PR titled "[side check fail] ...", not queued. Side ru
 <side manifest dir>/loop-home/runs, never $HARNESS_LOOP_HOME/runs (the improver reads that), and no
 side run name (it carries the private set name) reaches the PR, history.jsonl or spend.jsonl.
 
-monthly: full exam (--tries 2, no --screen) on main twice and each queued branch; compare.py
---margin-from; rewrites each PR's score block (screen, side check and full lines, verdict). sync: reads PR
-states with gh and records merged/closed. guard: the round's gate guard on <commit>^..<commit>
-(exit 1 and "rejected: weakens gates" on rejection).
+Early stop: every candidate screen (round and exam) runs with run_exam.py --early-stop-vs <main's run>:
+tasks go cheapest first by main's cost, the first runs alone as a cheap dry run, and the run stops as soon as
+the screen rule can no longer pass (its score block gets an "early stop: <reason>" line).
+
+monthly: first rebuilds each queued candidate on current main (restack: git merge-tree onto main, one
+commit kept by refs/harness-loop/restack/<cand>); a conflict is "stale, re-propose", recorded, dequeued
+and written into its PR with no spend. Then a full exam (--tries 2, no --screen) on main twice and each
+restacked candidate; compare.py --margin-from; rewrites each PR's score block (screen, side check and
+full lines, verdict). sync: reads PR states with gh and records merged/closed. guard: the round's gate
+guard on <commit>^..<commit> (exit 1 and "rejected: weakens gates" on rejection).
+
+exam: screens one open PR, hand-made or not. Path gate first (free): a diff (main...head) touching
+nothing /work loads (WORK_LOADED) and no skill's or agent's frontmatter gets "exam: not needed (<reason>)"
+in its score block and spends nothing. Otherwise the free checks, before Bedrock or the budget is asked
+for: the head is restacked on main (a conflict: "stale, rebase the PR onto main"), the load check runs on
+that restacked commit (fail: "dry run fail"), and either fail is written into the block with no spend;
+the gate guard is advisory (its reasons go in the block). --check-only runs the same checks, prints the
+verdicts and edits nothing. Then, on Bedrock and inside the weekly cap: main's screen run is reused or
+made, and the restacked commit is screened with early stop like a round's; the block is written into the
+PR body. Spend is booked as round pr-<N>. The restack ref is deleted once the exam is done (monthly too).
+The exam never pushes or merges.
 
 Outcomes in history.jsonl: queued (screen pass, PR open), screen-fail (draft PR), side-fail
 (screen pass, side check guard fail, draft PR), dropped (a
@@ -40,7 +58,7 @@ checked (--no-screen, all checks pass), error, merged, closed.
 Budget: WEEKLY_BUDGET_USD over a rolling 7 days of $HARNESS_LOOP_HOME/spend.jsonl, which only
 this script writes (improver cost from claude's result line, exam cost from each run's
 summary.json). A round that could take the week past the cap (improver + exam + side check budgets)
-is refused before anything starts; so is a monthly.
+is refused before anything starts; so is a monthly or an exam.
 
 Leak scan: /Users/ always; tool names (EXAMPLE_LEAK) unless the line has "e.g."; plus private
 names, one regex per line, from $HARNESS_LOOP_HOME/leak-patterns.txt, which must exist (an
@@ -124,6 +142,16 @@ NO_RUN = re.compile(r"\b(?:do not|don't|never|no need to|without|stop|avoid)\s+(
                     r"|spawn|spawning|write|writing|wait|waiting|call|calling)\b(?:\W+\w+){0,2}?\W+"
                     + GATE_WORDS.pattern, re.I)
 PROTECTED = re.compile(r"^\.claude/(skills/(reviewer-[^/]+|test-runner|standards)/|hooks/)")
+# What a /work run loads (files, or dirs ending in /): AGENTS.md (the SessionStart hook cats it), the
+# settings and their hooks, the /work command and every agent and skill it reaches. A change elsewhere
+# needs no exam, except a skill's or agent's frontmatter (name, description), which every session sees.
+# test_loop derives this list.
+WORK_LOADED = ("AGENTS.md", ".claude/settings.json", ".claude/hooks/", ".claude/commands/work.md",
+               ".claude/agents/implementer.md", ".claude/agents/quick-reviewer.md",
+               *(f".claude/skills/{s}/" for s in ("coordinator", "implementer", "reviewer-correctness",
+                                                  "reviewer-tests", "reviewer-architecture", "test-runner",
+                                                  "standards", "quick", "win-condition")))
+FRONTMATTER_FILE = re.compile(r"\.claude/(skills/[^/]+/SKILL|agents/[^/]+)\.md")
 
 
 def die(msg, code=2):
@@ -384,15 +412,68 @@ def gate_guard(diff_text, old_text, new_text):
     return reasons
 
 
+def show(ref, path, repo=AW_ROOT):
+    """The file at ref, or None."""
+    p = subprocess.run(["git", "-C", str(repo), "show", f"{ref}:{path}"], capture_output=True, text=True)
+    return p.stdout if p.returncode == 0 else None
+
+
 def guard_commits(base, cand, repo=AW_ROOT):
     diff = git("diff", "-M", "--no-color", "--no-ext-diff", "--no-textconv", "--text", base, cand, cwd=repo)
+    return gate_guard(diff, lambda p: show(base, p, repo), lambda p: show(cand, p, repo)), diff
 
-    def at(ref):
-        def read(path):
-            p = subprocess.run(["git", "-C", str(repo), "show", f"{ref}:{path}"], capture_output=True, text=True)
-            return p.stdout if p.returncode == 0 else None
-        return read
-    return gate_guard(diff, at(base), at(cand)), diff
+
+def work_loaded(path):
+    return any(path == w or (w.endswith("/") and path.startswith(w)) for w in WORK_LOADED)
+
+
+def frontmatter(text):
+    m = re.match(r"---\n.*?\n---\n", text or "", re.S)
+    return m[0] if m else None
+
+
+def path_gate(base, head, repo=AW_ROOT):
+    """(needs_exam, reason) for the merge-base diff base...head: True when it touches a path /work loads
+    (WORK_LOADED) or the frontmatter of any skill's SKILL.md or .claude/agents/*.md (adding or deleting one
+    changes it too)."""
+    diff = git("diff", "--name-only", "--no-renames", "-z", f"{base}...{head}", cwd=repo)
+    paths = [p for p in diff.split("\0") if p]
+    mb = git("merge-base", base, head, cwd=repo).strip()
+    hits, rest = [], []
+    for p in paths:
+        if work_loaded(p):
+            hits.append(p)
+        elif FRONTMATTER_FILE.fullmatch(p):
+            front = frontmatter(show(mb, p, repo)) != frontmatter(show(head, p, repo))
+            (hits if front else rest).append(f"{p} ({'frontmatter' if front else 'body'})")
+        else:
+            rest.append(p)
+    if hits:
+        return True, f"/work loads {', '.join(hits)}"
+    return False, f"touches only {', '.join(rest) or 'nothing'}; /work loads none of them"
+
+
+def restack(cand, onto, repo=AW_ROOT):
+    """cand's change since its merge base with onto, as one commit on onto (the same as a cherry-pick for a
+    one-commit candidate, without a worktree); cand itself if it already sits on onto; None on a conflict.
+    A ref under refs/harness-loop/restack/ keeps the commit from gc until run_exam has read it."""
+    if subprocess.run(["git", "-C", str(repo), "merge-base", "--is-ancestor", onto, cand]).returncode == 0:
+        return cand
+    p = subprocess.run(["git", "-C", str(repo), "merge-tree", "--write-tree", onto, cand],
+                       capture_output=True, text=True)
+    if p.returncode == 1:
+        return None
+    if p.returncode:
+        raise RuntimeError(f"git merge-tree: {p.stderr.strip()[:300]}")
+    sha = git("-c", "user.name=harness-loop", "-c", "user.email=harness-loop@example.invalid", "commit-tree",
+              p.stdout.split()[0], "-p", onto, "-m", f"harness-loop: {cand[:7]} on {onto[:7]}", cwd=repo).strip()
+    git("update-ref", f"refs/harness-loop/restack/{cand}", sha, cwd=repo)
+    return sha
+
+
+def unstack(cand, repo=AW_ROOT):
+    """Delete restack()'s ref for cand once run_exam has read the commit (a no-op if it made none)."""
+    git("update-ref", "-d", f"refs/harness-loop/restack/{cand}", cwd=repo, check=False)
 
 
 # ---- checks ------------------------------------------------------------------------------
@@ -510,11 +591,7 @@ def run_checks(base, cand, proposal, private, existing=None, round_n=0):
     exam = [t.strip()[:80] for t in changed if EXAM_WORDS.search(t)]
     out.append(("no EXAM_MODE", not exam, "; ".join(exam)))
     coord = ".claude/skills/coordinator/SKILL.md"
-
-    def show(ref):
-        p = subprocess.run(["git", "-C", str(AW_ROOT), "show", f"{ref}:{coord}"], capture_output=True, text=True)
-        return p.stdout if p.returncode == 0 else ""
-    same = section(show(base), "## Exam mode") == section(show(cand), "## Exam mode")
+    same = section(show(base, coord) or "", "## Exam mode") == section(show(cand, coord) or "", "## Exam mode")
     out.append(("Exam mode section untouched", same, "" if same else "Exam mode section changed"))
     reasons, _ = guard_commits(base, cand)
     out.append(("gate guard", not reasons, "; ".join(reasons)))
@@ -594,7 +671,7 @@ def find_base_run(base_sha, manifest):
     hashed and restored every round), so a run dir the improver forged is never reused. Matching on
     the installed tree, not the commit, lets a run survive main commits that only touch harness-loop/.
     The exam's own settings (model, per-try cap) are checked against the candidate run once it
-    exists (cmd_round); the sandbox (docker or daytona) is deliberately not part of the key."""
+    exists (screen_against_main); the sandbox (docker or daytona) is deliberately not part of the key."""
     rows = read_jsonl(HOME / "spend.jsonl")
     booked = ({r.get("note") for r in rows if r.get("kind") == "exam-baseline"}
               - {r.get("note") for r in rows if r.get("kind") == "exam-baseline-stale"})
@@ -629,6 +706,58 @@ def score_line(kind, stats, base_sha, cand_sha, tries, tail):
 
 def scores_block(*lines):
     return "\n".join([SCORES_OPEN, *lines, SCORES_CLOSE])
+
+
+def set_scores_block(body, lines):
+    """body with its score block replaced by lines (appended if it has none)."""
+    new, n = re.subn(re.escape(SCORES_OPEN) + r".*?" + re.escape(SCORES_CLOSE), lambda _: scores_block(*lines),
+                     body, count=1, flags=re.S)
+    return new if n else body.rstrip() + "\n\n" + scores_block(*lines)
+
+
+def edit_pr_body(pr, lines, body_f):
+    """Write lines into PR #pr's score block; the body is kept at body_f to re-apply by hand. True if gh took it."""
+    body_f.parent.mkdir(parents=True, exist_ok=True)
+    body_f.write_text(set_scores_block(gh_json("pr", "view", str(pr), "--json", "body")["body"], lines))
+    return subprocess.run(["gh", "pr", "edit", str(pr), "--repo", GH_REPO, "--body-file", str(body_f)],
+                          capture_output=True, text=True).returncode == 0
+
+
+def settings_differ(base_run, cand_run, round_n):
+    """Exam settings a main run differs from the candidate's in; books such a main run stale, so
+    find_base_run skips it from now on (its verdict would be wrong)."""
+    b, c = (json.loads((Path(r) / "run.json").read_text()) for r in (base_run, cand_run))
+    differ = [k for k in ("model", "max_budget_usd", "tries") if b.get(k) != c.get(k)]
+    if differ:
+        book("exam-baseline-stale", 0, round_n, Path(base_run).name)
+    return differ
+
+
+def early_stop_line(run):
+    why = json.loads((Path(run) / "run.json").read_text()).get("early_stop")
+    return [f"early stop: {why}"] if why else []
+
+
+def screen_against_main(base_sha, cand, manifest, budget, round_n, base_run=None, after_baseline=None,
+                        after_candidate=None):
+    """Screen cand against main's screen run: base_run (find_base_run's) is reused, or main is run first
+    (then after_baseline(run)); cand runs with early stop against it. after_candidate(base_run) may return a
+    reason to stop before scoring (cmd_round's tamper check). Returns (base_run, cand_run, stop, stats):
+    stop is that reason, or the exam settings main's run differs from cand's in, with stats None."""
+    per_run = budget if base_run else budget / 2
+    if base_run is None:
+        base_run = run_exam(base_sha, manifest, "baseline", per_run, round_n)
+        if after_baseline:
+            after_baseline(base_run)
+    cand_run = run_exam(cand, manifest, "candidate", per_run, round_n, extra=("--early-stop-vs", str(base_run)))
+    stop = after_candidate(base_run) if after_candidate else ""
+    if stop:
+        return base_run, cand_run, stop, None
+    differ = settings_differ(base_run, cand_run, round_n)
+    if differ:
+        return base_run, cand_run, (f"main run {rel_home(base_run)} differs from the candidate in "
+                                    f"{', '.join(differ)}; the next screen re-runs main"), None
+    return base_run, cand_run, "", compare(base_run, cand_run, "--screen-rule")
 
 
 def mask_task(path, k=1):
@@ -842,26 +971,23 @@ def cmd_round(args):
         if args.no_screen:
             return finish("checked", "checks pass (--no-screen: no exam, no push, no PR)", keep_branch=True)
 
-        per_run = args.budget_usd if base_run else args.budget_usd / 2
-        if base_run is None:
-            base_run = run_exam(base_sha, manifest, "baseline", per_run, n)
-            before["main screen run"] = hash_tree(base_run)
-        cand_run = run_exam(cand, manifest, "candidate", per_run, n)
-        def tamper():
-            changes = tampered(before, snapshot(branch, base_run), ignore_pycache=True, skip_state=("spend.jsonl",))
+        def tamper(main_run):
+            changes = tampered(before, snapshot(branch, main_run), ignore_pycache=True, skip_state=("spend.jsonl",))
             if changes:
                 restore_state(before["state"])
             return "; ".join(changes)
-        bad = tamper()
-        if bad:
-            return finish("dropped", "tamper during screen: " + bad)
-        b_meta, c_meta = (json.loads((Path(r) / "run.json").read_text()) for r in (base_run, cand_run))
-        differ = [k for k in ("model", "max_budget_usd", "tries") if b_meta.get(k) != c_meta.get(k)]
-        if differ:  # a reused main run made under other exam settings would give a wrong verdict
-            book("exam-baseline-stale", 0, n, Path(base_run).name)  # find_base_run skips it from now on
-            return finish("dropped", f"main run {rel_home(base_run)} differs from the candidate in "
-                                     f"{', '.join(differ)}; the next round re-runs main")
-        stats = compare(base_run, cand_run, "--screen-rule")
+
+        def fresh_main(run):
+            before["main screen run"] = hash_tree(run)
+
+        def screen_tamper(main_run):
+            bad = tamper(main_run)
+            return bad and "tamper during screen: " + bad
+
+        base_run, cand_run, stop, stats = screen_against_main(base_sha, cand, manifest, args.budget_usd, n, base_run,
+                                                              after_baseline=fresh_main, after_candidate=screen_tamper)
+        if stop:
+            return finish("dropped", stop)
         verdict = stats["screen"]
         row["screen"] = {"base_run": rel_home(base_run), "cand_run": rel_home(cand_run),
                          "solved_base": int(stats["solvedA"]), "solved_cand": int(stats["solvedB"]),
@@ -871,14 +997,14 @@ def cmd_round(args):
         line = score_line("screen", stats, base_sha, cand, tries_of(cand_run), f"screen={verdict}")
         print(f"checks: pass | screen: main {stats['solvedA']}/{stats['n']} ${float(stats['costA']):.2f}, "
               f"candidate {stats['solvedB']}/{stats['n']} ${float(stats['costB']):.2f} -> {verdict}")
-        lines, ready, prefix = [line], verdict == "pass", "[screen fail] "
+        lines, ready, prefix = [line, *early_stop_line(cand_run)], verdict == "pass", "[screen fail] "
         if ready and args.sidecheck:
             side = Path(args.sidecheck).resolve()
             kw = {"screen": False, "side_home": side.parent / SIDE_HOME,
                   "extra": ("--addon", args.sidecheck_addon, "--env", args.sidecheck_env)}
             sa = run_exam(base_sha, side, "baseline", args.sidecheck_budget_usd / 2, n, **kw)
             sc = run_exam(cand, side, "candidate", args.sidecheck_budget_usd / 2, n, **kw)
-            bad = tamper()
+            bad = tamper(base_run)
             if bad:
                 return finish("dropped", "tamper during side check: " + bad)
             s = compare(sa, sc)
@@ -933,66 +1059,83 @@ def gh_json(*args):
     return json.loads(out)
 
 
+def prior_lines(q, row):
+    """The screen and side check lines a queued round's PR block keeps when monthly rewrites it."""
+    screen, lines = row.get("screen"), []
+    if screen:
+        lines.append(score_line("screen", {"n": screen["n"], "solvedA": screen["solved_base"],
+                                           "solvedB": screen["solved_cand"], "costA": screen["cost_base"],
+                                           "costB": screen["cost_cand"]},
+                                q["base_sha"], q["cand_sha"], 1, f"screen={screen['verdict']}"))
+    if row.get("sidecheck"):
+        lines.append(row["sidecheck"]["line"])
+    return lines
+
+
 def cmd_monthly(args):
     queue = [q for q in read_queue() if gh_json("pr", "view", str(q["pr"]), "--json", "state")["state"] == "OPEN"]
     write_queue(queue)  # a merged or closed PR is never re-examined
     if not queue:
         print("monthly: nothing queued")
         return
-    groups = {}
-    for q in queue:
-        groups.setdefault(q["manifest"], []).append(q)
     check_budget(args.budget_usd, "the monthly exam")
-    per_run = args.budget_usd / (2 * len(groups) + len(queue))
     git("fetch", "-q", "origin", "main")
     main_sha = git("rev-parse", "origin/main").strip()
+    try:
+        monthly_exams(args, queue, main_sha)
+    finally:  # the restacked commits are only needed until their run_exam has read them
+        for q in queue:
+            unstack(q["cand_sha"])
+
+
+def monthly_exams(args, queue, main_sha):
+    """cmd_monthly's restack and full exams of the open queued rounds, on main_sha."""
     history = {r["round"]: r for r in read_jsonl(HOME / "history.jsonl")}
-    failed = []
+    failed, groups, live = [], {}, 0
+
+    def finish(q, lines, full):
+        """Record and dequeue first: the exam is paid, so a failed PR edit must not make a rerun pay again."""
+        update_history(q["round"], full=full)
+        write_queue([x for x in read_queue() if x["round"] != q["round"]])
+        body_f = HOME / "rounds" / str(q["round"]) / "pr-body-full.md"  # kept to re-apply by hand on failure
+        if not edit_pr_body(q["pr"], lines, body_f):  # carry on: the other rounds share this group's paid main runs
+            failed.append(q["round"])
+            print(f"monthly: round {q['round']} PR #{q['pr']}: gh pr edit failed; body kept at {body_f}",
+                  file=sys.stderr)
+            return False
+        return True
+
+    for q in queue:  # score each candidate's change on today's main, not the main it was branched from
+        scored = restack(q["cand_sha"], main_sha)
+        if scored:
+            groups.setdefault(q["manifest"], []).append({**q, "scored_sha": scored})
+            live += 1
+            continue
+        line = f"full: stale, re-propose (conflicts with main {main_sha[:7]})"
+        lines = prior_lines(q, history.get(q["round"], {})) + [line]
+        if finish(q, lines, {"verdict": "stale", "main_sha": main_sha}):
+            print(f"monthly: round {q['round']} PR #{q['pr']}: {line}")
+    per_run = args.budget_usd / (2 * len(groups) + live) if live else 0
     for manifest, items in groups.items():
         a1 = run_exam(main_sha, manifest, "baseline", per_run, 0, screen=False, tries=2)
         a2 = run_exam(main_sha, manifest, "baseline", per_run, 0, screen=False, tries=2)
         for q in items:
-            b = run_exam(q["cand_sha"], manifest, "candidate", per_run, q["round"], screen=False, tries=2)
+            b = run_exam(q["scored_sha"], manifest, "candidate", per_run, q["round"], screen=False, tries=2)
             stats = compare(a1, b, "--margin-from", str(a2))
             cut = [rel_home(r) for r in (a1, a2, b) if json.loads((r / "run.json").read_text()).get("status") != "complete"]
             if cut:  # a budget-cut run is a few tasks, not the full exam: no verdict from it
                 stats["verdict"] = "incomplete"
             full = {"main_run": rel_home(a1), "main_run_2": rel_home(a2), "cand_run": rel_home(b),
-                    "main_sha": main_sha, "solved_base": int(stats["solvedA"]), "solved_cand": int(stats["solvedB"]),
+                    "main_sha": main_sha, "cand_sha": q["cand_sha"], "scored_sha": q["scored_sha"],
+                    "solved_base": int(stats["solvedA"]), "solved_cand": int(stats["solvedB"]),
                     "cost_base": float(stats["costA"]), "cost_cand": float(stats["costB"]), "n": int(stats["n"]),
                     "diff": float(stats["diff"]), "margin": float(stats["margin"]), "verdict": stats["verdict"]}
-            row = history.get(q["round"], {})
-            screen = row.get("screen")
-            lines = []
-            if screen:
-                lines.append(score_line("screen", {"n": screen["n"], "solvedA": screen["solved_base"],
-                                                   "solvedB": screen["solved_cand"], "costA": screen["cost_base"],
-                                                   "costB": screen["cost_cand"]},
-                                        q["base_sha"], q["cand_sha"], 1, f"screen={screen['verdict']}"))
-            if row.get("sidecheck"):
-                lines.append(row["sidecheck"]["line"])
-            lines.append(score_line("full", stats, main_sha, q["cand_sha"], tries_of(b),
-                                    f"diff={stats['diff']} margin={stats['margin']} verdict={stats['verdict']}"))
-            # record and dequeue first: the exam is paid, so a failed PR edit must not make a rerun pay again
-            update_history(q["round"], full=full)
-            write_queue([x for x in read_queue() if x["round"] != q["round"]])
-            body = gh_json("pr", "view", str(q["pr"]), "--json", "body")["body"]
-            new = re.sub(re.escape(SCORES_OPEN) + r".*?" + re.escape(SCORES_CLOSE), lambda _: scores_block(*lines),
-                         body, count=1, flags=re.S)
-            if new == body:
-                new = body.rstrip() + "\n\n" + scores_block(*lines)
-            body_f = HOME / "rounds" / str(q["round"]) / "pr-body-full.md"  # kept to re-apply by hand on failure
-            body_f.parent.mkdir(parents=True, exist_ok=True)
-            body_f.write_text(new)
-            edit = subprocess.run(["gh", "pr", "edit", str(q["pr"]), "--repo", GH_REPO, "--body-file", str(body_f)],
-                                  capture_output=True, text=True)
-            if edit.returncode != 0:  # carry on: the other rounds share this group's paid main runs
-                failed.append(q["round"])
-                print(f"monthly: round {q['round']} PR #{q['pr']}: gh pr edit failed; body kept at {body_f}",
-                      file=sys.stderr)
-                continue
-            print(f"monthly: round {q['round']} PR #{q['pr']}: {lines[-1]}"
-                  + (f" (cut short: {', '.join(cut)})" if cut else ""))
+            lines = prior_lines(q, history.get(q["round"], {})) + [
+                score_line("full", stats, main_sha, q["scored_sha"], tries_of(b),
+                           f"diff={stats['diff']} margin={stats['margin']} verdict={stats['verdict']}")]
+            if finish(q, lines, full):
+                print(f"monthly: round {q['round']} PR #{q['pr']}: {lines[-1]}"
+                      + (f" (cut short: {', '.join(cut)})" if cut else ""))
     if failed:
         die(f"gh pr edit failed for round(s) {', '.join(map(str, failed))}; results are in history.jsonl", code=1)
 
@@ -1009,6 +1152,70 @@ def cmd_sync(_args):
                 print(f"sync: round {r['round']} PR #{r['pr']} {r['outcome']}")
     write_atomic(HOME / "history.jsonl", "".join(json.dumps(r) + "\n" for r in rows))
     write_queue([q for q in read_queue() if q["round"] not in closed])
+
+
+def cmd_exam(args):
+    pr = gh_json("pr", "view", str(args.pr), "--json", "state,headRefOid,headRefName,body")
+    if pr["state"] != "OPEN":
+        die(f"PR #{args.pr} is {pr['state']}, not OPEN")
+    git("fetch", "-q", "origin", "main")
+    git("fetch", "-q", "origin", f"pull/{args.pr}/head")
+    head = git("rev-parse", "FETCH_HEAD").strip()
+    if head != pr["headRefOid"]:
+        die(f"PR #{args.pr} moved while fetching ({pr['headRefOid'][:7]} -> {head[:7]}); run again")
+    main_sha = git("rev-parse", "origin/main").strip()
+    needs, reason = path_gate(main_sha, head)
+    print(f"exam: PR #{args.pr} ({pr['headRefName']} {head[:7]}): "
+          f"{'exam needed' if needs else 'no exam needed'}: {reason}")
+    body_f = HOME / "exams" / f"pr-{args.pr}" / "pr-body.md"
+
+    def post(*lines):
+        if not edit_pr_body(args.pr, lines, body_f):
+            die(f"gh pr edit failed; body kept at {body_f}", code=1)
+        print("\n".join(lines))
+
+    if not needs:
+        if not args.check_only:
+            post(f"exam: not needed ({reason})")
+        return
+    cand = restack(head, main_sha)  # score the change as it would land on today's main
+    try:
+        exam_restacked(args, main_sha, head, cand, post)
+    finally:
+        unstack(head)
+
+
+def exam_restacked(args, main_sha, head, cand, post):
+    """cmd_exam after the path gate: the free checks on cand (head restacked on main, None on a conflict),
+    written to the PR before Bedrock or the budget is asked for, then the paid screen."""
+    free = None
+    if cand is None:
+        free = "exam: stale, rebase the PR onto main"
+    else:
+        load = load_check(cand)  # the free dry run; the paid one is the candidate's first (cheapest) task
+        guard, _ = guard_commits(git("merge-base", main_sha, head).strip(), head)
+        print(f"exam: load check: {'; '.join(load) or 'pass'}")
+        print(f"exam: gate guard (advisory): {'; '.join(guard) or 'pass'}")
+        if load:
+            free = f"exam: dry run fail ({'; '.join(load)})"
+    if free:
+        if args.check_only:
+            print(free)
+        else:
+            post(free)
+        die(f"PR #{args.pr}: {free.removeprefix('exam: ')} (main {main_sha[:7]})", code=1)
+    if args.check_only:
+        return
+    if not on_bedrock(os.environ):
+        die("the exam runs on Bedrock only: set CLAUDE_CODE_USE_BEDROCK=1 and AWS_ACCESS_KEY_ID")
+    check_budget(args.budget_usd, "the exam")
+    n, manifest = f"pr-{args.pr}", Path(args.tasks).resolve()
+    base_run, cand_run, stop, stats = screen_against_main(main_sha, cand, manifest, args.budget_usd, n,
+                                                          find_base_run(main_sha, manifest))
+    if stop:
+        die(stop, code=1)
+    post(score_line("screen", stats, main_sha, cand, tries_of(cand_run), f"screen={stats['screen']}"),
+         *early_stop_line(cand_run), *([f"gate guard (advisory): {'; '.join(guard)}"] if guard else []))
 
 
 def cmd_guard(args):
@@ -1038,11 +1245,16 @@ def main(argv=None):
     m = sub.add_parser("monthly")
     m.add_argument("--budget-usd", type=float, default=DEFAULT_EXAM_BUDGET_USD)
     sub.add_parser("sync")
+    e = sub.add_parser("exam", help="screen one open PR against main and write its score block")
+    e.add_argument("--pr", type=int, required=True)
+    e.add_argument("--tasks", required=True)
+    e.add_argument("--budget-usd", type=float, default=DEFAULT_EXAM_BUDGET_USD)
+    e.add_argument("--check-only", action="store_true", help="path gate and free checks only: no spend, no PR edit")
     g = sub.add_parser("guard", help="run the round's gate guard on one commit (exit 1 = rejected)")
     g.add_argument("commit")
     g.add_argument("--base", help="diff base (default: <commit>^)")
     args = ap.parse_args(argv)
-    {"round": cmd_round, "monthly": cmd_monthly, "sync": cmd_sync, "guard": cmd_guard}[args.cmd](args)
+    {"round": cmd_round, "monthly": cmd_monthly, "sync": cmd_sync, "exam": cmd_exam, "guard": cmd_guard}[args.cmd](args)
 
 
 if __name__ == "__main__":

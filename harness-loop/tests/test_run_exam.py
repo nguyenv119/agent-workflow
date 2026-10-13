@@ -8,6 +8,8 @@ run_exam passes Harbor only an allowlisted env. A fake `docker` (EXAM_DOCKER)
 answers `docker info` like a 10-CPU / 7.65 GiB Docker Desktop, lists the
 containers in its own spec file, and logs every call.
 """
+import argparse
+import concurrent.futures
 import hashlib
 import json
 import os
@@ -17,6 +19,8 @@ import subprocess
 import sys
 import tempfile
 import textwrap
+import threading
+import time
 import unittest
 import unittest.mock
 from pathlib import Path
@@ -428,6 +432,55 @@ class RunExamTest(unittest.TestCase):
         self.assertEqual(set(self.results(run)), {"t2"})
         self.assertTrue(run.name.endswith("-demo-screen"))
 
+    def screen_baseline(self):
+        """A sealed main screen run of t1..t3, all solved, t2 cheapest ($3), then t3 ($6), then t1 ($9)."""
+        m = self.manifest({"t1": 2, "t2": 2, "t3": 2}, screen=("t1", "t2", "t3"))
+        self.spec.write_text(json.dumps({"t1": {"cost": 9.0}, "t2": {"cost": 3.0}, "t3": {"cost": 6.0}}))
+        self.run_exam("--tasks", m, "--budget-usd", 100, "--screen", "--kind", "baseline")
+        return m, self.only_run()
+
+    def test_early_stop_runs_cheapest_task_first_and_starts_nothing_after_a_decided_fail(self):
+        """
+        With --early-stop-vs the candidate runs main's cheapest task first (the dry run) and, once the
+        screen can no longer pass, starts nothing more and marks the run incomplete with the reason.
+        This is what keeps a broken candidate from paying for the whole screen.
+        """
+        # GIVEN main's sealed screen run, and a candidate that errors on t2 (main's cheapest task)
+        m, base = self.screen_baseline()
+        self.log.unlink()
+        self.spec.write_text(json.dumps({"t2": {"subtype": "error"}}))
+        # WHEN the candidate screen runs with --early-stop-vs main's run (exit 1: its only try errored)
+        self.run_exam("--tasks", m, "--budget-usd", 100, "--screen", "--early-stop-vs", base, check=False)
+        # THEN only t2 ran, and the run says why it stopped
+        self.assertEqual([Path(a[a.index("-p") + 1]).name for a in self.argvs()], ["t2"])
+        run = next(d for d in (self.home / "runs").iterdir() if d != base)
+        meta = json.loads((run / "run.json").read_text())
+        self.assertEqual(meta["status"], "incomplete")
+        self.assertIn("error", meta["early_stop"])
+
+    def test_early_stop_lets_a_passing_candidate_finish_every_task(self):
+        """A candidate that can still pass is never stopped: it runs every task, cheapest first, complete."""
+        # GIVEN main's sealed screen run and a candidate that solves everything at main's costs
+        m, base = self.screen_baseline()
+        self.log.unlink()
+        # WHEN the candidate screen runs with --early-stop-vs
+        self.run_exam("--tasks", m, "--budget-usd", 100, "--screen", "--early-stop-vs", base)
+        # THEN all three ran in main's cost order and the run is complete with no early stop
+        self.assertEqual([Path(a[a.index("-p") + 1]).name for a in self.argvs()], ["t2", "t3", "t1"])
+        run = next(d for d in (self.home / "runs").iterdir() if d != base)
+        meta = json.loads((run / "run.json").read_text())
+        self.assertEqual((meta["status"], meta.get("early_stop")), ("complete", None))
+
+    def test_early_stop_without_screen_is_refused(self):
+        """Early stop mirrors the screen rule only; on a full exam it would cut a run the margin needs."""
+        # GIVEN main's screen run, WHEN a non-screen run asks for early stop
+        m, base = self.screen_baseline()
+        p = self.run_exam("--tasks", m, "--budget-usd", 100, "--early-stop-vs", base, check=False)
+        # THEN it exits before any run
+        self.assertNotEqual(p.returncode, 0)
+        self.assertIn("--early-stop-vs", p.stderr)
+        self.assertEqual(len(list((self.home / "runs").iterdir())), 1)
+
     def test_controls_run_records_oracle_and_nop_rewards(self):
         """One controls run holds both Harbor control agents, keyed per agent."""
         # GIVEN two tasks
@@ -706,6 +759,81 @@ class RunExamTest(unittest.TestCase):
         self.assertIn("HARNESS_LOOP_HOME", p.stderr)
         self.assertFalse(self.log.exists())
         self.assertFalse((self.home / "runs").exists() and any((self.home / "runs").iterdir()))
+
+
+class ScheduleEarlyStop(unittest.TestCase):
+    """run_exam.schedule with --early-stop-vs, run_try replaced by a stub that returns set results."""
+
+    def setUp(self):
+        self.root = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.root)
+
+    def baseline(self, tries):
+        """compare.load of a sealed main run. tries: {task: [(status, reward, cost), ...]}."""
+        run = self.root / "base"
+        for task, rows in tries.items():
+            for i, (st, reward, cost) in enumerate(rows, 1):
+                d = run / task / f"try-{i}"
+                d.mkdir(parents=True)
+                (d / "result.json").write_text(json.dumps(
+                    {"task": task, "try": i, "status": st, "reward": reward, "cost_usd": cost}))
+        (run / "run.json").write_text(json.dumps({"max_budget_usd": 12.05, "status": "complete"}))
+        compare.seal(run)
+        return compare.load(run)
+
+    def schedule(self, base, outcomes, events, wait=None):
+        """Run tasks in outcomes' order at concurrency 2 with early stop; returns schedule()'s result."""
+        lock = threading.Lock()
+
+        def run_try(ctx, task, k, agent):
+            with lock:
+                events.append(("start", task["id"]))
+            time.sleep(0.05)
+            with lock:
+                events.append(("end", task["id"]))
+            st, reward, cost = outcomes[task["id"]]
+            return {"task": task["id"], "try": k, "agent": agent, "status": st, "reward": reward, "cost_usd": cost}
+
+        args = argparse.Namespace(agent="workflow", concurrency=2, budget_usd=100.0, max_budget_usd=12.05)
+        self.ctx = {"args": args, "early": base}
+        jobs = [({"id": t}, 1, "workflow") for t in outcomes]
+        with unittest.mock.patch.object(run_exam, "run_try", run_try), \
+                unittest.mock.patch.object(run_exam, "wait", wait or run_exam.wait):
+            return run_exam.schedule(self.ctx, jobs)
+
+    def test_two_tries_finishing_in_one_batch_are_both_counted_before_deciding(self):
+        """
+        Main errored on X and solved Y and Z. The candidate solves X and errors on Y in the same batch, Z queued.
+        Errors are even (1 and 1), so the run must go on. Deciding after Y alone, with X finished but not yet
+        counted, dropped X from the pairing and wrongly stopped on "error tries 1 > main's 0".
+        """
+        # GIVEN main's run, and a batch that hands back Y's finished try before X's
+        base = self.baseline({"A": [("ok", 1, 10.0)], "X": [("error", None, 0.0)],
+                              "Y": [("ok", 1, 10.0)], "Z": [("ok", 1, 10.0)]})
+
+        def batch(fs, return_when):
+            got = concurrent.futures.wait(fs, return_when=concurrent.futures.ALL_COMPLETED)
+            return sorted(got.done, key=lambda f: f.result()["task"] != "Y"), got.not_done
+
+        # WHEN A runs, then X and Y finish together, then Z is due
+        events = []
+        complete = self.schedule(base, {"A": ("ok", 1, 1.0), "X": ("ok", 1, 1.0), "Y": ("error", None, 1.0),
+                                        "Z": ("ok", 1, 1.0)}, events, wait=batch)
+        # THEN nothing stopped early and Z ran
+        self.assertIsNone(self.ctx.get("early_stop"))
+        self.assertTrue(complete)
+        self.assertIn(("start", "Z"), events)
+
+    def test_first_try_runs_alone_before_other_slots_fill(self):
+        """With early stop the first (cheapest) try is the paid dry run: nothing else starts until it ends."""
+        # GIVEN main solved three tasks, and concurrency 2
+        base = self.baseline({t: [("ok", 1, 10.0)] for t in ("A", "B", "C")})
+        # WHEN the candidate screen runs
+        events = []
+        self.schedule(base, {t: ("ok", 1, 1.0) for t in ("A", "B", "C")}, events)
+        # THEN A ended before B started, and B and C then ran side by side
+        self.assertEqual(events[:2], [("start", "A"), ("end", "A")])
+        self.assertEqual(set(events[2:4]), {("start", "B"), ("start", "C")})
 
 
 if __name__ == "__main__":

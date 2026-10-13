@@ -239,5 +239,96 @@ class CompareTest(unittest.TestCase):
                                 "statusA=complete statusB=complete")
 
 
+def res(task, status="ok", reward=1, cost=10.0):
+    """One finished candidate try, as run_exam's schedule() holds it."""
+    return {"task": task, "try": 1, "status": status, "reward": reward, "cost_usd": cost}
+
+
+class ScreenFailDecidedTest(unittest.TestCase):
+    """compare.screen_fail_decided: run_exam's early stop asks it after every finished candidate try."""
+
+    def setUp(self):
+        self.root = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.root)
+        # main solves t0..t2 and misses t3, t4, every try ok at $10: solvedA=3, costA=$50, no cut, no error
+        self.base = compare.load(make_run(self.root, "a", {f"t{i}": [ok(int(i < 3))] for i in range(5)}))
+
+    def decided(self, done):
+        tasks = {f"t{i}" for i in range(5)}
+        return compare.screen_fail_decided(self.base, done, tasks - {r["task"] for r in done}, CAP)
+
+    def test_a_cut_beyond_mains_cut_count_decides_fail(self):
+        """
+        The screen fails on cutB > cutA, and a cut try cannot be undone, so one cut more than main's
+        decides it. Without this an exam with a broken dry run would pay for four more tasks.
+        """
+        # GIVEN main cut nothing, WHEN the candidate's first try is budget_cut
+        why = self.decided([res("t0", "budget_cut", None, 3.0)])
+        # THEN the fail is decided, naming the cut rule
+        self.assertIn("cut", why)
+
+    def test_an_error_beyond_mains_error_count_decides_fail(self):
+        """errB > errA fails the screen whatever comes later, so the first extra error stops the run."""
+        # GIVEN main erred nowhere, WHEN the candidate's first try errors
+        why = self.decided([res("t0", "error", None, 0.0)])
+        # THEN the fail is decided, naming the error rule
+        self.assertIn("error", why)
+
+    def test_too_few_tasks_left_to_reach_mains_solved_minus_one_decides_fail(self):
+        """
+        The screen needs solvedB >= solvedA - 1. When the candidate's solves so far plus every paired task
+        still to run cannot reach that, no later result can pass it.
+        """
+        # GIVEN main solved 3 (the screen needs 2), and the candidate missed t0..t2: 0 + 2 left = 2, still reachable
+        self.assertIsNone(self.decided([res(t, reward=0) for t in ("t0", "t1", "t2")]))
+        # WHEN it also misses t3 (0 + 1 left < 2)
+        why = self.decided([res(t, reward=0) for t in ("t0", "t1", "t2", "t3")])
+        # THEN the fail is decided, naming the solved rule
+        self.assertIn("solved", why)
+
+    def test_cost_past_125_percent_of_mains_decides_fail(self):
+        """Cost only grows, so candidate spend past 1.25 x main's paired cost fails the screen already."""
+        # GIVEN main's paired cost is $50, WHEN the candidate spends $63 on two solved tasks
+        why = self.decided([res("t0", cost=31.5), res("t1", cost=31.5)])
+        # THEN the fail is decided, naming the cost rule
+        self.assertIn("cost", why)
+
+    def test_spend_over_mains_cost_for_the_same_tasks_but_under_the_whole_cap_is_not_decided(self):
+        """
+        The cost rule compares against 1.25 x main's whole paired cost, not main's cost for the tasks run so far:
+        $30 on t0 and t1 (main spent $20 on them) is under 1.25 x $50, and cheap later tasks can still pass.
+        """
+        # GIVEN main's paired cost is $50, WHEN the candidate spends $30 solving t0 and t1
+        why = self.decided([res("t0", cost=15.0), res("t1", cost=15.0)])
+        # THEN nothing is decided
+        self.assertIsNone(why)
+
+    def test_cut_or_error_up_to_mains_count_is_not_decided_and_one_more_is(self):
+        """
+        cutB <= cutA and errB <= errA: a candidate may cut or err as often as main did. Main's one cut (or error)
+        on t4 allows the candidate one; only the second decides the fail.
+        """
+        for st, word in (("budget_cut", "cut"), ("error", "error")):
+            with self.subTest(st):
+                # GIVEN main solved t0..t2, missed t3, and had one st try on t4
+                tries = {f"t{i}": [ok(int(i < 3))] for i in range(4)}
+                tries["t4"] = [(st, None, CAP)]
+                self.base = compare.load(make_run(self.root, st, tries))
+                # WHEN the candidate has one st try / THEN not decided
+                self.assertIsNone(self.decided([res("t0", st, None, CAP)]))
+                # WHEN it has a second / THEN the fail is decided by that rule
+                self.assertIn(word, self.decided([res("t0", st, None, CAP), res("t1", st, None, CAP)]))
+
+    def test_a_run_that_can_still_pass_is_not_decided(self):
+        """
+        One miss, $20 spent, no cut or error: the remaining tasks can still pass the screen, so the run
+        must go on. Stopping here would fail a candidate the full screen passes.
+        """
+        # GIVEN main as above, WHEN the candidate missed t0 and solved t1 for $20
+        why = self.decided([res("t0", reward=0), res("t1")])
+        # THEN nothing is decided
+        self.assertIsNone(why)
+
+
 if __name__ == "__main__":
     unittest.main()
