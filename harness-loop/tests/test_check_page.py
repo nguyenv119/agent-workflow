@@ -80,7 +80,7 @@ class PageRules(unittest.TestCase):
     def test_layer_missing_a_part_is_named_by_its_heading(self):
         """Each layer must carry its pain point, diagram and done line; a missing one is reported with
         the layer's heading so the agent knows which layer to fix. Without this, layers drift into
-        unstructured prose that Long cannot read cold."""
+        unstructured prose the reader cannot read cold."""
         for flag, part in (("pain", "p.pain"), ("fig", "figure.dia"), ("done", "p.done")):
             with self.subTest(part=part):
                 # GIVEN a page whose second layer lacks one part
@@ -138,6 +138,57 @@ class PageRules(unittest.TestCase):
         # THEN nothing is reported
         self.assertEqual(out, [])
 
+    def test_layer_heading_outside_div_layer_fails(self):
+        """Old pages have bare <h3>Layer N...</h3> headings with no div.layer, so the layer-part check
+        never ran on them. Each such heading is one violation; other h3s are not layers."""
+        # GIVEN a page with two bare layer headings and an unrelated h3
+        bare = "<h3>Layer 1. Bare one</h3><p>text</p><h3>Layer 2. Bare two</h3><h3>Open question</h3>"
+        # WHEN it is checked
+        out = check_page.check_page(page([bare]))
+        # THEN one line per bare layer heading
+        self.assertEqual(len(out), 2, out)
+        self.assertTrue(all("not wrapped in div.layer" in line for line in out), out)
+        self.assertIn("Layer 2. Bare two", out[1])
+
+    def test_old_update_and_todo_boxes_belong_in_for_agents(self):
+        """div.upd and div.ltodo moved to For agents; one left on the main page fails, the same box
+        inside details.agents passes."""
+        for cls in ("upd", "ltodo"):
+            with self.subTest(cls=cls):
+                box = f'<div class="{cls}"><p>Found: old note.</p></div>'
+                # GIVEN the box on the main page, and the box inside For agents
+                main = page([layer(), box])
+                agents = page(extra=f'<details class="agents"><summary>For agents</summary>'
+                                    f"<details><summary>Earlier</summary>{box}</details>{box}</details>")
+                # WHEN both are checked
+                # THEN only the main-page box is reported
+                out = check_page.check_page(main)
+                self.assertEqual(len(out), 1, out)
+                self.assertIn(f"div.{cls} outside For agents", out[0])
+                self.assertEqual(check_page.check_page(agents), [])
+
+    def test_unclosed_div_in_a_layer_does_not_hide_later_layers(self):
+        """A stray unclosed <div> used to keep the parser inside layer 1 forever, so later layers
+        were never checked. Layers never nest, so a new div.layer starts a new layer."""
+        # GIVEN layer 1 with an unclosed div, then a layer 2 that lacks its done line
+        broken = layer().replace("<p>A cache", "<div><p>A cache")
+        html = page([broken, layer("Layer 2. Misses go to the database", done=False)])
+        # WHEN it is checked
+        out = check_page.check_page(html)
+        # THEN layer 2's missing part is still reported
+        self.assertEqual(len(out), 1, out)
+        self.assertIn("Layer 2. Misses go to the database", out[0])
+        self.assertIn("p.done", out[0])
+
+    def test_template_passes_its_own_checker(self):
+        """Every new page starts as a copy of template.html; if the template fails, every new page
+        fails before anyone writes a word."""
+        # GIVEN the shipped template
+        html = (SCRIPT.parent / "template.html").read_text(encoding="utf-8")
+        # WHEN it is checked
+        # THEN nothing is reported
+        self.assertEqual(check_page.check_page(html), [])
+
 
 class CardRules(unittest.TestCase):
     def test_complete_card_passes(self):
@@ -150,8 +201,8 @@ class CardRules(unittest.TestCase):
         self.assertEqual(out, [])
 
     def test_needs_you_card_missing_a_field_fails(self):
-        """A needs-you card asks Long to decide, so it needs background, why, choice and a
-        recommendation; a card missing one is a bare question he cannot answer cold."""
+        """A needs-you card asks the reader to decide, so it needs background, why, choice and a
+        recommendation; a card missing one is a bare question they cannot answer cold."""
         for field in check_page.CARD_FIELDS:
             with self.subTest(field=field):
                 # GIVEN a needs-you card with one field empty
@@ -171,8 +222,9 @@ class CardRules(unittest.TestCase):
         self.assertEqual(out, [])
 
     def test_bead_id_in_prose_fails(self):
-        """Tracker ids mean nothing to Long; prose names the work in words."""
-        for text in ("Waiting on acme-app-7k2 first.", "Blocked by web-x9f2.3 today.", "See ab3c.12 for it."):
+        """Tracker ids mean nothing to the reader; prose names the work in words."""
+        for text in ("Waiting on acme-app-7k2 first.", "Blocked by web-x9f2.3 today.", "See ab3c.12 for it.",
+                     "Then word-abcde.3 lands.", "After abcde.31 merges."):
             with self.subTest(text=text):
                 # GIVEN a card whose why mentions a tracker id
                 # WHEN it is checked
@@ -187,14 +239,45 @@ class CardRules(unittest.TestCase):
         the check cry wolf on normal prose."""
         # GIVEN prose full of hyphenated words
         text = ("A low-risk follow-up: re-run the top-100 list, check the covid-19 and x-ray rows, "
-                "use gpt-4o for the e-mail on 2026-01-01, version v1.2 of python3.12.")
+                "use gpt-4o for the e-mail on 2026-01-01, version v1.2 of python3.12. In the mid-90s and "
+                "late-1990s, test-e2e runs on-k8s for the top-10k with x-2fa and web3.0.")
         # WHEN it is checked
         out = check_cards({"c.json": card(background=text)})
         # THEN nothing is reported
         self.assertEqual(out, [])
 
+    def test_prefix_flags_letter_only_ids(self):
+        """A project's ids can be letter-only (acme-qwert), which looks like a word; --prefix names
+        the project so those are caught without flagging every hyphenated word elsewhere."""
+        # GIVEN a why naming a letter-only id
+        c = {"c.json": card(why="Blocked on acme-qwert today.")}
+        # WHEN it is checked with and without the prefix
+        # THEN only the prefixed check reports it
+        self.assertEqual(check_cards(c), [])
+        with tempfile.TemporaryDirectory() as d:
+            Path(d, "c.json").write_text(json.dumps(c["c.json"]))
+            out = check_page.check_cards(d, ("acme",))
+        self.assertEqual(len(out), 1, out)
+        self.assertIn("acme-qwert", out[0])
+
+    def test_detail_path_may_hold_id_and_pr_shapes(self):
+        """detail is a path for agents, not prose; an id- or PR-shaped path must not fail."""
+        # GIVEN a detail path with an id and a hash in it
+        # WHEN it is checked
+        out = check_cards({"c.json": card(detail="/tmp/acme-7k2.3/notes-ab3c.12#12.md")})
+        # THEN nothing is reported
+        self.assertEqual(out, [])
+
+    def test_html_entity_and_word_hash_are_not_pr_numbers(self):
+        """'&#123;' is an HTML entity and 'issue#5' is glued to a word; neither is a PR pointer."""
+        # GIVEN prose with both
+        # WHEN it is checked
+        out = check_cards({"c.json": card(why="The brace &#123; and issue#5 are text.")})
+        # THEN nothing is reported
+        self.assertEqual(out, [])
+
     def test_pr_number_in_prose_fails(self):
-        """PR numbers are pointers for agents, not words for Long."""
+        """PR numbers are pointers for agents, not words for the reader."""
         # GIVEN a recommendation naming a PR
         # WHEN it is checked
         out = check_cards({"c.json": card(recommendation="Merge #123 then raise it.")})
@@ -222,6 +305,17 @@ class CardRules(unittest.TestCase):
                 self.assertEqual(len(out), 1, out)
                 self.assertIn("token", out[0])
                 self.assertNotIn(fake, out[0])
+
+    def test_dated_mixed_case_filenames_are_not_tokens(self):
+        """Report filenames mix case and digits and run past 32 chars; - and _ split them, so they
+        are not read as base64 keys."""
+        for path in ("/tmp/Some-Report-Name-For-Client-2026-10-13.html",
+                     "/tmp/Client_Intro_Packet_Final_Version_2026_10_08.pdf"):
+            with self.subTest(path=path):
+                # GIVEN a detail holding the path
+                # WHEN it is checked
+                # THEN nothing is reported
+                self.assertEqual(check_cards({"c.json": card(detail=path)}), [])
 
     def test_em_dash_in_card_fails(self):
         """Card copy follows the same no-em-dash rule as pages."""
@@ -278,6 +372,28 @@ class Cli(unittest.TestCase):
         # THEN it exits 2 without PASS
         self.assertEqual(r.returncode, 2)
         self.assertNotIn("PASS", r.stdout)
+
+    def test_empty_card_folder_is_not_a_pass(self):
+        """A folder with no cards means a wrong path or a broken export; PASS would hide it."""
+        # GIVEN an empty folder
+        with tempfile.TemporaryDirectory() as d:
+            # WHEN the card check runs on it
+            r = self.run_cli("cards", d)
+        # THEN it exits 2 with a no-cards message
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("no cards found", r.stderr)
+        self.assertNotIn("PASS", r.stdout)
+
+    def test_prefix_flag_on_the_cli(self):
+        """--prefix reaches the card check from the command line."""
+        # GIVEN a card naming a letter-only id
+        with tempfile.TemporaryDirectory() as d:
+            Path(d, "c.json").write_text(json.dumps(card(why="Blocked on acme-qwert.")))
+            # WHEN the card check runs with --prefix acme
+            r = self.run_cli("cards", d, "--prefix", "acme")
+        # THEN it fails on that id
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("acme-qwert", r.stdout)
 
 
 if __name__ == "__main__":

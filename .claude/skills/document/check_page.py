@@ -1,13 +1,21 @@
 #!/usr/bin/env python3
 """Check a document page or a folder of desk cards against the format rules a script can check.
 
-    check_page.py <page.html>      every div.layer has h3, p.pain, figure.dia, p.done; one legend
-                                   swatch; no em dash in visible text
-    check_page.py cards <dir>      needs-you cards fill every decision field; prose has no tracker
-                                   ids or PR numbers; no token-shaped strings; no em dashes
+    check_page.py <page.html>      every div.layer has h3, p.pain, figure.dia, p.done; no "Layer..."
+                                   h3 outside a div.layer; no div.upd/div.ltodo outside For agents
+                                   (details.agents); one legend swatch; no em dash in visible text
+    check_page.py cards <dir> [--prefix NAME]...
+                                   needs-you cards fill every decision field; prose has no tracker
+                                   ids or PR numbers; no token-shaped strings; no em dashes.
+                                   --prefix flags NAME-<3-5 chars> even when the id is letter-only.
 
-Prints one line per violation and exits 1, or prints PASS and exits 0. Exit 2 on bad usage.
-Stdlib only.
+A desk card is one JSON object per <dir>/*.json, with string fields: id, status, title, background,
+why, choice, recommendation, detail (a path to the project page or notes). status "needs-you" means
+the card waits on the reader to decide, so every field from title to detail must be filled. Prose
+fields (title to recommendation) must not carry tracker ids or PR numbers; detail is exempt.
+
+Prints one line per violation and exits 1, or prints PASS and exits 0. Exit 2 on bad usage or a card
+folder with no *.json cards. Stdlib only.
 """
 import json
 import re
@@ -20,17 +28,37 @@ CARD_FIELDS = ("title", "background", "why", "choice", "recommendation", "detail
 PROSE_FIELDS = ("title", "background", "why", "choice", "recommendation")  # detail is a path
 LAYER_PARTS = (("h3", "h3"), ("pain", "p.pain"), ("figure", "figure.dia"), ("done", "p.done"))
 
-# A tracker id: prefix-<3-5 chars holding a letter and a digit>[.N], or a bare 4-5 char id with .N.
-# Requiring both a letter and a digit keeps "follow-up", "top-100" and "covid-19" out.
-BEAD = re.compile(r"\b[a-z][a-z0-9]*(?:-[a-z0-9]+)*-(?=[a-z0-9]{3,5}\b)(?=[a-z0-9]*\d)(?=[a-z0-9]*[a-z])"
-                  r"[a-z0-9]+(?:\.\d+)?\b"
-                  r"|\b(?=[a-z0-9]{4,5}\.\d)(?=[a-z0-9]*\d)(?=[a-z0-9]*[a-z])[a-z0-9]+\.\d+\b")
+WORD = re.compile(r"[A-Za-z0-9]+(?:[-.][A-Za-z0-9]+)*")
+ID = re.compile(r"[a-z0-9]{3,5}")
+# Hyphen-only ids need a letter+digit mix that is not a common word shape: units and decades
+# (10k, 2fa, 90s, 1990s) or numeronyms (e2e, k8s). Letter-only ids need .N or --prefix.
+NOT_ID = re.compile(r"\d+[a-z]+|[a-z]\d+[a-z]+")
+VERSION = re.compile(r"[a-z]+\d+")  # web3.0, python3.12: a name and a version, not an id
+def bead_ids(text, prefixes=()):
+    """Yield tracker-id-shaped strings: prefix-ID, prefix-ID.N, or a bare 4-5 char ID.N."""
+    for m in WORD.finditer(text):
+        parts = m.group().split("-")
+        for i, part in enumerate(parts):
+            base, *rest = part.split(".")
+            if len(rest) > 1 or (rest and not rest[0].isdigit()) or not ID.fullmatch(base):
+                continue
+            dotted, letter = bool(rest), any(c.isalpha() for c in base)
+            if i == 0:
+                hit = dotted and len(base) >= 4 and letter and not VERSION.fullmatch(base)
+            else:
+                hit = ("-".join(parts[:i]) in prefixes
+                       or letter and (dotted or any(c.isdigit() for c in base) and not NOT_ID.fullmatch(base)))
+            if hit:
+                yield "-".join(parts[:i + 1])
+
+
 PR = re.compile(r"(?<![&\w])#\d+\b")
 TOKENS = (re.compile(r"\bsk-[A-Za-z0-9_-]{16,}"), re.compile(r"\bghp_[A-Za-z0-9]{20,}"),
           re.compile(r"\bAKIA[A-Z0-9]{16}\b"), re.compile(r"\b[0-9a-fA-F]{32,}\b"),
           # base64-ish: 32+ chars mixing upper, lower and digit (a slug or path has no such run)
-          re.compile(r"(?<![A-Za-z0-9+_=-])(?=[A-Za-z0-9+_=-]*[A-Z])(?=[A-Za-z0-9+_=-]*[a-z])"
-                     r"(?=[A-Za-z0-9+_=-]*\d)[A-Za-z0-9+_=-]{32,}"))
+          # (- and _ split the run, so a dated Mixed-Case-File-2026-10-13.html is not one)
+          re.compile(r"(?<![A-Za-z0-9+=])(?=[A-Za-z0-9+=]*[A-Z])(?=[A-Za-z0-9+=]*[a-z])"
+                     r"(?=[A-Za-z0-9+=]*\d)[A-Za-z0-9+=]{32,}"))
 
 
 class _Page(HTMLParser):
@@ -39,6 +67,7 @@ class _Page(HTMLParser):
         self.out, self.layers = [], []
         self.hidden = 0           # depth inside <style>/<script>
         self.layer_div = 0        # div depth inside the current layer (0 = not in a layer)
+        self.agents = 0           # details depth inside details.agents
         self.legend_div = 0
         self.swatches = 0
         self.heading, self.in_heading = "top of page", None
@@ -47,12 +76,17 @@ class _Page(HTMLParser):
         cls = (dict(attrs).get("class") or "").split()
         if tag in ("style", "script"):
             self.hidden += 1
+        if tag == "details" and (self.agents or "agents" in cls):
+            self.agents += 1
         if tag == "div":
-            if self.layer_div:
-                self.layer_div += 1
-            elif "layer" in cls:
+            if "layer" in cls:  # layers never nest: a new one closes any open one
                 self.layer_div = 1
                 self.layers.append({"name": f"layer {len(self.layers) + 1}", "has": set()})
+            elif self.layer_div:
+                self.layer_div += 1
+            for old in ("upd", "ltodo"):
+                if old in cls and not self.agents:
+                    self.out.append(f"'{self.heading}': div.{old} outside For agents, move it there")
             if self.legend_div:
                 self.legend_div += 1
             elif "legend" in cls:
@@ -75,6 +109,8 @@ class _Page(HTMLParser):
     def handle_endtag(self, tag):
         if tag in ("style", "script") and self.hidden:
             self.hidden -= 1
+        if tag == "details" and self.agents:
+            self.agents -= 1
         if tag == "div":
             self.layer_div = max(self.layer_div - 1, 0)
             self.legend_div = max(self.legend_div - 1, 0)
@@ -83,6 +119,8 @@ class _Page(HTMLParser):
             self.heading = " ".join(self.heading.split())
             if tag == "h3" and self.layer_div:
                 self.layers[-1]["name"] = self.heading
+            elif tag == "h3" and self.heading.startswith("Layer"):
+                self.out.append(f"'{self.heading}': layer not wrapped in div.layer")
 
     def handle_data(self, data):
         if self.hidden:
@@ -109,7 +147,7 @@ def check_page(html):
     return out
 
 
-def check_cards(folder):
+def check_cards(folder, prefixes=()):
     """Return the list of violations for every *.json desk card in folder."""
     out = []
     for f in sorted(Path(folder).glob("*.json")):
@@ -132,8 +170,8 @@ def check_cards(folder):
             if EM_DASH in v:
                 out.append(f"{f.name}: {field}: em dash")
             if field in PROSE_FIELDS:
-                if m := BEAD.search(v):
-                    out.append(f"{f.name}: {field}: bead id '{m.group()}' in prose, name the work in words")
+                if bead := next(bead_ids(v, prefixes), None):
+                    out.append(f"{f.name}: {field}: bead id '{bead}' in prose, name the work in words")
                 if m := PR.search(v):
                     out.append(f"{f.name}: {field}: PR number '{m.group()}' in prose, say what it changes")
             for rx in TOKENS:
@@ -144,12 +182,17 @@ def check_cards(folder):
 
 
 def main(argv):
-    if len(argv) == 2 and argv[0] == "cards" and Path(argv[1]).is_dir():
-        out = check_cards(argv[1])
+    prefixes = argv[3::2]
+    if (len(argv) >= 2 and argv[0] == "cards" and Path(argv[1]).is_dir()
+            and len(argv) % 2 == 0 and set(argv[2::2]) <= {"--prefix"}):
+        if not any(Path(argv[1]).glob("*.json")):
+            print(f"no cards found: {argv[1]} has no *.json files", file=sys.stderr)
+            return 2
+        out = check_cards(argv[1], prefixes)
     elif len(argv) == 1 and Path(argv[0]).is_file():
         out = check_page(Path(argv[0]).read_text(encoding="utf-8"))
     else:
-        print("usage: check_page.py <page.html> | check_page.py cards <dir>  (path must exist)",
+        print("usage: check_page.py <page.html> | check_page.py cards <dir> [--prefix NAME]...  (path must exist)",
               file=sys.stderr)
         return 2
     print("\n".join(out) if out else "PASS")

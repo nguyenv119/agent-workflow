@@ -1,6 +1,6 @@
 ---
 name: document
-description: Build and keep updating Long's living HTML working document for a session's topic — a local editable page in ~/Downloads with short plain-language sections for Long (why, how it works, diagrams, backlog) and a collapsed "For agents" section holding the thorough notes, decisions, verified facts, file paths and discover-KB links. Only the latest update is highlighted, in one color; older text is plain. Use when Long says "document", "put this in the HTML", "update the HTML/doc/tracker/page", "write this up as a page", or asks to keep a running page for a piece of work. Invoked via /document [topic or path].
+description: Build and keep updating Long's living HTML working document for a session's topic — a local editable page in ~/Downloads with short plain-language sections for Long (why, how it works, diagrams) and a collapsed "For agents" section holding the thorough notes, decisions, verified facts, file paths and discover-KB links. Only the latest update is highlighted, in one color; older text is plain. Use when Long says "document", "put this in the HTML", "update the HTML/doc/tracker/page", "write this up as a page", or asks to keep a running page for a piece of work. Invoked via /document [topic or path].
 ---
 
 # document
@@ -32,7 +32,7 @@ The template is a blanked copy of `example-firehose.html` (in this skill's folde
 awk '/<h2>Why/,/<\/section>/' <skill-dir>/example-firehose.html | head -60
 ```
 
-Swap `Why` for `How it works` or `For agents` as needed (the firehose example predates the layer shape; follow section 2). Start the page on day one of a project, even with little known: keep every section and mark the empty ones `To do`.
+Swap `Why` for `How it works` or `For agents` as needed (the firehose example predates the layer shape; follow section 2). Start the page on day one of a project, even with little known: keep every section and mark the empty ones `To do`, except a layer, which takes no status tags.
 
 Every new finding goes in exactly one place: **Why / How it works** if it explains the system, **Open questions** if it waits on Long, **For agents** (or its linked notes file) for status, findings, plans and everything else. When unsure, For agents.
 
@@ -43,11 +43,11 @@ Main sections, in this order:
 3. **Done means** (the win condition), right under Why: one bold sentence per goal a script can check, with a status tag. When a goal moves to another epic or is dropped, say so here in one line.
 4. **How it works, layer by layer**: one architecture diagram that grows layer by layer (section 4, "The default shape"). Each layer is one `<div class="layer">` holding, in order:
    1. `<h3>`: the layer's point as a sentence.
-   2. `<p class="pain">` opening with **Original pain point:** (always red, Long, 11 Oct): the concrete problem that made this layer matter, in one or two plain sentences with the real example.
+   2. `<p class="pain">` opening with **Original pain point:** (always red): the concrete problem that made this layer matter, in one or two plain sentences with the real example.
    3. **What it is:** a brief explanation to the first-principles standard (section 5), each term explained where its box first appears.
    4. `<figure class="dia ent">`: the one diagram, redrawn with this layer's boxes highlighted on top of the earlier ones.
    5. `<p class="done"><b>Done:</b> ...</p>`: one or two plain sentences on what is built so far and how it moves Done means.
-   Nothing else (Long, 13 Oct): no found/plan notes, to-do boxes, task lists or status tags in a layer. Pages with `div.upd` or `div.ltodo`: on the next update, move them into For agents ("Earlier turns") and compress what they finished into the layer's Done line.
+   Nothing else: no found/plan notes, to-do boxes, task lists or status tags in a layer. Older pages: on the next update, wrap each layer in `div.layer`, move any `div.upd` or `div.ltodo` into For agents ("Earlier turns") and compress what they finished into the layer's Done line.
 5. **Open questions** (optional), just before For agents: only the questions waiting on Long right now, written to the first-principles standard in section 5, recommendation in bold. Once answered, the decision goes in the Decisions table and the question leaves the page. One line at the end may list the reader's own small to-dos ("Also on you: ...").
 6. **For agents** (`<details class="agents">`, closed by default), holding everything thorough:
    - **Build state** table: bead, branch tip, PR and base, evidence; plus worktree and log paths.
@@ -189,7 +189,7 @@ After every page edit, run the checker and fix every line it prints until it say
 python3 <skill-dir>/check_page.py <page>
 ```
 
-It fails a `div.layer` missing its h3, `p.pain`, `figure.dia` or `p.done`, a legend with more than one update swatch, and any em dash in visible text. Those rules are not repeated here. Then look at the page:
+It fails a `div.layer` missing its h3, `p.pain`, `figure.dia` or `p.done`, a `Layer ...` h3 outside a `div.layer`, a `div.upd` or `div.ltodo` outside For agents, a legend with more than one update swatch, and any em dash in visible text. Those rules are not repeated here. Then look at the page:
 
 The browser pane cannot screenshot `file://` pages. Render headless and look at it:
 
