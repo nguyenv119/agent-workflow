@@ -12,15 +12,16 @@ SKILL = ROOT / ".claude/skills/gardener/SKILL.md"
 
 class GardenerSkill(unittest.TestCase):
     def test_skill_loads_is_short_and_names_its_rungs(self):
-        """SKILL.md has frontmatter, stays under 150 lines, and names the rung order and the twice-seen rule."""
+        """SKILL.md has frontmatter, stays under 150 lines, ranks architecture above doc text, and keeps the twice-seen rule."""
         # GIVEN the skill text
         text = SKILL.read_text()
         # WHEN checked
         # THEN it loads as a skill, is short, and carries the ladder and the evidence bar
         self.assertEqual(loop.frontmatter_ok(text), set())
         self.assertLess(len(text.splitlines()), 150)
-        for phrase in ("architecture", "types/lint/hook/script", "test", "doc text", "seen twice"):
+        for phrase in ("types/lint/hook/script", "seen twice"):
             self.assertIn(phrase, text)
+        self.assertLess(text.index("1. **architecture**"), text.index("4. **doc text**"))
 
     def test_skill_passes_the_leak_scan(self):
         """No absolute personal paths, private tries folders or stack names outside e.g. lines."""
@@ -35,7 +36,8 @@ class GardenerSkill(unittest.TestCase):
         # GIVEN prune's Phase 5 section
         phase5 = loop.section((ROOT / ".claude/skills/prune/SKILL.md").read_text(),
                               "## Phase 5 — Keep it pruned (no CI, so a rescan)")
-        # WHEN looked up / THEN it points at gardener
+        # WHEN looked up / THEN the section exists and points at gardener
+        self.assertTrue(phase5.strip())
         self.assertIn("gardener", phase5)
 
 
