@@ -108,7 +108,7 @@ class HarnessMap(unittest.TestCase):
         skill = (IMPROVER / "SKILL.md").read_text()
         # WHEN compared
         # THEN the skill names each one
-        self.assertEqual(len(keys), 6)
+        self.assertEqual(len(keys), 7)
         self.assertEqual(sorted(k for k in keys if f"`{k}`" not in skill), [])
 
     def test_every_hook_and_reviewer_is_mapped(self):

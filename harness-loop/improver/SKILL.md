@@ -81,15 +81,16 @@ Your message lists the paths you need: `skill`, `worktree` (your branch, already
 ## Steps
 
 1. Read `history.jsonl`. Note what was tried, what won and lost, and why rounds were dropped.
+   If your message lists `proposals` (harness-wide ideas from other repos), read it next; prefer its
+   idea that changes a file in your worktree, skip the rest. It still needs >= 2 cited tries; rule 5 holds.
 2. Read `harness-loop/improver/harness-map.md` in your worktree: it says which file steers
    which step of `/work`.
 3. Pick the failures. In `runs/`, open each run's `index.tsv` and `result.json` files; take
    tries with `reward` 0 or a non-`ok` status first. In `tries/`, read each repo's `<repo>/index.tsv`.
 4. Read at least two failing transcripts end to end, each opened by its full folder path in
    its own command (no loops over folders): a citation counts only if your tool calls show
-   that path. Write down, for each: the step that went
-   wrong, what the agent did instead, and the harness line that led it there (or the missing
-   line that would have stopped it).
+   that path. Write down, for each: the step that went wrong, what the agent did instead, and
+   the harness line that led it there (or the missing line that would have stopped it).
 5. Find the pattern shared by two or more tries. That is the evidence for your idea.
 6. Write the change in the file and section the map names for that step. Prefer a few added
    lines inside an existing section over a new section (rule 8: add, do not rewrite). A new
