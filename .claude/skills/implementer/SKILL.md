@@ -103,7 +103,7 @@ Run quality gates — scoped to the changed package(s) and their dependents, not
 
 **Gate:** The sub-agent reports `RESULT: PASS`. If it reports FAIL, read the error summary, fix the issues, and re-delegate before proceeding.
 
-Also run `python3 .claude/skills/standards/check-file-size.py <base-branch>` directly (it is quiet). On exit 1, split each listed file, or list each crossing with its reason in your Phase 5 summary.
+Also run `python3 .claude/skills/standards/check-file-size.py <base-branch>` directly (it is quiet). On exit 1, split each listed file, or list each crossing with its reason under `## Concerns` in your Phase 5 summary.
 
 ### Real-acceptance check (not just mocks)
 
