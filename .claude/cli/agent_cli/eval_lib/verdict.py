@@ -6,8 +6,10 @@
     from verdict import ok, fail, refuse, blocked, win
 
 ok(msg) records a pass; fail(msg) exits 1; refuse(msg) exits 2; blocked(msg) exits 3; win() prints the
-WIN sentinel as the last line and exits 0, only if no fail was recorded in this process.
+WIN sentinel as the last line and exits 0, only if no fail was recorded in this process; with EVAL_ONLY set
+(agent-cli eval run --only) win() exits 5 (partial) and never prints it.
 """
+import os
 import sys
 
 _failed = False
@@ -39,6 +41,9 @@ def blocked(msg):
 
 
 def win():
+    if os.environ.get("EVAL_ONLY"):
+        _say("partial", f"only {os.environ['EVAL_ONLY']} ran, no WIN")
+        sys.exit(5)
     if _failed:
         _say("fail", "win refused, a check failed earlier")
         sys.exit(1)

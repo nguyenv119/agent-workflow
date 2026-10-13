@@ -1,6 +1,8 @@
 """`agent-cli wait`: rerun a status command until it succeeds, refuses or blocks, or a cap passes.
 
 poll() is the shared loop: `wait`, `lock acquire --wait` and later waiters call it with their own check.
+run_capped() runs one command in its own process group, stdin closed, and kills the whole group when it
+returns (cap or not), so no background child outlives it; `wait` attempts and `eval run` use it.
 """
 import json
 import os
@@ -52,28 +54,36 @@ def poll(check, every, cap, clock=time.monotonic, sleep=time.sleep):
         sleep(min(every, left))
 
 
+def run_capped(argv, timeout, **kw):
+    """Exit code of argv, or None if it ran past timeout. Its whole process group is killed either way,
+    so children it left in the background die with it; stdin is /dev/null.
+
+    kw pass to subprocess.Popen (stdout, stderr, cwd, env). Raises OSError when argv cannot start.
+    """
+    p = subprocess.Popen(argv, start_new_session=True, stdin=subprocess.DEVNULL, **kw)
+    try:
+        return p.wait(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        return None
+    finally:
+        try:
+            os.killpg(p.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        p.wait()
+
+
 def attempt(cmd, timeout):
     """(exit code or None on timeout, last output line) of one `bash -c cmd`; its process group dies with it."""
     with tempfile.TemporaryFile() as out:
-        p = subprocess.Popen(["bash", "-c", cmd], stdout=out, start_new_session=True)
-        try:
-            code = p.wait(timeout=timeout)
-        except subprocess.TimeoutExpired:
-            code = None
-        finally:
-            if p.poll() is None:
-                os.killpg(p.pid, signal.SIGKILL)
-                p.wait()
+        code = run_capped(["bash", "-c", cmd], timeout, stdout=out)
         out.seek(max(0, out.tell() - KEEP))
         lines = out.read().decode(errors="replace").strip().splitlines()
     return code, (lines or [""])[-1]
 
 
 def wait(a, clock=time.monotonic, sleep=time.sleep):
-    try:
-        every, cap = core.parse_duration(a.every), core.parse_duration(a.cap)
-    except ValueError as e:
-        core.die(Exit.REFUSED, str(e), EXAMPLES[0])
+    every, cap = core.duration(a.every, EXAMPLES[0]), core.duration(a.cap, EXAMPLES[0])
     if every < 5:
         core.die(Exit.REFUSED, f"--every {a.every} is under the 5s minimum", EXAMPLES[0])
     start, n = clock(), [0]

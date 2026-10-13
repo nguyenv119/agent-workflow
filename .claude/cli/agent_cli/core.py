@@ -1,7 +1,7 @@
 """Shared helpers for agent-cli and the project CLIs that import it (Python 3.9+, stdlib only).
 
-Stable API: build_parser, Exit, emit, die, parse_duration, find_seam (plus find_project_file, run_seam,
-subcommand, group, git).
+Stable API: build_parser, Exit, emit, die, parse_duration, find_seam (plus duration, git, child_env,
+find_project_file, run_seam, subcommand, group).
 """
 import argparse
 import enum
@@ -50,15 +50,28 @@ def parse_duration(text):
     return int(m[1]) * {"": 1, "s": 1, "m": 60, "h": 3600, "d": 86400}[m[2]]
 
 
-def git(*args, cwd=".", check=True, example="agent-cli --help", input=None, strip=True):
-    """git's stdout (stripped unless strip=False), or None when git fails; with check, a failure exits 1
-    with git's stderr instead. Bytes that are not UTF-8 round-trip (surrogateescape), so a diff fed
-    back to git through input is unchanged."""
-    r = subprocess.run(["git", "-C", str(cwd), *args], input=input, capture_output=True,
-                       encoding="utf-8", errors="surrogateescape")
-    if r.returncode and check:
-        die(Exit.FAIL, f"git {' '.join(args)}: {r.stderr.strip()}", example)
-    if r.returncode:
+def duration(text, example):
+    """parse_duration(text), or exit 2 with the parse error and example."""
+    try:
+        return parse_duration(text)
+    except ValueError as e:
+        die(Exit.REFUSED, str(e), example)
+
+
+def git(*args, cwd=".", check=True, example="agent-cli --help", input=None, strip=True, timeout=600):
+    """git's stdout (stripped unless strip=False), or None when it fails (non-zero exit, git missing,
+    or past timeout seconds); with check, a failure exits 1 with git's error and example instead.
+    Bytes that are not UTF-8 round-trip (surrogateescape), so a diff fed back to git through input
+    is unchanged."""
+    try:
+        r = subprocess.run(["git", "-C", str(cwd), *args], input=input, capture_output=True,
+                           encoding="utf-8", errors="surrogateescape", timeout=timeout)
+        err = r.stderr.strip() if r.returncode else None
+    except (OSError, subprocess.SubprocessError) as e:
+        r, err = None, str(e)
+    if err is not None:
+        if check:
+            die(Exit.FAIL, f"git {' '.join(args)}: {err}", example)
         return None
     return r.stdout.strip() if strip else r.stdout
 
@@ -152,11 +165,17 @@ def path_dirs():
     return [str(BIN)] + [str(root / d) if not os.path.isabs(d) else d for d in seam_lines("path")]
 
 
+def child_env(drop=()):
+    """A copy of os.environ for a child process: the names in drop removed, path_dirs() ahead of $PATH."""
+    env = {k: v for k, v in os.environ.items() if k not in drop}
+    env["PATH"] = os.pathsep.join(path_dirs() + [env.get("PATH", "")])
+    return env
+
+
 def run_seam(path, args, **kw):
     """Run a seam executable with path_dirs() ahead of $PATH; returns the CompletedProcess.
 
     Output streams to ours by default (worktree setup can run for minutes); kw pass to subprocess.run,
     e.g. capture_output=True, text=True.
     """
-    env = {**os.environ, "PATH": os.pathsep.join(path_dirs() + [os.environ.get("PATH", "")])}
-    return subprocess.run([str(path), *args], env=env, **kw)
+    return subprocess.run([str(path), *args], env=child_env(), **kw)

@@ -13,7 +13,7 @@ import time
 from pathlib import Path
 
 from . import core
-from .core import Exit
+from .core import Exit, git
 
 SAFE = re.compile(r"[A-Za-z0-9._][A-Za-z0-9._-]*")
 TOKEN = re.compile(r"[^-.]+(?:\.\d+)*")
@@ -38,7 +38,7 @@ def main_root(repo):
 def worktrees(main):
     """[{path, branch, head}] from `git worktree list --porcelain`, main checkout first."""
     rows = []
-    for block in git("worktree", "list", "--porcelain", cwd=main).split("\n\n"):
+    for block in git("worktree", "list", "--porcelain", cwd=main, example=EX_NEW).split("\n\n"):
         kv = dict((ln.split(" ", 1) + [""])[:2] for ln in block.splitlines())
         rows.append({"path": kv["worktree"], "head": kv.get("HEAD", "")[:7],
                      "branch": kv["branch"][len("refs/heads/"):] if "branch" in kv else None})
@@ -117,14 +117,14 @@ def wt_new(a):
             print(f"would create: {path} ({branch} from {a.existing or a.base}); setup: {seam or 'none'}")
         return Exit.OK
     else:
-        git("fetch", "origin", "-q", cwd=main)
+        git("fetch", "origin", "-q", cwd=main, example=EX_NEW)
         if a.existing:
             branch = local_branch(main, a.existing)
         track = a.existing and branch != a.existing and git("show-ref", "--verify", "-q", f"refs/heads/{branch}",
                                                             cwd=main, check=False) is None
         add = (["--track", "-b", branch, str(path), a.existing] if track else [str(path), branch] if a.existing
                else ["-b", branch, str(path), a.base])
-        git("worktree", "add", "-q", *add, cwd=main)
+        git("worktree", "add", "-q", *add, cwd=main, example=EX_NEW)
         created = True
     if seam and not a.dry_run:
         try:  # --json keeps stdout one object: the seam's output streams to stderr instead
@@ -134,7 +134,7 @@ def wt_new(a):
         if rc:
             core.die(Exit.BLOCKED, f"setup hook failed: {seam} ({rc})", f"fix the hook, then rerun: {EX_NEW}")
     out = {"path": str(path), "branch": branch, "base": None if a.existing else a.base,
-           "head": git("rev-parse", "--short", "HEAD", cwd=path), "created": created,
+           "head": git("rev-parse", "--short", "HEAD", cwd=path, example=EX_NEW), "created": created,
            "setup": "ran" if seam and not a.dry_run else "none", "duration_s": round(time.time() - start, 1)}
     if a.json:
         core.emit(out, True)

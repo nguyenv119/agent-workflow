@@ -1,4 +1,5 @@
 """Tests for the eval verdict libraries (eval_lib/verdict.sh and verdict.py), run as real scripts."""
+import os
 import re
 import subprocess
 import sys
@@ -10,15 +11,18 @@ LIB = CLAUDE / "cli/agent_cli/eval_lib"
 SENTINEL = "<promise>WIN</promise>"
 
 
-def sh(body):
-    return subprocess.run(["bash", "-c", f'source "{LIB / "verdict.sh"}"\n{body}'], text=True, capture_output=True)
+def sh(body, env=None):
+    """Run body after sourcing verdict.sh; env adds variables to a copy of os.environ."""
+    return subprocess.run(["bash", "-c", f'source "{LIB / "verdict.sh"}"\n{body}'], text=True, capture_output=True,
+                          env={**os.environ, **(env or {})})
 
 
-def py(body):
-    """The same shell-style body as Python: `fn "msg"` -> fn("msg"), `win` -> win()."""
+def py(body, env=None):
+    """The same shell-style body as Python: `fn "msg"` -> fn("msg"), `win` -> win(); env as for sh()."""
     body = "\n".join(re.sub(r'^(\w+) (".*")$', r"\1(\2)", ln) if ln != "win" else "win()" for ln in body.splitlines())
     code = f"import sys; sys.path.insert(0, {str(LIB)!r})\nfrom verdict import ok, fail, refuse, blocked, win\n{body}"
-    return subprocess.run([sys.executable, "-c", code], text=True, capture_output=True)
+    return subprocess.run([sys.executable, "-c", code], text=True, capture_output=True,
+                          env={**os.environ, **(env or {})})
 
 
 class Verdict(unittest.TestCase):
@@ -56,6 +60,18 @@ class Verdict(unittest.TestCase):
             with self.subTest(lang=name):
                 self.assertEqual([r.returncode for r in codes], [2, 3])
                 self.assertFalse(any(SENTINEL in r.stdout for r in codes))
+
+    def test_win_with_eval_only_set_exits_5_without_the_sentinel(self):
+        """A partial run (`agent-cli eval run --only`) sets EVAL_ONLY; win must refuse, so it can never WIN."""
+        for name, run in (("sh", sh), ("py", py)):
+            # GIVEN EVAL_ONLY set and a passing check
+            # WHEN win is called
+            r = run('ok "a"\nwin', env={"EVAL_ONLY": "rows"})
+            # THEN exit 5 (partial), no sentinel
+            with self.subTest(lang=name):
+                self.assertEqual(r.returncode, 5)
+                self.assertNotIn(SENTINEL, r.stdout)
+                self.assertIn("partial", r.stdout)
 
     def test_fail_inside_a_bash_subshell_still_blocks_win(self):
         """`( fail x )` or `$(fail x)` exits only the subshell; win must still refuse afterwards."""

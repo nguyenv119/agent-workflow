@@ -58,9 +58,8 @@ def builtin(cmd):
                     "One-shot: agent-cli pr status <n>."},
         {"id": "agent-cli-hand-verdict", "mode": "deny", "requires": "agent-cli", "needs": re.escape(SENTINEL),
          "match": cmd + r"(?:echo|printf)\b[^|;&)\n]*" + re.escape(SENTINEL),
-         "message": "The eval prints WIN, not a worker. Use the verdict library: "
-                    "source \"$(agent-cli eval lib --sh)\" and call win; run evals with agent-cli eval run <dir> "
-                    "(coming in the eval bead)."},
+         "message": "The eval prints WIN, not a worker. Run it: agent-cli eval run <dir> (exit 0 = WIN). "
+                    "Inside an eval: source \"$(agent-cli eval lib --sh)\" and call win."},
         {"id": "hand-worktree-add", "mode": "deny", "requires": "agent-cli", "on": "code",
          "match": cmd + WT_ADD + r"[^;&|\n]*\s-[bB]",
          "message": "Use: agent-cli wt new <bead-id> <slug> --base origin/main  (it also runs the project's "

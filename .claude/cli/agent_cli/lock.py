@@ -135,10 +135,7 @@ def acquire(a):
     check_name(a.name, EXAMPLES[0])
     if a.pid <= 0:
         core.die(Exit.REFUSED, f"--pid {a.pid} is not a process id", ONE_SCRIPT)
-    try:
-        cap, wait_s = core.parse_duration(a.cap), core.parse_duration(a.wait)
-    except ValueError as e:
-        core.die(Exit.REFUSED, str(e), ONE_SCRIPT)
+    cap, wait_s = core.duration(a.cap, ONE_SCRIPT), core.duration(a.wait, ONE_SCRIPT)
     holder = []
 
     def check(_left):
