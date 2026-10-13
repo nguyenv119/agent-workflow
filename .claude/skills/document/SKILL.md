@@ -102,16 +102,16 @@ A filled topic section (the latest update), then one "For agents" decision row a
 <!-- few-shot: document-section-filled -->
 ```html
 <section class="block new">
-  <h2 id="risky-task">Test 3: is this /work task risky?</h2>
-  <p class="new"><b>The small model ties the large one: 65 of 69 right, 7 of 8 risky tasks caught, 3 false alarms, at a tiny fraction of the cost.</b> <span class="st live">Have</span></p>
+  <h2 id="cache">Test 3: does the cache cut page load time?</h2>
+  <p class="new"><b>Cached pages load in 120 ms instead of 900 ms; 2 of 50 test pages showed stale data.</b> <span class="st live">Have</span></p>
   <ul class="plain">
-    <li class="new">The small model read only the ticket, before any code existed, so it could not peek at the answer.</li>
-    <li class="new">The keyword rule never misses but cries wolf on a third of tasks, so keep it as the backstop.</li>
+    <li class="new">Each test page was loaded cold first, so the cache had to earn every hit.</li>
+    <li class="new">Both stale pages had been edited inside the cache window, so the fix is a shorter window, not a new cache.</li>
   </ul>
 </section>
 <!-- inside details.agents -->
-<tr class="new"><td class="mono">D3</td><td>Proposed: the small model scores /quick eligibility as advice; keyword rule is the backstop.</td><td class="nw">proposed</td></tr>
-<li class="new">Routing test, 69 beads, strict key = PR adds <code class="mono">migrations/*.sql</code> or edits <code class="mono">.github/workflows/</code>: small model 65/69, large model 65/69, keyword 48/69 (checked DATE).</li>
+<tr class="new"><td class="mono">D3</td><td>Proposed: cut the cache window from 10 to 2 minutes.</td><td class="nw">proposed</td></tr>
+<li class="new">Load test, 50 pages, cold then warm: median 900 ms cold, 120 ms warm; 2 stale reads (checked DATE).</li>
 ```
 
 ## 3. Update color (one color, latest update only)
