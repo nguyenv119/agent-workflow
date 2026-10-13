@@ -18,6 +18,22 @@ GIT = ["git", "-c", "user.name=test", "-c", "user.email=test@example.com",
 CLEAN = ("CLAUDE_PROJECT_DIR", "AGENT_CLI_HOOKS", "AGENT_CLI_PATH_OFF")
 
 
+# REVIEW: mocking core dependency (time). A wait loop's interval and cap run in minutes; this clock lets a
+# 40-minute wait run instantly. sleep() advances it and records each sleep.
+class FakeClock:
+    """A fake monotonic clock: call it for the time, sleep(s) advances it and appends s to sleeps."""
+
+    def __init__(self):
+        self.t, self.sleeps = 0.0, []
+
+    def __call__(self):
+        return self.t
+
+    def sleep(self, s):
+        self.sleeps.append(s)
+        self.t += s
+
+
 def run(cmd, cwd, check=True):
     """Run cmd in cwd and return the CompletedProcess (text output captured)."""
     return subprocess.run(cmd, cwd=cwd, check=check, text=True, capture_output=True)

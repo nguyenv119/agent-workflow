@@ -18,6 +18,7 @@ EXAMPLES = ["agent-cli wait --until 'gh pr checks 12' --every 60 --cap 30m",
 RESULTS = {0: (Exit.OK, "met"), 2: (Exit.REFUSED, "refused"), 3: (Exit.BLOCKED, "blocked"),
            126: (Exit.REFUSED, "refused"), 127: (Exit.REFUSED, "refused")}
 KEEP = 4096  # bytes of each attempt's output kept, to find its last line
+RESTART = object()  # returned by a check: start the cap over (e.g. a PR got a new head)
 
 
 def register(sub):
@@ -36,11 +37,14 @@ def poll(check, every, cap, clock=time.monotonic, sleep=time.sleep):
     """Call check(seconds_left) until it returns non-None (returned) or cap seconds pass (None).
 
     check always runs at least once; sleeps are `every` seconds, the last one cut short at the cap.
+    A check returning RESTART starts the cap over from now and keeps polling.
     """
     start = clock()
     while True:
         got = check(cap - (clock() - start))
-        if got is not None:
+        if got is RESTART:
+            start = clock()
+        elif got is not None:
             return got
         left = cap - (clock() - start)
         if left <= 0:

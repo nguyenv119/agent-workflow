@@ -89,6 +89,40 @@ class Deny(HookCase):
         # THEN the bare name is used
         self.assertIn('"$(agent-cli eval lib --sh)"', reason)
 
+    def test_hand_written_pr_poll_loops_are_denied(self):
+        """A hand-written `while/until ... gh pr checks ... sleep` loop is denied, pointing at `agent-cli pr wait`.
+
+        A foreground poll loop dies with the turn and hand-rolls the green definition each time.
+        """
+        # GIVEN the loop shapes agents write: both orders, the poll in the condition, the sleep as the
+        # condition, and --watch
+        cmds = ["while true; do gh pr checks 12; sleep 60; done",
+                "until gh pr checks 12 | grep -q pass; do sleep 30; done",
+                'until [ "$(gh pr view 12 --json state -q .state)" = MERGED ]; do sleep 60; done',
+                'while [ "$(gh pr checks 12 | grep -c pending)" != 0 ]; do sleep 30; done',
+                "while :; do\n  sleep 30\n  gh api repos/o/r/pulls/12 | jq .mergeable_state\ndone",
+                "while sleep 30; do gh pr checks 12 && break; done",
+                "until sleep 30 && gh pr checks 12; do :; done",
+                "gh pr checks 12 --watch --interval 60"]
+        for c in cmds:
+            # WHEN checked
+            r = agent_cli(self.p, "hook", "test", "--cmd", c, "--json")
+            got = json.loads(r.stdout)
+            # THEN denied by hand-pr-poll alone (never also the sleep-poll warn), naming the replacement
+            with self.subTest(cmd=c):
+                self.assertEqual(r.returncode, 2)
+                self.assertEqual([x["id"] for x in got["rules"]], ["hand-pr-poll"])
+                self.assertIn("agent-cli pr wait <n> --cap 40m", got["rules"][0]["message"])
+
+    def test_pr_poll_loop_in_quoted_text_is_allowed(self):
+        """A commit message that quotes a poll loop is text, not a loop: allowed."""
+        # GIVEN the loop inside a quoted commit message
+        c = 'git commit -m "replace while true; do gh pr checks 12; sleep 60; done with agent-cli pr wait"'
+        # WHEN checked
+        r = agent_cli(self.p, "hook", "test", "--cmd", c, "--json")
+        # THEN allowed
+        self.assertEqual(r.returncode, 0, r.stdout)
+
 
 class Warn(HookCase):
     def test_sleep_poll_loop_warns_without_a_decision(self):
@@ -98,7 +132,7 @@ class Warn(HookCase):
         """
         # GIVEN a hand-written poll loop
         # WHEN the hook reads it
-        out = self.decision(self.hook("until gh pr checks 12; do sleep 30; done"))
+        out = self.decision(self.hook("until test -f /tmp/done; do sleep 30; done"))
         # THEN it carries the wait hint and no decision
         self.assertNotIn("permissionDecision", out)
         self.assertIn("agent-cli wait --until", out["additionalContext"])

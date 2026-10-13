@@ -12,22 +12,10 @@ import unittest
 from contextlib import redirect_stdout
 from pathlib import Path
 
-from helpers import CLAUDE, agent_cli, make_project
+from helpers import CLAUDE, FakeClock, agent_cli, make_project
 
 sys.path.insert(0, str(CLAUDE / "cli"))
 from agent_cli import wait  # noqa: E402
-
-
-class FakeClock:
-    def __init__(self):
-        self.t, self.sleeps = 0.0, []
-
-    def __call__(self):
-        return self.t
-
-    def sleep(self, s):
-        self.sleeps.append(s)
-        self.t += s
 
 
 def run_wait(until, every="5", cap="20s"):
@@ -37,6 +25,25 @@ def run_wait(until, every="5", cap="20s"):
     with redirect_stdout(buf):
         code = wait.wait(a, clock=clock, sleep=clock.sleep)
     return code, [json.loads(ln) for ln in buf.getvalue().splitlines()], clock
+
+
+class Poll(unittest.TestCase):
+    """wait.poll(): the shared loop under `wait`, `lock acquire --wait` and `pr wait`."""
+
+    def test_restart_starts_the_cap_over(self):
+        """A check returning RESTART gets a full cap from that moment, then the cap applies as usual."""
+        # GIVEN a check that restarts on its second call and never succeeds; cap 100, every 60
+        clock, lefts = FakeClock(), []
+
+        def check(left):
+            lefts.append(left)
+            return wait.RESTART if len(lefts) == 2 else None
+        # WHEN polled
+        got = wait.poll(check, 60, 100, clock, clock.sleep)
+        # THEN it times out 100 s after the restart at t=60, not at t=100
+        self.assertIsNone(got)
+        self.assertEqual(clock.t, 160)
+        self.assertEqual(lefts, [100, 40, 40, 0])
 
 
 class Wait(unittest.TestCase):

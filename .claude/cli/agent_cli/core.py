@@ -1,7 +1,7 @@
 """Shared helpers for agent-cli and the project CLIs that import it (Python 3.9+, stdlib only).
 
 Stable API: build_parser, Exit, emit, die, parse_duration, find_seam (plus find_project_file, run_seam,
-subcommand, group).
+subcommand, group, git).
 """
 import argparse
 import enum
@@ -48,6 +48,19 @@ def parse_duration(text):
     if not m:
         raise ValueError(f"bad duration {text!r}: use e.g. 90, 40m, 2h, 1d")
     return int(m[1]) * {"": 1, "s": 1, "m": 60, "h": 3600, "d": 86400}[m[2]]
+
+
+def git(*args, cwd=".", check=True, example="agent-cli --help", input=None, strip=True):
+    """git's stdout (stripped unless strip=False), or None when git fails; with check, a failure exits 1
+    with git's stderr instead. Bytes that are not UTF-8 round-trip (surrogateescape), so a diff fed
+    back to git through input is unchanged."""
+    r = subprocess.run(["git", "-C", str(cwd), *args], input=input, capture_output=True,
+                       encoding="utf-8", errors="surrogateescape")
+    if r.returncode and check:
+        die(Exit.FAIL, f"git {' '.join(args)}: {r.stderr.strip()}", example)
+    if r.returncode:
+        return None
+    return r.stdout.strip() if strip else r.stdout
 
 
 class Parser(argparse.ArgumentParser):

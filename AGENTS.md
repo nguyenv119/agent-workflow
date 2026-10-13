@@ -37,6 +37,7 @@ A PreToolUse hook (`agent-cli hook pretooluse`) checks each Bash command against
 | `hand-worktree-add` | A hand-typed `git worktree add ... -b` (skips the project's setup hook) | `agent-cli wt new <bead-id> <slug> --base origin/main` | deny |
 | `hand-worktree-add-other` | A hand-typed `git worktree add` on an existing branch (`--detach` is exempt) | `agent-cli wt new <id> <slug> --existing <branch>` | warn |
 | `hand-sleep-poll` | A foreground `while`/`until` loop that sleeps 3s or more | `agent-cli wait --until '<status cmd>' --every 60 --cap 30m` in the background | warn |
+| `hand-pr-poll` | A hand-written `while`/`until` loop that sleeps and polls `gh pr checks`/`gh pr view`/`gh api .../pulls`, or `gh pr checks --watch` | `agent-cli pr wait <n> --cap 40m` (run_in_background); one-shot `agent-cli pr status <n>` | deny |
 
 ## Issue Tracking with bd (beads)
 
