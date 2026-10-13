@@ -18,18 +18,22 @@ WORD_START = " \t\n;&|()<>"
 HEREDOC = re.compile(r"<<(-?)[ \t]*(?:'([^'\n]*)'|\"([^\"\n]*)\"|\\?([A-Za-z_][\w.-]*))")
 
 
-def code_view(cmd):
+def code_view(cmd, nls=None):
     """The command as rules see it by default: quoted strings -> "" (an exact sentinel string stays as
-    the bare token; "$(...)" keeps each substitution, itself stripped), heredoc bodies and # comments removed."""
-    return _scan(cmd, 0, False)[0]
+    the bare token; "$(...)" keeps each substitution, itself stripped), heredoc bodies and # comments removed.
+    nls: a list that gets, in order, the index in cmd of the newline ending each view line (for a heredoc,
+    the end of its body), which maps view lines back to cmd lines."""
+    return _scan(cmd, 0, False, nls)[0]
 
 
-def _scan(s, i, in_subst):
+def _scan(s, i, in_subst, nls=None):
     """Scan from i; in a $( ) substitution stop after its closing paren. Returns (text, next index)."""
     out, depth, pending = [], 0, []
     while i < len(s):
         c = s[i]
         if c == "\\":
+            if nls is not None and s.startswith("\n", i + 1):
+                nls.append(i + 1)
             out.append(s[i:i + 2])
             i += 2
         elif c == "'":
@@ -38,7 +42,7 @@ def _scan(s, i, in_subst):
             out.append(_literal(s[i + 1:end]))
             i = end + 1
         elif c == '"':
-            text, i = _dquote(s, i + 1)
+            text, i = _dquote(s, i + 1, nls)
             out.append(text)
         elif c == "#" and (i == 0 or s[i - 1] in WORD_START):
             nl = s.find("\n", i)
@@ -53,6 +57,8 @@ def _scan(s, i, in_subst):
             out.append("\n")
             i = _skip_heredocs(s, i + 1, pending)
             pending = []
+            if nls is not None:  # the next view line starts after the last heredoc body
+                nls.append(i - 1)
         elif c == "(":
             depth += 1
             out.append(c)
@@ -61,6 +67,8 @@ def _scan(s, i, in_subst):
             return "".join(out), i + 1
         else:
             depth -= c == ")"
+            if nls is not None and c == "\n":
+                nls.append(i)
             out.append(c)
             i += 1
     return "".join(out), i
@@ -71,7 +79,7 @@ def _literal(text):
     return hook_rules.SENTINEL if SENTINEL_STR.fullmatch(text) else '""'
 
 
-def _dquote(s, i):
+def _dquote(s, i, nls=None):
     """A double-quoted string from i (just past the quote): keep stripped $( ) substitutions, drop the rest."""
     lit, subs = [], []
     while i < len(s) and s[i] != '"':
@@ -79,7 +87,7 @@ def _dquote(s, i):
             lit.append(s[i:i + 2])
             i += 2
         elif s.startswith("$(", i):
-            text, i = _scan(s, i + 2, True)
+            text, i = _scan(s, i + 2, True, nls)
             subs.append("$(" + text + ")")
         else:
             lit.append(s[i])
@@ -161,15 +169,17 @@ def evaluate(command, rules):
     if os.environ.get("AGENT_CLI_HOOKS") == "off" or len(command) > MAX_CMD:
         return []
     bypass, code = set(BYPASS.findall(command)), code_view(command)
-    hits = []
-    for r in rules:
-        text = command if r.get("on") == "raw" else code
-        if (r["id"] in bypass or ("needs" in r and not re.search(r["needs"], command))
-                or not re.search(r["match"], text) or ("unless" in r and re.search(r["unless"], text))
-                or not active(r)):
-            continue
-        hits.append(r)
-    return hits
+    return [r for r in rules if r["id"] not in bypass and match(r, command, code) and active(r)]
+
+
+def match(rule, raw, code):
+    """The rule's match object in its view (code, or raw when on == "raw"), or None when its `needs`
+    misses raw, `match` misses, or `unless` hits. Ignores `requires` and bypass comments."""
+    text = raw if rule.get("on") == "raw" else code
+    if "needs" in rule and not re.search(rule["needs"], raw):
+        return None
+    m = re.search(rule["match"], text)
+    return None if not m or ("unless" in rule and re.search(rule["unless"], text)) else m
 
 
 def message(rule):
@@ -228,7 +238,8 @@ def list_rules(json_mode):
 
 def register(sub):
     _, hs = core.group(sub, "hook", "PreToolUse rules that point hand-rolled chores at the right command",
-                       ["agent-cli hook test --cmd 'echo \"<promise>WIN</promise>\"'", "agent-cli hook rules --json"])
+                       ["agent-cli hook test --cmd 'echo \"<promise>WIN</promise>\"'", "agent-cli hook rules --json",
+                        "agent-cli hook scan .claude/loop-evals --since 7d --json"])
     p = core.subcommand(hs, "pretooluse",
                         "read a PreToolUse event on stdin; print a deny or warn envelope, or nothing",
                         ["echo '{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"ls\"}}' "
@@ -244,3 +255,5 @@ def register(sub):
                         ["agent-cli hook rules", "agent-cli hook rules --json"])
     p.add_argument("--json", action="store_true", help="one JSON object per rule")
     p.set_defaults(func=lambda a: list_rules(a.json))
+    from . import hook_scan  # imports this module, so registered here rather than at the top
+    hook_scan.register(hs)

@@ -29,7 +29,7 @@ Before writing a script for a chore (worktree, PR checks, waiting, locks, eval v
 
 ## Rule -> enforcer
 
-A PreToolUse hook (`agent-cli hook pretooluse`) checks each Bash command against these rules. Deny blocks the command and names the replacement; warn adds context and lets it run. `# agent-cli: allow <rule id>` in the command skips one rule; `AGENT_CLI_HOOKS=off` skips all. `agent-cli hook rules` lists them, project rules included. Rows marked `skill text only` have no hook yet: only the named skill asks for them, so nothing blocks a skip.
+A PreToolUse hook (`agent-cli hook pretooluse`) checks each Bash command against these rules. Deny blocks the command and names the replacement; warn adds context and lets it run. `# agent-cli: allow <rule id>` in the command skips one rule; `AGENT_CLI_HOOKS=off` skips all. `agent-cli hook rules` lists them, project rules included. `agent-cli hook scan <dir>` runs the same rules over script files (or `--stdin` over a command list) and reports a hit even when it carries the allow comment. Rows marked `skill text only` have no hook yet: only the named skill asks for them, so nothing blocks a skip.
 
 | Rule id | What it stops | Replacement command | Mode |
 |---------|---------------|---------------------|------|

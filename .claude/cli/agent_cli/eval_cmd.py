@@ -3,17 +3,19 @@
 A run is WIN only when the entry exits 0 AND its last non-empty stdout line is the sentinel (the
 win-condition skill's dual condition); every run leaves evidence/<UTC ts>.log and .json in the eval dir.
 """
+import contextlib
 import datetime
 import hashlib
 import json
 import os
 import shutil
+import signal
 import sys
 import tempfile
 import time
 from pathlib import Path
 
-from . import core, wait
+from . import core, lock, wait
 from .core import Exit
 from .hook_rules import SENTINEL
 
@@ -110,6 +112,7 @@ def register(sub):
     p.add_argument("--only", metavar="CHECK", help="export EVAL_ONLY=CHECK; the run can then never WIN (exit 5)")
     p.add_argument("--cap", default="60m", help="kill the eval after this long and exit 4 (default 60m)")
     p.add_argument("--json", action="store_true", help="one JSON object")
+    lock_args(p)
     p.set_defaults(func=run)
 
     p = core.subcommand(es, "controls", "run controls/fail-* (must not WIN) and controls/pass-* (must WIN); "
@@ -120,7 +123,31 @@ def register(sub):
     p.add_argument("--entry", help=f"script in the dir to run (default: the first of {', '.join(ENTRIES)})")
     p.add_argument("--cap", default="60m", help="cap per control run, exit 4 at the first one past it (default 60m)")
     p.add_argument("--json", action="store_true", help="one JSON object per control, then a summary")
+    lock_args(p)
     p.set_defaults(func=controls)
+
+
+def lock_args(p):
+    p.add_argument("--lock", metavar="NAME", help="hold `agent-cli lock` NAME for the whole run (exit 3 if busy)")
+    p.add_argument("--lock-wait", default="0", help="with --lock, wait this long for a busy lock (default 0)")
+
+
+@contextlib.contextmanager
+def held(a, cap, example):
+    """Hold lock a.lock (owner: this process) around the block; no --lock, no lock. The lock's cap is
+    cap; SIGTERM becomes exit 143 so the eval's process group is killed and the lock released."""
+    if not a.lock:
+        yield
+        return
+    lock.check_name(a.lock, example)
+    wait_s = core.duration(a.lock_wait, example)
+    old = signal.signal(signal.SIGTERM, lambda *_: sys.exit(143))
+    try:
+        lock.take_waiting(a.lock, os.getpid(), cap, wait_s, f"{example} --lock {a.lock} --lock-wait 30m")
+        yield
+    finally:
+        signal.signal(signal.SIGTERM, old)
+        lock.remove_if_owner(a.lock, os.getpid())
 
 
 def init(a):
@@ -237,7 +264,8 @@ def run(a):
     if a.only is not None and not a.only.strip():
         core.die(Exit.REFUSED, "--only needs a check name", f"agent-cli eval run {DIR} --only rows")
     d, entry, argv = resolve(a, example)
-    rec, path = execute(d, entry, argv, cap, {}, only=a.only)
+    with held(a, cap + 60, example):
+        rec, path = execute(d, entry, argv, cap, {}, only=a.only)
     core.emit({"dir": str(d), "verdict": rec["verdict"], "exit": rec["exit"], "duration_s": rec["duration_s"],
                "evidence": str(path)}, a.json)
     return EXITS[rec["verdict"]]
@@ -278,6 +306,11 @@ def controls(a):
     if not any(name.startswith("fail-") for name, _, _ in found):
         core.die(Exit.BLOCKED, f"no fail-* control in {d / 'controls'}. {NO_FAIL_CONTROL} (win-condition skill)",
                  f"printf 'INPUT=empty\\n' > {d / 'controls/fail-empty-input.env'}")
+    with held(a, (cap + 60) * len(found), example):
+        return run_controls(a, d, entry, argv, cap, found)
+
+
+def run_controls(a, d, entry, argv, cap, found):
     mismatched = []
     for name, path, kind in found:
         extra = {"CONTROL": name}

@@ -20,3 +20,10 @@ required-checks: <test check>, <lint check>, <preview deploy check>
 advisory-checks: <bot reviewer check>
 preview-check: <preview deploy check>
 ```
+
+The weekly gardener's Pass 3 (`agent-cli hook scan`) reads one more optional line, under `## gardener`: the dirs whose scripts it counts for chores still done by hand (comma-separated, relative to the repo root). Without it, Pass 3 is skipped:
+
+```
+## gardener
+scan-dirs: <dir with eval or helper scripts>, <another dir>
+```

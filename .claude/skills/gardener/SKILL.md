@@ -1,6 +1,6 @@
 ---
 name: gardener
-description: Weekly weeding pass for a repo and its harness. Runs /prune in report mode, then a correct pass that groups the week's repeated corrections into mistake classes and proposes, for each, the strongest check that would have caught it. Proposals only; writes only its report dir, a scratch dir and prune's own files, merges nothing, files nothing. Invoked via /gardener or a weekly routine.
+description: Weekly weeding pass for a repo and its harness. Runs /prune in report mode, then a correct pass that groups the week's repeated corrections into mistake classes and proposes, for each, the strongest check that would have caught it, then counts scripts that still hand-roll a chore a CLI covers (agent-cli hook scan). Proposals only; writes only its report dir, a scratch dir and prune's own files, merges nothing, files nothing. Invoked via /gardener or a weekly routine.
 ---
 
 # Gardener
@@ -13,7 +13,7 @@ Adapted from cursor/plugins pstack skills (MIT).
 
 ## Output and limits
 
-- Report dir: `~/.claude/gardener/<repo>/<YYYY-MM-DD>/` (`report.md`, plus `harness-loop.md` and `beads.md` when there is something to route). Name the dir at the top of the report.
+- Report dir: `~/.claude/gardener/<repo>/<YYYY-MM-DD>/` (`report.md` and `scan.json`, plus `harness-loop.md` and `beads.md` when there is something to route). Name the dir at the top of the report.
 - Allowed writes: the report dir, a temp scratch dir for proof runs, and prune's own out-of-tree files. No edits to the repo, memory, skills or beads; no commits, no PRs, no merges.
 - Proposals that need a human are listed in the report for the caller to file on the project's to-do surface. The gardener files nothing itself.
 
@@ -57,6 +57,15 @@ Every proposal carries proof that the check would have failed on a real past mis
 
 Keep a table in `report.md`: rule, where it is written, what enforces it (check name, or "nothing"). Start from the `## Rule -> enforcer` table in the repo's `AGENTS.md` (read it first; propose new rows for it in the report, never edit `AGENTS.md` yourself), then carry it forward from last week's report under the same `<repo>` dir. For each memory note whose lesson a check now enforces, propose retiring the note (quote the check that replaces it). Never delete the note yourself.
 
+## Pass 3: chores still hand-rolled
+
+The agent CLIs only pay off if new scripts use them. This pass counts the files that still hand-roll a chore a command covers.
+
+1. Run `agent-cli hook scan --since 7d --json` from the repo root. With no paths it scans the dirs on the `scan-dirs:` line under `## gardener` in `.claude/project-rules.md` (comma-separated, relative to the repo root). If it exits 2 saying there is no `scan-dirs:` line, write `## Hand-rolled chores: skipped (no scan-dirs)` and stop this pass.
+2. Save its output as `scan.json` in the report dir, so next week can diff against it.
+3. Under `## Hand-rolled chores`, write one row per rule from the summary's `hits_by_rule`: rule id | new files this week | files last week (`hits_by_rule` on the last line of last week's `scan.json` under the same `<repo>` dir, or `-`) | 2 example paths. Put the summary's `bypassed` count under the table: a file that carries `# agent-cli: allow <rule>` still hand-rolls the chore.
+4. Compare the last two reports' `scan.json` with this week's: a rule whose count rose two weeks running is a mistake class candidate for Pass 2: cite two of its files, each with its date, as the two occurrences.
+
 ## report.md shape
 
 ```
@@ -64,6 +73,7 @@ Keep a table in `report.md`: rule, where it is written, what enforces it (check 
 Report dir: ~/.claude/gardener/<repo>/<date>/   Window: <from> .. <to>
 ## Prune            (delta only)
 ## Mistake classes  (per class: name, evidence x2 with dates, rung, why not higher, proof, route)
+## Hand-rolled chores  (rule | new this week | last week | examples; bypassed count)
 ## Watching         (single sightings, unproven ideas)
 ## Rule -> enforcer
 ## Retire           (notes a check now covers)

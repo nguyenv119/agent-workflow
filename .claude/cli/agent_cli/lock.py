@@ -124,23 +124,39 @@ def try_take(name, pid, cap, dry_run=False):
         return "acquired", held
 
 
-def acquire(a):
-    check_name(a.name, EXAMPLES[0])
-    if a.pid <= 0:
-        core.die(Exit.REFUSED, f"--pid {a.pid} is not a process id", ONE_SCRIPT)
-    cap, wait_s = core.duration(a.cap, ONE_SCRIPT), core.duration(a.wait, ONE_SCRIPT)
+def take_waiting(name, pid, cap, wait_s, example, dry_run=False):
+    """try_take every second for up to wait_s; exit 3 naming the holder (and example) if it stays held."""
     holder = []
 
     def check(_left):
-        status, owner = try_take(a.name, a.pid, cap, a.dry_run)
+        status, owner = try_take(name, pid, cap, dry_run)
         holder[:] = [owner]
         return None if status == "held" else (status, owner)
 
     got = wait.poll(check, 1, wait_s)
     if got is None:
-        core.die(Exit.BLOCKED, f"{a.name} held by {describe(holder[0])}",
-                 f"agent-cli lock acquire {a.name} --pid $$ --wait 10m")
-    status, reaped = got
+        core.die(Exit.BLOCKED, f"{name} held by {describe(holder[0])}", example)
+    return got
+
+
+def remove_if_owner(name, pid, force=False, dry_run=False):
+    """Under the guard, remove name when pid on this host holds it (or with force); dry_run removes nothing.
+    Returns (owner or None when not held, whether it was or would be removed). The one release path."""
+    with guard():
+        held = read(name)
+        ok = bool(held) and (force or (held["pid"] == pid and held["host"] == socket.gethostname()))
+        if ok and not dry_run:
+            shutil.rmtree(root() / name)
+        return held, ok
+
+
+def acquire(a):
+    check_name(a.name, EXAMPLES[0])
+    if a.pid <= 0:
+        core.die(Exit.REFUSED, f"--pid {a.pid} is not a process id", ONE_SCRIPT)
+    cap, wait_s = core.duration(a.cap, ONE_SCRIPT), core.duration(a.wait, ONE_SCRIPT)
+    status, reaped = take_waiting(a.name, a.pid, cap, wait_s, f"agent-cli lock acquire {a.name} --pid $$ --wait 10m",
+                                  a.dry_run)
     if status == "already-held":
         return core.out(a, {"status": status, "name": a.name, "pid": a.pid}, f"already held: {a.name} (pid {a.pid})")
     reaped = reaped and describe(reaped)
@@ -168,15 +184,12 @@ def release(a):
     pid = a.pid
     if pid <= 0:
         core.die(Exit.REFUSED, f"--pid {pid} is not a process id", ONE_SCRIPT)
-    with guard():
-        held = read(a.name)
-        if not held:
-            return core.out(a, {"status": "already-done", "name": a.name}, f"already done: {a.name} is not held")
-        if held["pid"] != pid and not a.force:
-            core.die(Exit.REFUSED, f"{a.name} is held by {describe(held)}, not pid {pid}",
-                     f"agent-cli lock release {a.name} --pid $$ --force")
-        if not a.dry_run:
-            shutil.rmtree(root() / a.name)
+    held, ok = remove_if_owner(a.name, pid, a.force, a.dry_run)
+    if not held:
+        return core.out(a, {"status": "already-done", "name": a.name}, f"already done: {a.name} is not held")
+    if not ok:
+        core.die(Exit.REFUSED, f"{a.name} is held by {describe(held)}, not pid {pid} on this host",
+                 f"agent-cli lock release {a.name} --pid $$ --force")
     verb = "would-release" if a.dry_run else "released"
     return core.out(a, {"status": verb, "name": a.name, "owner": describe(held)},
                     f"{verb}: {a.name} ({describe(held)})")
