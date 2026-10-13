@@ -52,18 +52,26 @@ def poll(check, every, cap, clock=time.monotonic, sleep=time.sleep):
         sleep(min(every, left))
 
 
+def run_capped(argv, timeout, **kw):
+    """Exit code of argv, or None if it ran past timeout (its whole process group is then killed).
+
+    kw pass to subprocess.Popen (stdout, stderr, cwd, env).
+    """
+    p = subprocess.Popen(argv, start_new_session=True, **kw)
+    try:
+        return p.wait(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        return None
+    finally:
+        if p.poll() is None:
+            os.killpg(p.pid, signal.SIGKILL)
+            p.wait()
+
+
 def attempt(cmd, timeout):
     """(exit code or None on timeout, last output line) of one `bash -c cmd`; its process group dies with it."""
     with tempfile.TemporaryFile() as out:
-        p = subprocess.Popen(["bash", "-c", cmd], stdout=out, start_new_session=True)
-        try:
-            code = p.wait(timeout=timeout)
-        except subprocess.TimeoutExpired:
-            code = None
-        finally:
-            if p.poll() is None:
-                os.killpg(p.pid, signal.SIGKILL)
-                p.wait()
+        code = run_capped(["bash", "-c", cmd], timeout, stdout=out)
         out.seek(max(0, out.tell() - KEEP))
         lines = out.read().decode(errors="replace").strip().splitlines()
     return code, (lines or [""])[-1]

@@ -33,7 +33,7 @@ A PreToolUse hook (`agent-cli hook pretooluse`) checks each Bash command against
 
 | Rule id | What it stops | Replacement command | Mode |
 |---------|---------------|---------------------|------|
-| `agent-cli-hand-verdict` | A worker printing the eval's WIN sentinel by hand | `source "$(agent-cli eval lib --sh)"`, then `win` | deny |
+| `agent-cli-hand-verdict` | A worker printing the eval's WIN sentinel by hand | `agent-cli eval run <dir>` (exit 0 = WIN); inside the eval, `source "$(agent-cli eval lib --sh)"`, then `win` | deny |
 | `hand-worktree-add` | A hand-typed `git worktree add ... -b` (skips the project's setup hook) | `agent-cli wt new <bead-id> <slug> --base origin/main` | deny |
 | `hand-worktree-add-other` | A hand-typed `git worktree add` on an existing branch (`--detach` is exempt) | `agent-cli wt new <id> <slug> --existing <branch>` | warn |
 | `hand-sleep-poll` | A foreground `while`/`until` loop that sleeps 3s or more | `agent-cli wait --until '<status cmd>' --every 60 --cap 30m` in the background | warn |

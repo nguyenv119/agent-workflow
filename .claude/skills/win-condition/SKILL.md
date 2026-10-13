@@ -26,7 +26,7 @@ A pipeline can exit 0 while ingesting nothing: empty feed, a silent auth failure
 
 **R4 — Bound it.** The win-condition is a bounded *build-completion* state, then the loop stops. It is NOT "run forever." Long-running production behavior (continuous polling) belongs to prod scheduling (a cron or job scheduler), not the agent loop.
 
-**R5 — The eval emits the success sentinel, never the implementer.** The verification script prints `<promise>WIN</promise>` as its final line only when all positive assertions pass. The worker that made the change never declares its own success — independence comes from the eval testing reality (it queries the live system), not from the worker's word. The sentinel + exit-0 together guard a script that exits 0 without finishing its assertions.
+**R5 — The eval emits the success sentinel, never the implementer.** The verification script prints `<promise>WIN</promise>` as its final line only when all positive assertions pass. The worker that made the change never declares its own success — independence comes from the eval testing reality (it queries the live system), not from the worker's word. The sentinel + exit-0 together guard a script that exits 0 without finishing its assertions. The verdict library (`source "$(agent-cli eval lib --sh)"`, then `ok` / `fail` / `win`) prints the sentinel for you; run the eval with `agent-cli eval run <dir>`.
 
 ## The `## Win Condition` block (write this onto the epic bead)
 
@@ -37,12 +37,13 @@ Every loopable epic carries this block in its body. Five fields, all required:
 
 **Outcome**: <one sentence, positive + observable end state>
 
-**Verification**: <exact command(s) that prove the outcome, exit 0 = pass>
-<!-- the eval lives out-of-tree at .claude/loop-evals/<epic-id>/ — never committed; author it there if it doesn't exist yet -->
+**Verification**: agent-cli eval run .claude/loop-evals/<epic-id>
+<!-- the eval lives out-of-tree at .claude/loop-evals/<epic-id>/ — never committed; author it there if it doesn't exist yet (`agent-cli eval init <dir>`) -->
 
 **Done signal (dual-condition)**: verification exits 0 AND its output ends with the
 success sentinel `<promise>WIN</promise>`, which the verification script prints only
-after every positive assertion passes. Both required.
+after every positive assertion passes. Both required (`agent-cli eval run` enforces both
+and exits 0 only then).
 
 **Does NOT count**:
 - absence of errors with no positive output (R1)
@@ -68,7 +69,7 @@ after every positive assertion passes. Both required.
 2. **Locate the verification.** Is there a script/command that runs the real thing end-to-end and inspects the result? If yes, that's your check. If no → R2: author it under `.claude/loop-evals/<epic-id>/` (local scaffolding, never a bead).
 3. **Write the runnable assert.** Run the actual flow in dev, then check state. Make failure loud (non-zero exit) and success specific (counts/shape/idempotency), per R1.
 4. **Set the caps** (max-iterations + stagnation) per R4, the dual-condition done signal per R3/R5 (eval exits 0 AND prints the success sentinel on its last line), and the smoke-test preflight over the services the epic touches. When the epic will run as a chain of stacked beads, add the chain-base preflight too: the base must be an ancestor of `origin/main` before bead 1, and bead N+1 never opens its PR while bead N's checks are red (the coordinator's CI-green gate (`agent-cli pr wait`)).
-5. **Try to defeat the eval before trusting it.** For each assertion, write the cheapest way a run could make it print WIN without the outcome holding — widening an ignore/allow list, mocking the boundary, counting a proxy instead of the thing, a config knob the worker can turn. Each such path either gets its own assertion (the allow-list must equal the approved one; the count must come from the live system) or goes into **Does NOT count**. Then name the pass AND fail controls — something concrete the eval must accept and something it must reject — so the first run proves the eval discriminates. An eval with no fail control has not been tested.
+5. **Try to defeat the eval before trusting it.** For each assertion, write the cheapest way a run could make it print WIN without the outcome holding — widening an ignore/allow list, mocking the boundary, counting a proxy instead of the thing, a config knob the worker can turn. Each such path either gets its own assertion (the allow-list must equal the approved one; the count must come from the live system) or goes into **Does NOT count**. Then name the pass AND fail controls — something concrete the eval must accept and something it must reject — so the first run proves the eval discriminates. Put each control in `<eval dir>/controls/<name>` and run `agent-cli eval controls <dir>`; it fails if any fail-control prints WIN. An eval with no fail control has not been tested.
 6. **Write the block onto the epic** and confirm the outcome wording with the user.
 
 ## Worked example — source ingestion
@@ -83,14 +84,13 @@ Derived win-condition:
 **Outcome**: A dev run of the pipeline ingests feeds X and Y end-to-end,
 landing valid `pipeline.content` rows for each, with no human intervention.
 
-**Verification**: .claude/loop-evals/<epic-id>/ingest-e2e.sh X Y
-  # runs the dev pipeline against both feed-slugs for one poll window, then asserts:
+**Verification**: agent-cli eval run .claude/loop-evals/<epic-id>
+  # its win.sh runs the dev pipeline against feeds X and Y for one poll window, then asserts:
   #   - pipeline.content rows for each feed-slug >= 1 (dev DB query)
   #   - required fields non-null; no duplicate rows on a second run (idempotent)
   #   - unhandled-error count == 0 over the run
-  # exits 0 only if all hold; on full success, prints <promise>WIN</promise> as its last line
 
-**Done signal (dual-condition)**: ingest-e2e.sh exits 0 AND its last line is
+**Done signal (dual-condition)**: win.sh exits 0 AND its last line is
 <promise>WIN</promise> (printed only after all asserts pass).
 
 **Does NOT count**:
