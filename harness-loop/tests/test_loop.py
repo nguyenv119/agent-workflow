@@ -1138,18 +1138,27 @@ class RoundModes(LoopTestCase):
         self.assertIn("Bash(git push:*)", deny)
 
     def test_proposals_line_only_when_the_file_exists(self):
-        """--proposals adds `proposals: <absolute path>` to message.txt; no flag or a missing file adds nothing."""
-        # GIVEN a proposals file on disk and a path that does not exist
+        """
+        --proposals adds `proposals: <absolute path>` to message.txt and denies the improver edits
+        to that file; no flag or a missing file adds nothing.
+        """
+        # GIVEN a proposals file on disk (named relative to the loop's cwd) and a path that does not exist
         prop = self.r.tmp / "proposals.md"
         prop.write_text("Idea: something harness-wide\n")
         # WHEN three --no-screen rounds run: with the file, with a missing path, without the flag
-        for extra in (("--proposals", str(prop)), ("--proposals", str(self.r.tmp / "missing.md")), ()):
+        for extra in (("--proposals", "proposals.md"), ("--proposals", str(self.r.tmp / "missing.md")), ()):
             p = self.r.round("--no-screen", *extra)
             self.assertEqual(p.returncode, 0, p.stderr)
         msgs = [(self.r.home / f"rounds/{n}/message.txt").read_text() for n in (1, 2, 3)]
         # THEN only the first message carries the line, with the absolute path
         self.assertIn(f"proposals: {prop.resolve()}\n", msgs[0])
         self.assertNotIn("proposals:", msgs[1] + msgs[2])
+        # AND only the first round's settings deny edits to the resolved proposals path
+        denies = [json.loads((self.r.home / f"rounds/{n}/improver-settings.json").read_text())["permissions"]["deny"]
+                  for n in (1, 2, 3)]
+        for tool in ("Edit", "Write", "NotebookEdit"):
+            self.assertIn(f"{tool}(/{prop.resolve()})", denies[0])
+        self.assertFalse([d for d in denies[1] + denies[2] if "proposals" in d])
 
     def test_dirty_loop_checkout_refuses_to_start(self):
         """A dirty loop checkout refuses the round before any worktree or improver."""
