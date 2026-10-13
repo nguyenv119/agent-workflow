@@ -5,6 +5,15 @@
 git status
 git worktree list
 git worktree remove x
+git worktree list --porcelain
+git worktree remove ../x
+git worktree prune
+git log --grep "worktree add"
+grep -rn "git worktree add" .claude/
+git commit -m "docs: replace git worktree add with agent-cli wt new"
+git worktree add -q --detach "$wt" "$base"
+git worktree add ../review-12 origin/some-branch  # expect-warn: hand-worktree-add-other
+agent-cli wt new 42 add-user-login --base origin/main
 git log --oneline -5
 git diff --stat origin/main...HEAD
 git commit -m "fix: echo the WIN line from the verdict lib, not by hand"

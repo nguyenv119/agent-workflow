@@ -32,6 +32,7 @@ def body_re(cmd):
 CMD = cmd_re()
 BODY = body_re(CMD)
 SENTINEL = "<promise>WIN</promise>"
+WT_ADD = r"git\b(?:\s+-C\s+\S+)?\s+worktree\s+add\b"
 
 
 def builtin(cmd):
@@ -42,6 +43,13 @@ def builtin(cmd):
          "message": "The eval prints WIN, not a worker. Use the verdict library: "
                     "source \"$(agent-cli eval lib --sh)\" and call win; run evals with agent-cli eval run <dir> "
                     "(coming in the eval bead)."},
+        {"id": "hand-worktree-add", "mode": "deny", "requires": "agent-cli", "on": "code",
+         "match": cmd + WT_ADD + r"[^;&|\n]*\s-[bB]",
+         "message": "Use: agent-cli wt new <bead-id> <slug> --base origin/main  (it also runs the project's "
+                    "setup hook)."},
+        {"id": "hand-worktree-add-other", "mode": "warn", "requires": "agent-cli", "on": "code",
+         "match": cmd + WT_ADD + r"(?![^;&|\n]*\s-[bB])", "unless": r"--detach\b",
+         "message": "For an existing branch: agent-cli wt new <id> <slug> --existing <branch>"},
         # Proves warn mode end to end; remove once the wait/lock bead ships its own warn rule.
         # Deliberately unanchored (no cmd prefix): acceptance runs `true agent-cli-warn-demo`, an argument.
         {"id": "agent-cli-demo-warn", "mode": "warn", "requires": "agent-cli",

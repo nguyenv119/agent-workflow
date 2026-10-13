@@ -34,6 +34,8 @@ A PreToolUse hook (`agent-cli hook pretooluse`) checks each Bash command against
 | Rule id | What it stops | Replacement command | Mode |
 |---------|---------------|---------------------|------|
 | `agent-cli-hand-verdict` | A worker printing the eval's WIN sentinel by hand | `source "$(agent-cli eval lib --sh)"`, then `win` | deny |
+| `hand-worktree-add` | A hand-typed `git worktree add ... -b` (skips the project's setup hook) | `agent-cli wt new <bead-id> <slug> --base origin/main` | deny |
+| `hand-worktree-add-other` | A hand-typed `git worktree add` on an existing branch (`--detach` is exempt) | `agent-cli wt new <id> <slug> --existing <branch>` | warn |
 | `agent-cli-demo-warn` | Nothing: proves warn mode on `true agent-cli-warn-demo` (removed by the wait/lock rules) | none | warn |
 
 ## Issue Tracking with bd (beads)

@@ -62,27 +62,15 @@ bd close <bead-id> --reason "PR merged" --json
 
 If no bead IDs are found, warn the user but continue with cleanup.
 
-## 5. Find and remove the worktree
-
-Find worktrees associated with this branch:
+## 5. Remove the worktree and local branch
 
 ```bash
-git worktree list --porcelain | grep -B2 "branch refs/heads/$BRANCH"
+agent-cli wt rm --branch "$BRANCH" --delete-branch --force --yes
 ```
 
-If a worktree exists for this branch, remove it:
+No worktree for the branch prints `already done` and still deletes the local branch.
 
-```bash
-git worktree remove <worktree_path> --force
-```
-
-## 6. Delete the branch
-
-Delete the local branch (if it exists):
-
-```bash
-git branch -d $BRANCH 2>/dev/null || git branch -D $BRANCH 2>/dev/null
-```
+## 6. Delete the remote branch
 
 Delete the remote branch (if it exists):
 

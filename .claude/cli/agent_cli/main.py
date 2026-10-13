@@ -1,13 +1,13 @@
-"""agent-cli entry: argparse root with hook, eval, self and lib (later: wt, pr, lock, wait, log)."""
+"""agent-cli entry: argparse root with hook, eval, self, lib and wt (later: pr, lock, wait, log)."""
 import os
 import subprocess
 from pathlib import Path
 
-from . import core, eval_cmd, hook, lib_cmd, self_cmd
+from . import core, eval_cmd, hook, lib_cmd, self_cmd, wt
 from .core import Exit
 
 # Top-level commands in help order; each module's register(sub) adds its own. A new command is one entry.
-COMMANDS = (hook, eval_cmd, self_cmd, lib_cmd)
+COMMANDS = (hook, eval_cmd, self_cmd, lib_cmd, wt)
 
 
 class Root(core.Parser):
