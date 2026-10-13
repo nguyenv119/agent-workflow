@@ -166,6 +166,22 @@ def seam_lines(name):
     return [s.strip() for s in lines if s.strip() and not s.lstrip().startswith("#")]
 
 
+def rules_line(section, key, text=None):
+    """The value of a `key: value` line under `## <section>` in project-rules.md (text, or the file
+    find_project_file finds), stripped of backticks; None when the section or line is missing."""
+    if text is None:
+        f = find_project_file("project-rules.md")
+        text = f.read_text() if f else ""
+    m = re.search(rf"^##[ \t]+{re.escape(section)}[ \t]*$(.*?)(?=^##[ \t]|\Z)", text, re.M | re.S)
+    v = re.search(rf"^[ \t]*(?:[-*][ \t]+)?`?{re.escape(key)}:`?[ \t]*(.*)$", m[1], re.M) if m else None
+    return v[1].strip().strip("`").strip() if v else None
+
+
+def names(value):
+    """A comma-separated rules line as a list, empty items and backticks dropped."""
+    return [n.strip().strip("`") for n in value.split(",") if n.strip().strip("`")]
+
+
 def path_dirs():
     """The dirs `self env` puts ahead of $PATH: .claude/bin, then the `path` seam's (relative = project root)."""
     f = find_seam("path")

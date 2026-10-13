@@ -124,23 +124,36 @@ def try_take(name, pid, cap, dry_run=False):
         return "acquired", held
 
 
-def acquire(a):
-    check_name(a.name, EXAMPLES[0])
-    if a.pid <= 0:
-        core.die(Exit.REFUSED, f"--pid {a.pid} is not a process id", ONE_SCRIPT)
-    cap, wait_s = core.duration(a.cap, ONE_SCRIPT), core.duration(a.wait, ONE_SCRIPT)
+def take_waiting(name, pid, cap, wait_s, example, dry_run=False):
+    """try_take every second for up to wait_s; exit 3 naming the holder (and example) if it stays held."""
     holder = []
 
     def check(_left):
-        status, owner = try_take(a.name, a.pid, cap, a.dry_run)
+        status, owner = try_take(name, pid, cap, dry_run)
         holder[:] = [owner]
         return None if status == "held" else (status, owner)
 
     got = wait.poll(check, 1, wait_s)
     if got is None:
-        core.die(Exit.BLOCKED, f"{a.name} held by {describe(holder[0])}",
-                 f"agent-cli lock acquire {a.name} --pid $$ --wait 10m")
-    status, reaped = got
+        core.die(Exit.BLOCKED, f"{name} held by {describe(holder[0])}", example)
+    return got
+
+
+def drop(name, pid):
+    """Release name if pid on this host holds it; a lock someone else took (after a reap) is left alone."""
+    with guard():
+        held = read(name)
+        if held and held["pid"] == pid and held["host"] == socket.gethostname():
+            shutil.rmtree(root() / name)
+
+
+def acquire(a):
+    check_name(a.name, EXAMPLES[0])
+    if a.pid <= 0:
+        core.die(Exit.REFUSED, f"--pid {a.pid} is not a process id", ONE_SCRIPT)
+    cap, wait_s = core.duration(a.cap, ONE_SCRIPT), core.duration(a.wait, ONE_SCRIPT)
+    status, reaped = take_waiting(a.name, a.pid, cap, wait_s, f"agent-cli lock acquire {a.name} --pid $$ --wait 10m",
+                                  a.dry_run)
     if status == "already-held":
         return core.out(a, {"status": status, "name": a.name, "pid": a.pid}, f"already held: {a.name} (pid {a.pid})")
     reaped = reaped and describe(reaped)

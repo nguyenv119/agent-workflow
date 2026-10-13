@@ -7,6 +7,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -448,6 +449,77 @@ class HandVerdictRule(unittest.TestCase):
         self.assertIn("agent-cli eval run <dir>", msg)
         self.assertIn('source "$(agent-cli eval lib --sh)"', msg)
         self.assertNotIn("coming in", msg)
+
+
+class LockOption(EvalCase):
+    """--lock NAME holds `agent-cli lock` NAME for the whole run, so evals sharing a resource take turns."""
+
+    def setUp(self):
+        super().setUp()
+        self.env = {"AGENT_CLI_STATE": str(self.tmp / "state")}
+        # the entry WINs only while the lock dir exists, i.e. while the run holds the lock
+        self.d = self.eval_dir(LIB_SH + 'if [ -d "$AGENT_CLI_STATE/locks/gates" ]; then ok held; '
+                                        'else fail "lock not held"; fi\nwin\n')
+
+    def test_run_holds_the_lock_during_the_run_and_releases_it(self):
+        """The entry sees the lock held, and it is free again after the run."""
+        # GIVEN a free lock
+        # WHEN the eval runs with --lock gates
+        r, out = self.run_json(self.d, "--lock", "gates", env=self.env)
+        # THEN WIN (the lock was held inside) and the lock dir is gone afterwards
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(out["verdict"], "WIN")
+        self.assertFalse((self.tmp / "state/locks/gates").exists())
+
+    def test_busy_lock_exits_3_with_an_example_and_runs_nothing(self):
+        """A lock a live process holds blocks the run: exit 3, holder and example on stderr, no evidence."""
+        # GIVEN gates held by this (live) test process
+        held = self.cli("lock", "acquire", "gates", "--pid", str(os.getpid()), env=self.env)
+        self.assertEqual(held.returncode, 0, held.stderr)
+        for args in (("run", str(self.d), "--lock", "gates"), ("controls", str(self.d), "--lock", "gates")):
+            (self.d / "controls").mkdir(exist_ok=True)
+            (self.d / "controls/fail-x.env").write_text("X=1\n")
+            # WHEN the eval (or its controls) asks for the same lock
+            r = self.cli("eval", *args, env=self.env)
+            # THEN exit 3 naming the holder, with an example, and the eval never ran
+            self.assertEqual(r.returncode, 3, (args, r.stdout))
+            self.assertIn(f"gates held by pid {os.getpid()}", r.stderr)
+            self.assertIn("example: agent-cli eval", r.stderr)
+            self.assertFalse((self.d / "evidence").exists())
+        # AND the holder's lock is untouched
+        self.assertTrue((self.tmp / "state/locks/gates").is_dir())
+
+    def test_lock_wait_keeps_trying_before_exit_3(self):
+        """--lock-wait reuses `lock acquire --wait`: it keeps trying that long, then exits 3."""
+        # GIVEN gates held by this (live) test process
+        self.cli("lock", "acquire", "gates", "--pid", str(os.getpid()), env=self.env)
+        # WHEN the eval waits 2 s for it
+        start = time.monotonic()
+        r = self.cli("eval", "run", str(self.d), "--lock", "gates", "--lock-wait", "2", env=self.env)
+        # THEN it gave up only after the wait, with exit 3
+        self.assertEqual(r.returncode, 3, r.stderr)
+        self.assertGreaterEqual(time.monotonic() - start, 2)
+
+    def test_controls_hold_the_lock_across_every_control(self):
+        """eval controls --lock holds it for all controls: the pass control WINs only under the lock."""
+        # GIVEN a pass control (runs the entry) and a fail control that forces a failure
+        (self.d / "controls").mkdir()
+        (self.d / "controls/pass-held.env").write_text("X=1\n")
+        (self.d / "controls/fail-free.env").write_text("AGENT_CLI_STATE=/nonexistent\n")
+        # WHEN controls run with --lock gates
+        r = self.cli("eval", "controls", str(self.d), "--lock", "gates", "--json", env=self.env)
+        # THEN both controls behave and the lock is released afterwards
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(json.loads(r.stdout.splitlines()[-1])["mismatched"], [])
+        self.assertFalse((self.tmp / "state/locks/gates").exists())
+
+    def test_without_lock_no_lock_is_taken(self):
+        """No --lock, no lock: the default run is unchanged (here the entry sees no lock and fails)."""
+        # GIVEN a free lock
+        # WHEN run without --lock
+        r, out = self.run_json(self.d, env=self.env)
+        # THEN the entry saw no lock
+        self.assertEqual((r.returncode, out["verdict"]), (1, "FAIL"))
 
 
 if __name__ == "__main__":

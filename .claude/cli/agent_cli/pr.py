@@ -22,7 +22,6 @@ MIN_EVERY = 30  # seconds; GitHub's API budget (5,000 req/h) is shared by every 
 EXIT = {"READY": Exit.OK, "MERGED": Exit.OK, "FAILED": Exit.FAIL, "CONFLICT": Exit.FAIL, "CLOSED": Exit.FAIL,
         "WAITING": Exit.PARTIAL, "NO_CHECKS": Exit.PARTIAL}
 GREEN_STATES = ("CLEAN", "HAS_HOOKS", "UNSTABLE")
-SECTION = re.compile(r"^##[ \t]+coordinator[ \t]*$(.*?)(?=^##[ \t]|\Z)", re.M | re.S)
 
 
 class GhError(Exception):
@@ -31,17 +30,9 @@ class GhError(Exception):
 
 def config(text=None):
     """{required: [names] or None (= every non-skipped check), advisory: [names], preview: name or None}."""
-    if text is None:
-        f = core.find_project_file("project-rules.md")
-        text = f.read_text() if f else ""
-    m = SECTION.search(text)
-
-    def line(key):
-        v = re.search(rf"^[ \t]*(?:[-*][ \t]+)?`?{key}:`?[ \t]*(.*)$", m[1], re.M) if m else None
-        return v[1].strip().strip("`").strip() if v else None
-    names = lambda s: [n.strip().strip("`") for n in s.split(",") if n.strip().strip("`")]  # noqa: E731
+    line = lambda key: core.rules_line("coordinator", key, text)  # noqa: E731
     req, adv = line("required-checks"), line("advisory-checks")
-    return {"required": names(req) if req is not None else None, "advisory": names(adv or ""),
+    return {"required": core.names(req) if req is not None else None, "advisory": core.names(adv or ""),
             "preview": line("preview-check") or None}
 
 
