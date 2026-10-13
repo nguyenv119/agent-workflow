@@ -105,7 +105,7 @@ DEFAULT_EXAM_BUDGET_USD = 30.0
 FIRST_ESTIMATE_USD = 15.0  # exam/run_exam.py FIRST_ESTIMATE_USD (a test pins they match)
 # Two side runs at FIRST_ESTIMATE_USD each. A default round with --sidecheck books improver 10 +
 # project check 1 + exam 30 + side 30 = 71 > the weekly 50, so check_budget refuses it until the
-# weekly cap is raised or smaller budgets are passed (reusing main's screen run, --budget-usd 15-19).
+# weekly cap is raised (even reusing main's screen run, 10 + 1 + 15 + 30 = 56).
 DEFAULT_SIDECHECK_BUDGET_USD = 30.0
 SIDE_HOME = "loop-home"  # side runs live next to the private manifest: <manifest dir>/loop-home/runs
 
