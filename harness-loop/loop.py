@@ -98,7 +98,7 @@ EXAMPLE_LEAK = re.compile(r"Neon|NEON_|pnpm|turbo|vitest|VITEST|rtk |PGlite|Trig
 TRY_PATH = re.compile(r"(?<![\w/.~-])((?:runs/|~/\.claude/tries/)[^\s`'\"<>()\[\],;]+)")
 # A concrete .claude/tries/<repo> outside the masked Evidence list names a (private) repo; <placeholders> and this
 # public repo's own folder pass.
-TRIES_NAME = re.compile(r"\.claude/tries/(?!<|agent-workflow/)[\w.-]")
+TRIES_NAME = re.compile(r"\.claude/tries/(?:(?!<|agent-workflow/)[\w.-]|\S*\.\.)")  # no ../ detour either
 # The improver gets Bedrock only: never an Anthropic API key, OAuth token or admin AWS key.
 SCRUB_ENV = re.compile(r"^(ANTHROPIC_BASE_URL|AWS_ADMIN_.*|AWS_PROFILE"
                        r"|.*(TOKEN(?!S)|SECRET|KEY|PASSWORD|CREDENTIAL).*)$", re.I)
@@ -435,9 +435,12 @@ def try_folders(text, existing=None):
         target = (root / rest).resolve()
         # a tries citation names at least <repo>/<bead>: a whole repo's folder is not one try
         deep = root is not TRIES or target.parent != TRIES.resolve()
+        # one try counts once: not try-1 and try-1/, nor a bead folder and its own try
+        nested = any(target.is_relative_to(s) or s.is_relative_to(target) for s in seen)
         ok = (target.is_dir() and target.is_relative_to(root.resolve()) and target != root.resolve() and deep
-              and (existing is None or target in existing) and target not in seen)  # try-1 and try-1/ are one try
-        seen.add(target)
+              and (existing is None or target in existing) and not nested)
+        if ok:
+            seen.add(target)
         (valid if ok else invalid).append(p)
     return valid, invalid
 

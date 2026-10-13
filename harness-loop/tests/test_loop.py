@@ -797,6 +797,24 @@ class RoundChecksDrop(LoopTestCase):
         self.assertIn("tries/2/try-2\n", body)
         self.assertNotIn("secretco", body)
 
+    def test_tries_path_with_a_dotdot_detour_outside_evidence_is_a_leak(self):
+        """~/.claude/tries/agent-workflow/../<repo>/... outside Evidence is a leak, though it starts with this repo."""
+        # GIVEN a proposal line that detours from this repo's tries into another repo's
+        extra = "Seen in ~/.claude/tries/agent-workflow/../other-app/other-app-3/try-1 too."
+        # WHEN the round runs
+        p = self.r.round(env={"STUB_PROPOSAL_EXTRA": extra})
+        # THEN the leak scan drops it
+        self.assertDropped(p, "leak: Seen in ~/.claude/tries/agent-workflow/../other-app")
+
+    def test_a_bead_folder_and_its_own_try_count_once(self):
+        """A bead folder and a try inside it are one piece of evidence, not two."""
+        # GIVEN a bead folder cited next to its own try
+        paths = "~/.claude/tries/agent-workflow/b-1 ~/.claude/tries/agent-workflow/b-1/try-1"
+        # WHEN the round runs
+        p = self.r.round(env={"STUB_TRY_PATHS": paths})
+        # THEN it is dropped for the evidence
+        self.assertDropped(p, "1 valid try folders")
+
     def test_one_try_cited_twice_counts_once(self):
         """try-1 and try-1/ are the same folder: one citation, so the round lacks evidence."""
         # GIVEN the same try folder cited with and without a trailing slash
@@ -1169,6 +1187,29 @@ class Budget(LoopTestCase):
         self.assertIn("weekly cap", p.stderr)
         self.assertFalse(marker.exists())
         self.assertEqual((self.r.exam_calls(), self.r.history()), ([], []))
+
+    def test_default_round_budget_includes_the_project_check_cap(self):
+        """
+        A default (Bedrock) round reserves the project check's $1 cap on top of the improver's budget:
+        $48.50 spent + $1 improver fits $50 alone, but not with the cap, so it is refused before anything runs.
+        """
+        # GIVEN $48.50 spent, a Bedrock-looking env, and a `claude` on PATH that leaves a marker if ever run
+        self.r.ledger((1, 48.5))
+        marker = self.r.tmp / "claude-ran"
+        fake = self.r.tmp / "fakebin"
+        fake.mkdir()
+        (fake / "claude").write_text(f"#!/bin/sh\ntouch {marker}\nexit 1\n")
+        (fake / "claude").chmod(0o755)
+        env = {"PATH": f"{fake}{os.pathsep}{self.r.env['PATH']}", "CLAUDE_CODE_USE_BEDROCK": "1",
+               "AWS_ACCESS_KEY_ID": "x", "AWS_SECRET_ACCESS_KEY": "y"}
+        # WHEN a default --no-screen round with a $1 improver budget starts
+        p = self.r.loop("round", "--tasks", str(self.r.manifest), "--no-screen", "--improver-budget-usd", "1",
+                        env=env)
+        # THEN it is refused at the weekly cap, and no claude ran
+        self.assertEqual(p.returncode, 2, p.stdout + p.stderr)
+        self.assertIn("weekly cap", p.stderr)
+        self.assertFalse(marker.exists())
+        self.assertEqual(self.r.history(), [])
 
     def test_spend_older_than_a_week_does_not_count(self):
         """Ledger rows older than 7 days are outside the window."""
