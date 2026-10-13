@@ -11,7 +11,7 @@ module-level CMD/BODY constants, which lack the prefixes.
 import re
 
 KEYWORDS = r"(?:(?:do|then|else|elif|if|while|until|!|\{)\s+)*"
-ASSIGNS = r"(?:[A-Za-z_]\w*=\S*\s+)*"
+ASSIGNS = r"(?:[A-Za-z_]\w*=\S*[^\S\n]+)*"  # stops at a newline: each line is its own command position
 BASE_PREFIXES = ("env", "command", "time", "nohup", r"timeout\s+\S+")
 
 

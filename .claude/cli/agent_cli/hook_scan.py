@@ -14,13 +14,15 @@ import time
 from bisect import bisect_right
 from pathlib import Path
 
-from . import core, hook
+from . import core, hook, hook_rules
 from .core import Exit
 
 GLOB = "*.sh,*.py,*.ts,*.mjs"
 SKIP_DIRS = {"node_modules", ".venv", "venv", ".git", "evidence"}
 MAX_FILE = 1024 * 1024
 LEAD = re.compile(r"[\s;&|(]*")
+LOOP = re.compile(r"\b(?:while|until)\b")
+DONE = re.compile(r"(?:^|[;&|(\n])\s*done\b")
 EXAMPLES = ["agent-cli hook scan .claude/loop-evals --since 7d --json",
             "agent-cli hook scan scripts tools --glob '*.sh' --since 30d",
             "cat commands.txt | agent-cli hook scan --stdin --json",
@@ -29,7 +31,11 @@ DESCRIPTION = ("Scans each file under the paths (mtime within --since; skips nod
                "evidence/, binaries and files over 1 MB). With no paths it scans the comma-separated scan-dirs:\n"
                "line under `## gardener` in .claude/project-rules.md (relative to the project root).\n"
                "Prints one hit per file and rule {file, rule, mode, line, mtime, bypassed}, then a summary\n"
-               "{files_scanned, hits_by_rule, bypassed}. A bypass comment counts as a hit, not as compliance.\n"
+               "{files_scanned, unreadable, hits_by_rule, bypassed}. With --stdin, file is \"-\", line is the\n"
+               "input line, mtime is null and the summary has commands_scanned (no files_scanned/unreadable).\n"
+               "A bypass comment counts as a hit, not as compliance. A file that vanished or cannot be read is\n"
+               "skipped and counted as unreadable. A hit after a multi-line quoted string may report the line\n"
+               "the string starts on.\n"
                "Exit 0 whenever the scan ran, whatever it found; 1 on a scan error; 2 on bad usage.")
 
 
@@ -55,21 +61,22 @@ def scan(a):
         return report(a, hits, {"commands_scanned": sum(1 for c in lines if c.strip())})
     since = core.duration(a.since, EXAMPLES[0])
     files = list(walk(roots(a.paths), [g.strip() for g in a.glob.split(",") if g.strip()], time.time() - since))
-    hits, scanned = [], 0
+    hits, scanned, unreadable = [], 0, 0
     for f in files:
         try:
             st = f.stat()
             if st.st_size > MAX_FILE:
                 continue
             data = f.read_bytes()
-        except OSError as e:
-            core.die(Exit.FAIL, f"cannot read {f}: {e}", EXAMPLES[0])
+        except OSError:  # vanished or unreadable since the walk: counted, never fatal
+            unreadable += 1
+            continue
         if b"\0" in data[:8192]:
             continue
         scanned += 1
         mtime = datetime.datetime.fromtimestamp(st.st_mtime, datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
         hits += [dict(h, file=str(f), mtime=mtime) for h in file_hits(data.decode(errors="replace"), rules)]
-    return report(a, hits, {"files_scanned": scanned})
+    return report(a, hits, {"files_scanned": scanned, "unreadable": unreadable})
 
 
 def roots(paths):
@@ -90,7 +97,12 @@ def roots(paths):
 def walk(paths, globs, cutoff):
     """Files under paths whose name matches a glob and whose mtime is at or after cutoff (sorted per dir)."""
     def keep(f):
-        return any(fnmatch.fnmatch(f.name, g) for g in globs) and f.stat().st_mtime >= cutoff
+        if not any(fnmatch.fnmatch(f.name, g) for g in globs):
+            return False
+        try:
+            return f.stat().st_mtime >= cutoff
+        except OSError:
+            return True  # vanished: the read below counts it as unreadable
     for p in map(Path, paths):
         if p.is_file():
             if keep(p):
@@ -105,30 +117,52 @@ def walk(paths, globs, cutoff):
 
 
 def file_hits(text, rules):
-    """[{rule, mode, line, bypassed}] for each rule that matches text (one hit per rule, its first match).
+    """[{rule, mode, line, bypassed}] for each rule that matches text (one hit per rule: its first match
+    that survives `unless`).
 
-    A rule with `needs` is matched in windows of hook.MAX_CMD on each side of every `needs` hit, so a
-    1 MB file of near-misses stays fast; a rule without `needs` sees the whole text.
+    Unlike `hook pretooluse`, which applies `unless` to the whole command, scan applies it to each match's
+    own command: through the next `done` for a while/until loop, else to the end of the line. A rule with
+    `needs` is matched in windows of hook.MAX_CMD on each side of every `needs` hit, so a 1 MB file of near
+    misses stays fast; a rule without `needs` sees the whole text.
+    Known limit: a hit after a multi-line quoted string reports the line the string starts on.
     """
     nls = []
     code = hook.code_view(text, nls)
     bypass = set(hook.BYPASS.findall(text))
+    cmd = re.compile(hook_rules.cmd_re(core.seam_lines("command-prefixes")))
     out = []
     for r in rules:
         if "needs" in r and not re.search(r["needs"], text):
             continue
         raw = r.get("on") == "raw"
         view = text if raw else code
-        bare = {k: v for k, v in r.items() if k != "needs"}
-        for start, end in windows(r, view):
-            m = hook.match(bare, view[start:end], view[start:end])
-            if m:
-                pos = start + m.start() + LEAD.match(m[0]).end()
-                at = pos if raw else view_to_raw(code, nls, pos)
-                out.append({"rule": r["id"], "mode": r["mode"], "line": text.count("\n", 0, at) + 1,
-                            "bypassed": r["id"] in bypass})
-                break
+        pos = first_hit(r, view, cmd)
+        if pos is not None:
+            at = pos if raw else view_to_raw(code, nls, pos)
+            out.append({"rule": r["id"], "mode": r["mode"], "line": text.count("\n", 0, at) + 1,
+                        "bypassed": r["id"] in bypass})
     return out
+
+
+def first_hit(rule, view, cmd):
+    """The view index of the command word of the rule's first surviving match, or None."""
+    for start, end in windows(rule, view):
+        chunk = view[start:end]
+        for m in re.finditer(rule["match"], chunk):
+            if "unless" in rule and re.search(rule["unless"], chunk[m.start():scope_end(chunk, m)]):
+                continue
+            c = cmd.match(chunk, m.start())  # skip the separator, keywords and VAR= words before the command
+            return start + (c.end() if c and c.end() <= m.end() else m.start() + LEAD.match(m[0]).end())
+    return None
+
+
+def scope_end(chunk, m):
+    """Where the match's command ends: the next `done` for a while/until loop, else the end of its line."""
+    if LOOP.search(m[0]):
+        d = DONE.search(chunk, m.end())
+        return d.end() if d else len(chunk)
+    nl = chunk.find("\n", m.end())
+    return len(chunk) if nl < 0 else nl
 
 
 def view_to_raw(code, nls, pos):

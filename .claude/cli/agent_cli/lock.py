@@ -139,12 +139,15 @@ def take_waiting(name, pid, cap, wait_s, example, dry_run=False):
     return got
 
 
-def drop(name, pid):
-    """Release name if pid on this host holds it; a lock someone else took (after a reap) is left alone."""
+def remove_if_owner(name, pid, force=False, dry_run=False):
+    """Under the guard, remove name when pid on this host holds it (or with force); dry_run removes nothing.
+    Returns (owner or None when not held, whether it was or would be removed). The one release path."""
     with guard():
         held = read(name)
-        if held and held["pid"] == pid and held["host"] == socket.gethostname():
+        ok = bool(held) and (force or (held["pid"] == pid and held["host"] == socket.gethostname()))
+        if ok and not dry_run:
             shutil.rmtree(root() / name)
+        return held, ok
 
 
 def acquire(a):
@@ -181,15 +184,12 @@ def release(a):
     pid = a.pid
     if pid <= 0:
         core.die(Exit.REFUSED, f"--pid {pid} is not a process id", ONE_SCRIPT)
-    with guard():
-        held = read(a.name)
-        if not held:
-            return core.out(a, {"status": "already-done", "name": a.name}, f"already done: {a.name} is not held")
-        if held["pid"] != pid and not a.force:
-            core.die(Exit.REFUSED, f"{a.name} is held by {describe(held)}, not pid {pid}",
-                     f"agent-cli lock release {a.name} --pid $$ --force")
-        if not a.dry_run:
-            shutil.rmtree(root() / a.name)
+    held, ok = remove_if_owner(a.name, pid, a.force, a.dry_run)
+    if not held:
+        return core.out(a, {"status": "already-done", "name": a.name}, f"already done: {a.name} is not held")
+    if not ok:
+        core.die(Exit.REFUSED, f"{a.name} is held by {describe(held)}, not pid {pid} on this host",
+                 f"agent-cli lock release {a.name} --pid $$ --force")
     verb = "would-release" if a.dry_run else "released"
     return core.out(a, {"status": verb, "name": a.name, "owner": describe(held)},
                     f"{verb}: {a.name} ({describe(held)})")

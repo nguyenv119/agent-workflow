@@ -9,6 +9,7 @@ import hashlib
 import json
 import os
 import shutil
+import signal
 import sys
 import tempfile
 import time
@@ -133,17 +134,20 @@ def lock_args(p):
 
 @contextlib.contextmanager
 def held(a, cap, example):
-    """Hold lock a.lock (owner: this process) around the block; no --lock, no lock."""
+    """Hold lock a.lock (owner: this process) around the block; no --lock, no lock. The lock's cap is
+    cap; SIGTERM becomes exit 143 so the eval's process group is killed and the lock released."""
     if not a.lock:
         yield
         return
     lock.check_name(a.lock, example)
-    lock.take_waiting(a.lock, os.getpid(), cap, core.duration(a.lock_wait, example),
-                      f"{example} --lock {a.lock} --lock-wait 30m")
+    wait_s = core.duration(a.lock_wait, example)
+    old = signal.signal(signal.SIGTERM, lambda *_: sys.exit(143))
     try:
+        lock.take_waiting(a.lock, os.getpid(), cap, wait_s, f"{example} --lock {a.lock} --lock-wait 30m")
         yield
     finally:
-        lock.drop(a.lock, os.getpid())
+        signal.signal(signal.SIGTERM, old)
+        lock.remove_if_owner(a.lock, os.getpid())
 
 
 def init(a):
@@ -260,7 +264,7 @@ def run(a):
     if a.only is not None and not a.only.strip():
         core.die(Exit.REFUSED, "--only needs a check name", f"agent-cli eval run {DIR} --only rows")
     d, entry, argv = resolve(a, example)
-    with held(a, cap, example):
+    with held(a, cap + 60, example):
         rec, path = execute(d, entry, argv, cap, {}, only=a.only)
     core.emit({"dir": str(d), "verdict": rec["verdict"], "exit": rec["exit"], "duration_s": rec["duration_s"],
                "evidence": str(path)}, a.json)
@@ -302,7 +306,7 @@ def controls(a):
     if not any(name.startswith("fail-") for name, _, _ in found):
         core.die(Exit.BLOCKED, f"no fail-* control in {d / 'controls'}. {NO_FAIL_CONTROL} (win-condition skill)",
                  f"printf 'INPUT=empty\\n' > {d / 'controls/fail-empty-input.env'}")
-    with held(a, cap * len(found), example):
+    with held(a, (cap + 60) * len(found), example):
         return run_controls(a, d, entry, argv, cap, found)
 
 

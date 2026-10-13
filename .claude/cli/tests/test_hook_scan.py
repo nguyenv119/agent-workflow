@@ -1,13 +1,11 @@
 """Tests for `agent-cli hook scan`: every hook rule run over script files or piped commands."""
 import json
 import os
-import shutil
-import tempfile
 import time
 import unittest
 from pathlib import Path
 
-from helpers import agent_cli, make_project
+from helpers import TmpCase, agent_cli, make_project
 
 # One file per built-in rule (expected rule id, file name, text).
 HITS = [
@@ -27,10 +25,9 @@ NEAR = {
 }
 
 
-class ScanCase(unittest.TestCase):
+class ScanCase(TmpCase):
     def setUp(self):
-        self.tmp = Path(os.path.realpath(tempfile.mkdtemp(prefix="agent-cli-scan-")))
-        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+        super().setUp()
         self.p = make_project(self.tmp / "proj")
         self.tree = self.p / "evals"
         self.tree.mkdir()
@@ -68,24 +65,27 @@ class Files(ScanCase):
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertEqual(sorted((h["rule"], Path(h["file"]).name) for h in hits),
                          sorted((rule, name) for rule, name, _ in HITS))
-        self.assertEqual(summary["files_scanned"], len(HITS) + len(NEAR))
+        self.assertEqual((summary["files_scanned"], summary["unreadable"]), (len(HITS) + len(NEAR), 0))
         self.assertEqual(summary["hits_by_rule"], {rule: 1 for rule, _, _ in HITS})
         self.assertEqual(summary["bypassed"], 0)
 
     def test_hit_row_has_first_matching_line_mode_and_mtime(self):
-        """A hit names the line its match starts on, counted in the raw file even past a heredoc body.
+        """A hit names the line its loop keyword is on, counted in the raw file past a heredoc body and
+        past VAR= lines.
 
-        Rules match a view with heredoc bodies removed; the line must still point at the real file line.
+        Rules match a view with heredoc bodies removed, and a match can start at an earlier separator;
+        the line must still point at the real loop line.
         """
-        # GIVEN a sleep loop on line 7, after a heredoc whose body holds a decoy loop
-        text = "#!/bin/bash\n# header\ncat <<EOF\nwhile true; do\nsleep 50\nEOF\nuntil test -f x; do\n  sleep 30\ndone\n"
+        # GIVEN a sleep loop on line 9, after a heredoc whose body holds a decoy loop and two VAR= lines
+        text = ("#!/bin/bash\n# header\ncat <<EOF\nwhile true; do\nsleep 50\nEOF\nN=0\nMAX=10\n"
+                "until test -f x; do\n  sleep 30\ndone\n")
         self.write("late.sh", text)
         # WHEN scanned
         _, hits, _ = self.scan(str(self.tree))
-        # THEN one hit on line 7 with the rule's mode and an ISO mtime
+        # THEN one hit on line 9 with the rule's mode and an ISO mtime
         self.assertEqual(len(hits), 1)
         h = hits[0]
-        self.assertEqual((h["rule"], h["mode"], h["line"], h["bypassed"]), ("hand-sleep-poll", "warn", 7, False))
+        self.assertEqual((h["rule"], h["mode"], h["line"], h["bypassed"]), ("hand-sleep-poll", "warn", 9, False))
         self.assertRegex(h["mtime"], r"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$")
 
     def test_bypass_comment_is_still_a_hit_flagged_bypassed(self):
@@ -185,10 +185,81 @@ class Files(ScanCase):
         # WHEN scanned
         start = time.monotonic()
         r, hits, _ = self.scan(str(self.tree))
-        # THEN it is fast and the sleep loop is found
+        # THEN it is fast, and the hit is on the first `while` whose bounded (2,000-char) body reaches the
+        # sleep: 2,000 chars of 27-char code lines (the comment is stripped) back from line 30,001
         self.assertLess(time.monotonic() - start, 10)
         self.assertEqual(r.returncode, 0, r.stderr)
-        self.assertEqual([h["rule"] for h in hits], ["hand-sleep-poll"])
+        self.assertEqual([(h["rule"], h["line"]) for h in hits], [("hand-sleep-poll", 30001 - 2000 // 27)])
+
+    def test_a_1mb_file_of_assignments_scans_in_under_10s(self):
+        """250,000 `X=1` lines then one worktree add finish in under 10 s.
+
+        VAR= words used to be skipped across newlines, so each line rescanned every line after it.
+        """
+        # GIVEN a ~1 MB file of assignments ending in a worktree add
+        self.write("assign.sh", "X=1\n" * 250000 + "git worktree add -b x ../x\n")
+        # WHEN scanned
+        start = time.monotonic()
+        r, hits, _ = self.scan(str(self.tree))
+        # THEN it is fast and the worktree add is found on its line
+        self.assertLess(time.monotonic() - start, 10)
+        self.assertEqual([(h["rule"], h["line"]) for h in hits], [("hand-worktree-add", 250001)])
+
+    def test_a_stray_sleep_in_another_window_never_hides_or_fakes_a_hit(self):
+        """A short stray `sleep` far from the real loop (before it, or after it) gives one hit on the loop.
+
+        `needs` hits split the file into windows; a match must be found in whichever window holds it.
+        """
+        pad = "echo padding line\n" * 3000  # ~54 KB, wider than two windows
+        loop = "until test -f x; do\n  sleep 30\ndone\n"
+        for name, text, line in (("before.sh", "sleep 1\n" + pad + loop, 3002),
+                                 ("after.sh", loop + pad + "sleep 1\n", 1)):
+            with self.subTest(name):
+                # GIVEN the stray sleep on one side of the padding and the loop on the other
+                f = self.write(name, text)
+                # WHEN scanned
+                _, hits, _ = self.scan(str(f))
+                # THEN exactly one hit, on the loop line
+                self.assertEqual([(h["rule"], h["line"]) for h in hits], [("hand-sleep-poll", line)])
+
+    def test_unless_applies_to_each_match_not_the_whole_file(self):
+        """An `unless` hit elsewhere in the file hides only its own command, never a real hit beside it.
+
+        A `--detach` add, or a PR poll loop, in the same script must not erase a plain add or sleep loop.
+        """
+        cases = {
+            "a.sh": ("#!/bin/bash\ngit worktree add ../wt feature-x\necho done\n"
+                     "git worktree add --detach ../wt2 HEAD\n", [("hand-worktree-add-other", 2)]),
+            "a2.sh": "#!/bin/bash\ngit worktree add ../wt feature-x\necho done\n",
+            "b.sh": ("#!/bin/bash\nuntil curl -sf localhost:3000; do sleep 30; done\necho next\n"
+                     "while true; do gh pr checks 12 && break; sleep 30; done\n",
+                     [("hand-pr-poll", 4), ("hand-sleep-poll", 2)]),
+        }
+        cases["a2.sh"] = (cases["a2.sh"], [("hand-worktree-add-other", 2)])
+        for name, (text, want) in cases.items():
+            with self.subTest(name):
+                # GIVEN a script mixing a real hit with an unless-exempt command
+                f = self.write(name, text)
+                # WHEN scanned
+                _, hits, _ = self.scan(str(f))
+                # THEN the real hit is reported on its line
+                self.assertEqual([(h["rule"], h["line"]) for h in hits], want)
+
+    def test_unreadable_file_is_skipped_and_counted(self):
+        """A file that cannot be read is counted as unreadable; the scan still runs and exits 0."""
+        if os.geteuid() == 0:
+            self.skipTest("root reads any file")
+        # GIVEN one readable hit and one unreadable file
+        self.write("ok.sh", "git worktree add -b x ../x\n")
+        locked = self.write("locked.sh", "git worktree add -b y ../y\n")
+        locked.chmod(0)
+        self.addCleanup(locked.chmod, 0o644)
+        # WHEN scanned
+        r, hits, summary = self.scan(str(self.tree))
+        # THEN exit 0, the readable hit only, and one unreadable
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual([Path(h["file"]).name for h in hits], ["ok.sh"])
+        self.assertEqual((summary["files_scanned"], summary["unreadable"]), (1, 1))
 
 
 class Stdin(ScanCase):

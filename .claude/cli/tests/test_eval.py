@@ -513,6 +513,40 @@ class LockOption(EvalCase):
         self.assertEqual(json.loads(r.stdout.splitlines()[-1])["mismatched"], [])
         self.assertFalse((self.tmp / "state/locks/gates").exists())
 
+    def test_failed_run_releases_the_lock(self):
+        """A run that fails still releases the lock, so the next eval is not blocked."""
+        # GIVEN an entry that fails
+        d = self.eval_dir(LIB_SH + 'fail "broken"\n', where="bad")
+        # WHEN run with --lock gates
+        r, out = self.run_json(d, "--lock", "gates", env=self.env)
+        # THEN verdict FAIL and the lock is gone
+        self.assertEqual((r.returncode, out["verdict"]), (1, "FAIL"))
+        self.assertFalse((self.tmp / "state/locks/gates").exists())
+
+    def test_sigterm_kills_the_eval_and_releases_the_lock(self):
+        """SIGTERM to `eval run --lock` kills the eval's processes and releases the lock (no orphan holder)."""
+        # GIVEN an eval that records its pid and then sleeps
+        pidfile = self.tmp / "child.pid"
+        d = self.eval_dir(f'echo $$ > "{pidfile}"\nsleep 60\n', where="slow")
+        e = {k: v for k, v in os.environ.items() if k not in ("CLAUDE_PROJECT_DIR", "AGENT_CLI_HOOKS")}
+        e.update(self.env)
+        proc = subprocess.Popen([sys.executable, str(self.p / ".claude/bin/agent-cli"), "eval", "run", str(d),
+                                 "--lock", "gates"], cwd=str(self.p), env=e,
+                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        self.addCleanup(lambda: proc.poll() is None and proc.kill())
+        deadline = time.monotonic() + 20
+        while not pidfile.exists() and time.monotonic() < deadline:
+            time.sleep(0.1)
+        child = int(pidfile.read_text())
+        # WHEN the eval process gets SIGTERM
+        proc.terminate()
+        code = proc.wait(timeout=20)
+        # THEN it exits 143, the lock is gone and the entry's process is dead
+        self.assertEqual(code, 143)
+        self.assertFalse((self.tmp / "state/locks/gates").exists())
+        with self.assertRaises(ProcessLookupError):
+            os.kill(child, 0)
+
     def test_without_lock_no_lock_is_taken(self):
         """No --lock, no lock: the default run is unchanged (here the entry sees no lock and fails)."""
         # GIVEN a free lock
