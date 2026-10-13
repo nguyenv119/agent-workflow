@@ -209,7 +209,7 @@ class RoundOpensPR(LoopTestCase):
         """
         # GIVEN a clean checkout, no earlier main screen run, a spec where the candidate solves one more task
         # WHEN a stub round runs
-        p = self.r.round("--budget-usd", "20")
+        p = self.r.round("--budget-usd", "30")
         # THEN it opens one ready PR with both scores and the script's marker block
         self.assertEqual(p.returncode, 0, p.stderr)
         creates = [c for c in self.r.gh_calls() if c["args"][:2] == ["pr", "create"]]
@@ -1173,15 +1173,15 @@ class RoundModes(LoopTestCase):
 class Budget(LoopTestCase):
     def test_round_over_weekly_cap_is_refused_before_improver(self):
         """
-        With $45 spent this week, a screened round with a $10 exam budget would
+        With $45 spent this week, a screened round with a $30 exam budget would
         pass the $50 weekly cap, so it is refused before the improver runs.
         """
         # GIVEN $45 in the ledger from 2 days ago, and an improver that leaves a marker
         self.r.ledger((2, 45.0))
         marker = self.r.tmp / "improver-ran"
         imp = self.r.script("imp.sh", f"touch {marker}\n")
-        # WHEN a round with --budget-usd 10 starts
-        p = self.r.round("--budget-usd", "10", improver=imp)
+        # WHEN a round with --budget-usd 30 starts
+        p = self.r.round("--budget-usd", "30", improver=imp)
         # THEN it exits 2, the improver never ran, nothing was examined or logged
         self.assertEqual(p.returncode, 2)
         self.assertIn("weekly cap", p.stderr)
@@ -1215,8 +1215,8 @@ class Budget(LoopTestCase):
         """Ledger rows older than 7 days are outside the window."""
         # GIVEN $45 spent 8 days ago
         self.r.ledger((8, 45.0))
-        # WHEN a round with --budget-usd 10 starts
-        p = self.r.round("--budget-usd", "10")
+        # WHEN a round with --budget-usd 30 starts
+        p = self.r.round("--budget-usd", "30")
         # THEN it runs
         self.assertEqual(p.returncode, 0, p.stderr)
         self.assertEqual(self.r.history()[0]["outcome"], "queued")
@@ -1239,6 +1239,45 @@ class Budget(LoopTestCase):
         # WHEN summed
         # THEN only the first two count
         self.assertEqual(loop.week_spent(rows, now), 7)
+
+    def test_screened_round_below_two_first_try_estimates_is_refused_before_improver(self):
+        """
+        With no reusable main run, the screen splits --budget-usd between main's run and the candidate's;
+        a half under run_exam's first-try estimate would start nothing and crash later in compare.py,
+        so the round dies before the improver spends anything, naming the minimum.
+        """
+        # GIVEN no main screen run and an improver that leaves a marker
+        marker = self.r.tmp / "improver-ran"
+        imp = self.r.script("imp.sh", f"touch {marker}\n")
+        # WHEN a round with --budget-usd 25 starts
+        p = self.r.round("--budget-usd", "25", improver=imp)
+        # THEN it exits 2 naming --budget-usd 30, the improver never ran, nothing was examined or logged
+        self.assertEqual(p.returncode, 2, p.stdout + p.stderr)
+        self.assertIn("--budget-usd 30", p.stderr)
+        self.assertFalse(marker.exists())
+        self.assertEqual((self.r.exam_calls(), self.r.history()), ([], []))
+
+    def test_screened_round_reusing_main_run_needs_one_first_try_estimate(self):
+        """With a reusable main run the candidate gets the whole budget: $15 runs, $14 is refused naming 15."""
+        # GIVEN a booked main screen run at base_sha
+        self.r.base_run()
+        # WHEN a round with --budget-usd 14 starts / THEN it is refused naming --budget-usd 15
+        p = self.r.round("--budget-usd", "14")
+        self.assertEqual(p.returncode, 2, p.stdout + p.stderr)
+        self.assertIn("--budget-usd 15", p.stderr)
+        self.assertEqual(self.r.exam_calls(), [])
+        # WHEN a round with --budget-usd 15 starts / THEN it runs the candidate only
+        p = self.r.round("--budget-usd", "15")
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertEqual([c[c.index("--kind") + 1] for c in self.r.exam_calls()], ["candidate"])
+
+    def test_first_try_estimate_matches_run_exam(self):
+        """loop.py's copy of the first-try estimate is run_exam.py's, so the up-front check and the run agree."""
+        # GIVEN run_exam imported from exam/
+        sys.path.insert(0, str(LOOP_DIR / "exam"))
+        import run_exam
+        # WHEN both constants are read / THEN they are equal
+        self.assertEqual(loop.FIRST_ESTIMATE_USD, run_exam.FIRST_ESTIMATE_USD)
 
 
 class SyncAndMonthly(LoopTestCase):
@@ -1315,7 +1354,7 @@ class SyncAndMonthly(LoopTestCase):
         """If `gh pr edit` fails, monthly still examines every queued round once, records them, empties the queue, exits 1."""
         # GIVEN two queued rounds, and gh failing on pr edit
         self.assertEqual(self.r.round().returncode, 0)
-        self.assertEqual(self.r.round("--budget-usd", "10").returncode, 0)
+        self.assertEqual(self.r.round("--budget-usd", "30").returncode, 0)
         self.r.exam_log.unlink()
         # WHEN monthly runs
         p = self.r.loop("monthly", "--budget-usd", "20", env={"FAKE_GH_FAIL_EDIT": "1"})
@@ -1617,6 +1656,19 @@ class ExamPR(LoopTestCase):
         self.assertEqual([c for c in self.r.gh_calls() if c["args"][:2] == ["pr", "edit"]], [])
         self.assertEqual(self.r.exam_calls(), [])
 
+    def test_exam_budget_below_two_first_try_estimates_is_refused_before_any_run(self):
+        """With no reusable main run, --budget-usd 25 gives each run $12.50 < $15: refused naming 30, nothing spent."""
+        # GIVEN a PR changing a reviewer skill and no main screen run
+        head = self.pr_head({self.REVIEWER: BASE_FILES[self.REVIEWER].replace("every", "each")})
+        # WHEN examined with --budget-usd 25
+        p = self.exam(head, "--budget-usd", "25")
+        # THEN it exits 2 naming --budget-usd 30, with no exam run, PR edit or spend
+        self.assertEqual(p.returncode, 2, p.stdout + p.stderr)
+        self.assertIn("--budget-usd 30", p.stderr)
+        self.assertEqual(self.r.exam_calls(), [])
+        self.assertEqual([c for c in self.r.gh_calls() if c["args"][:2] == ["pr", "edit"]], [])
+        self.assertFalse((self.r.home / "spend.jsonl").exists())
+
     def test_exam_screens_the_pr_against_main_and_writes_the_scores_block(self):
         """
         A PR that changes what /work loads is screened like a loop candidate: main's run, then the PR's head
@@ -1626,7 +1678,7 @@ class ExamPR(LoopTestCase):
         # GIVEN a PR rewriting a reviewer line (the gate guard flags it), on current main
         head = self.pr_head({self.REVIEWER: BASE_FILES[self.REVIEWER].replace("every", "each")})
         # WHEN examined
-        p = self.exam(head, "--budget-usd", "20")
+        p = self.exam(head, "--budget-usd", "30")
         # THEN main and the PR head were run, the candidate with early stop against main's run
         self.assertEqual(p.returncode, 0, p.stderr)
         calls = self.r.exam_calls()

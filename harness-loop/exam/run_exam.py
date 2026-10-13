@@ -203,8 +203,12 @@ def new_run_dir(runs, base):
             n += 1
 
 
+def harbor_prefix():
+    return shlex.split(os.environ.get("EXAM_HARBOR", DEFAULT_HARBOR))
+
+
 def harbor_cmd(args, task, agent, jobs_dir, job_name, sha, run_id):
-    cmd = shlex.split(os.environ.get("EXAM_HARBOR", DEFAULT_HARBOR))
+    cmd = harbor_prefix()
     cmd += ["-p", task["task_dir"], "-e", args.env, "-o", str(jobs_dir), "--job-name", job_name,
             "-y", "-q", "--delete", *resource_overrides(task["task_dir"], *args.sandbox_cap)]
     if agent != "workflow":
@@ -449,6 +453,9 @@ def main(argv=None):
     ap.add_argument("--addon")
     ap.add_argument("--early-stop-vs", help="sealed baseline run: stop once the screen can no longer pass")
     args = ap.parse_args(argv)
+    if not shutil.which(harbor_prefix()[0]):  # else every try errors and is booked at max_budget_usd
+        sys.exit(f"run_exam: harbor not found ({harbor_prefix()[0]}): create harness-loop/.venv "
+                 "or set EXAM_HARBOR")
     if args.early_stop_vs and (not args.screen or args.agent != "workflow"):
         sys.exit("run_exam: --early-stop-vs needs --screen and --agent workflow")
     if args.addon:
@@ -468,7 +475,10 @@ def main(argv=None):
     args.concurrency = args.concurrency or auto
 
     sha = git(AW_ROOT, "rev-parse", "--verify", f"{args.harness}^{{commit}}")
-    data = manifest.load(args.tasks, require_cache=True)
+    try:
+        data = manifest.load(args.tasks, require_cache=True)
+    except ValueError as e:
+        sys.exit(f"run_exam: {e}")
     tasks = [t for t in data["tasks"] if t["screen"] or not args.screen]
     if not tasks:
         sys.exit(f"run_exam: no {'screen ' if args.screen else ''}tasks in {args.tasks}")

@@ -102,6 +102,7 @@ IMPROVER_MAX_USD = 10.0
 IMPROVER_TIMEOUT_S = 3600
 PROJECT_CHECK_MAX_USD = 1.0  # project_check.py's --max-budget-usd; booked when a call's cost is unknown
 DEFAULT_EXAM_BUDGET_USD = 30.0
+FIRST_ESTIMATE_USD = 15.0  # exam/run_exam.py FIRST_ESTIMATE_USD (a test pins they match)
 # ponytail: improver 10 + exam 30 + side 10 = the weekly 50; a real side check (5 tasks x 2 runs)
 # costs more, so raise it with the weekly cap.
 DEFAULT_SIDECHECK_BUDGET_USD = 10.0
@@ -738,6 +739,15 @@ def early_stop_line(run):
     return [f"early stop: {why}"] if why else []
 
 
+def check_screen_budget(budget, base_run):
+    """Die unless screen_against_main's per-run budget covers run_exam's first-try estimate (else nothing
+    starts and compare.py crashes on the empty run)."""
+    need = FIRST_ESTIMATE_USD * (1 if base_run else 2)
+    if budget < need:
+        die(f"--budget-usd {budget:g} is too small: pass at least --budget-usd {need:g} (each screen run, "
+            f"{'the candidate' if base_run else 'main and the candidate'}, needs ${FIRST_ESTIMATE_USD:g} to start)")
+
+
 def screen_against_main(base_sha, cand, manifest, budget, round_n, base_run=None, after_baseline=None,
                         after_candidate=None):
     """Screen cand against main's screen run: base_run (find_base_run's) is reused, or main is run first
@@ -904,6 +914,8 @@ def cmd_round(args):
     base_sha = git("rev-parse", "origin/main").strip()
     manifest = Path(args.tasks).resolve()
     base_run = None if args.no_screen else find_base_run(base_sha, manifest)
+    if not args.no_screen:
+        check_screen_budget(args.budget_usd, base_run)
     exam_budget = 0.0 if args.no_screen else args.budget_usd
     if args.sidecheck and not args.no_screen:
         exam_budget += args.sidecheck_budget_usd
@@ -1208,10 +1220,11 @@ def exam_restacked(args, main_sha, head, cand, post):
         return
     if not on_bedrock(os.environ):
         die("the exam runs on Bedrock only: set CLAUDE_CODE_USE_BEDROCK=1 and AWS_ACCESS_KEY_ID")
-    check_budget(args.budget_usd, "the exam")
     n, manifest = f"pr-{args.pr}", Path(args.tasks).resolve()
-    base_run, cand_run, stop, stats = screen_against_main(main_sha, cand, manifest, args.budget_usd, n,
-                                                          find_base_run(main_sha, manifest))
+    base_run = find_base_run(main_sha, manifest)
+    check_screen_budget(args.budget_usd, base_run)
+    check_budget(args.budget_usd, "the exam")
+    base_run, cand_run, stop, stats = screen_against_main(main_sha, cand, manifest, args.budget_usd, n, base_run)
     if stop:
         die(stop, code=1)
     post(score_line("screen", stats, main_sha, cand, tries_of(cand_run), f"screen={stats['screen']}"),
