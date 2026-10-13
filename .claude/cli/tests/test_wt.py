@@ -139,10 +139,11 @@ class New(WtCase):
         run(["git", "worktree", "add", "-q", "-b", "other", str(self.path), "origin/main"], self.p)
         # WHEN wt new targets that path
         r = self.wt("new", "42", "add-user-login")
-        # THEN refused, with a fix
+        # THEN refused, with a fix, and no worktree added
         self.assertEqual(r.returncode, 2)
-        self.assertIn("other", r.stderr)
+        self.assertIn("is on branch other", r.stderr)
         self.assertIn("example:", r.stderr)
+        self.assertEqual(len(self.worktree_paths()), 2)
 
     def test_outside_a_repo_exits_3_asking_for_repo(self):
         """Sessions often start in a non-git parent dir: no repo found is exit 3 naming --repo."""
@@ -173,6 +174,26 @@ class New(WtCase):
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertEqual(out["branch"], "review-me")
         self.assertEqual(run(["git", "branch", "--show-current"], out["path"]).stdout.strip(), "review-me")
+
+    def test_existing_remote_ref_gets_a_local_tracking_branch_and_reruns(self):
+        """--existing origin/<b> checks out local <b> tracking it (not a detached HEAD), so a rerun is `exists:`.
+
+        R4: recording origin/<b> as the branch made the identical rerun exit 2.
+        """
+        # GIVEN a branch that exists only on origin
+        run(["git", "push", "-q", "origin", "main:review-me"], self.p)
+        run(["git", "fetch", "-q", "origin"], self.p)
+        # WHEN a worktree is made for origin/review-me, twice
+        r = self.wt("new", "7", "review", "--existing", "origin/review-me", "--json")
+        again = self.wt("new", "7", "review", "--existing", "origin/review-me")
+        # THEN it sits on local review-me tracking origin, and the rerun says exists
+        self.assertEqual(r.returncode, 0, r.stderr)
+        path = json.loads(r.stdout)["path"]
+        self.assertEqual(json.loads(r.stdout)["branch"], "review-me")
+        self.assertEqual(run(["git", "branch", "--show-current"], path).stdout.strip(), "review-me")
+        self.assertEqual(run(["git", "rev-parse", "--abbrev-ref", "review-me@{upstream}"], self.p).stdout.strip(),
+                         "origin/review-me")
+        self.assertEqual((again.returncode, again.stdout), (0, f"exists: {path}\n"))
 
     def test_dry_run_creates_nothing(self):
         """R5: --dry-run says what it would create and writes nothing."""
@@ -214,16 +235,29 @@ class List(WtCase):
         self.assertIsInstance(row["size_kb"], int)
         self.assertIn(str(self.p), rows)
 
-    def test_bead_id_parse_handles_prefixed_and_dotted_ids(self):
-        """The bead id is everything up to the first dash-word holding a digit, so `<prefix>-<hash>.<n>` survives."""
-        # GIVEN branch names in the coordinator's shape
-        cases = {"feature/bd-42-add-user-login": "42",
+    def test_bead_id_parse_strips_the_prefix_then_takes_one_token(self):
+        """The id is [<prefix>-]<token>[.n...]: all-letter hash ids and dotted child ids survive after the prefix.
+
+        Taking words up to the first digit turned `proj-abcde-fix-thing` into `proj`, the wrong bead.
+        """
+        # GIVEN the issue prefix `my-proj` and branch names in the coordinator's shape
+        cases = {"feature/bd-my-proj-abcde-fix-thing": "my-proj-abcde",
+                 "feature/bd-my-proj-abcde.3.1-fix-thing": "my-proj-abcde.3.1",
+                 "feature/bd-42-add-user-login": "42",
                  "feature/bd-7au.13.2-agent-cli-wt-new": "7au.13.2",
-                 "feature/bd-agent-workflow-7au.13.2-agent-cli": "agent-workflow-7au.13.2",
-                 "main": None, None: None}
-        # WHEN each is parsed  THEN the id comes out
+                 "feature/bd-other-abcde-fix": None, "main": None, None: None}
+        # WHEN each is parsed  THEN the id comes out, or None when unsure
         for branch, want in cases.items():
-            self.assertEqual(wt.bead_of(branch), want, branch)
+            self.assertEqual(wt.bead_of(branch, "my-proj"), want, branch)
+
+    def test_bead_prefix_comes_from_beads_config_else_the_dir_name(self):
+        """The prefix is .beads/config.yaml `issue-prefix`; without one, the main checkout's dir name."""
+        # GIVEN the project with no beads config, then with one
+        before = wt.bead_prefix(self.p)
+        (self.p / ".beads").mkdir()
+        (self.p / ".beads/config.yaml").write_text('# issue-prefix: "x"\nissue-prefix: "my-proj"\n')
+        # WHEN read  THEN dir name first, the config's value after
+        self.assertEqual((before, wt.bead_prefix(self.p)), ("proj", "my-proj"))
 
 
 class Audit(WtCase):
@@ -254,9 +288,41 @@ class Audit(WtCase):
         # THEN each bucket is right, every worktree is listed, sorted by size, and none were removed
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertEqual(got, {str(self.p): "main", paths["squashed"]: "merged", paths["old"]: "stale",
-                               paths["busy"]: "active", paths["empty"]: "merged"})
+                               paths["busy"]: "active", paths["empty"]: "empty"})
         self.assertEqual([x["size_kb"] for x in rows], sorted((x["size_kb"] for x in rows), reverse=True))
         self.assertEqual(self.worktree_paths(), before)
+
+
+    def test_fresh_worktree_is_empty_not_merged(self):
+        """Right after `wt new` (no commits, main not moved) the bucket is `empty`: `merged` would invite deleting
+        a worktree someone just made."""
+        # GIVEN a fresh worktree
+        self.new()
+        # WHEN audited
+        rows = {json.loads(ln)["path"]: json.loads(ln) for ln in self.wt("audit", "--json").stdout.splitlines()}
+        # THEN empty
+        self.assertEqual(rows[str(self.path)]["bucket"], "empty")
+
+    def test_merged_needs_main_to_have_moved_past_the_branch(self):
+        """No commits of its own while origin/main moved on: everything it has is in main, so `merged`."""
+        # GIVEN a fresh worktree, then a new commit on origin/main
+        self.new()
+        self.commit_in(self.p, "m.txt")
+        run(["git", "push", "-q", "origin", "main"], self.p)
+        # WHEN audited
+        rows = {json.loads(ln)["path"]: json.loads(ln) for ln in self.wt("audit", "--json").stdout.splitlines()}
+        # THEN merged
+        self.assertEqual(rows[str(self.path)]["bucket"], "merged")
+
+    def test_worktree_whose_dir_is_gone_is_missing(self):
+        """A worktree git still lists but whose dir was deleted (porcelain `prunable`) is `missing`, not active."""
+        # GIVEN a worktree whose dir was deleted behind git's back
+        self.new()
+        shutil.rmtree(self.path)
+        # WHEN audited
+        rows = {json.loads(ln)["path"]: json.loads(ln) for ln in self.wt("audit", "--json").stdout.splitlines()}
+        # THEN missing
+        self.assertEqual(rows[str(self.path)]["bucket"], "missing")
 
 
 class Rm(WtCase):
@@ -272,6 +338,18 @@ class Rm(WtCase):
         self.assertIn(f"path: {self.path}\n", r.stdout)
         self.assertTrue(self.path.exists())
         self.assertTrue(self.has_branch(self.branch))
+
+    def test_dry_run_says_an_unmerged_branch_would_be_kept(self):
+        """The dry run matches the real run: an unmerged branch without --force is kept, so it must not say delete."""
+        # GIVEN a clean worktree whose branch has an unmerged commit
+        self.new()
+        self.commit_in(self.path, "a.txt")
+        # WHEN rm dry-runs with and without --force
+        plain = json.loads(self.wt("rm", "--branch", self.branch, "--delete-branch", "--json").stdout)
+        forced = json.loads(self.wt("rm", "--branch", self.branch, "--delete-branch", "--force", "--json").stdout)
+        # THEN only --force would delete
+        self.assertEqual(plain["branch_deleted"], "would keep (unmerged; needs --force)")
+        self.assertEqual(forced["branch_deleted"], "would delete")
 
     def test_rm_yes_removes_the_worktree_and_keeps_the_branch(self):
         """`wt rm --yes` removes the worktree; the branch stays unless --delete-branch."""
@@ -362,7 +440,10 @@ class HookRule(unittest.TestCase):
         cmds = ['git -C "$MAIN_ROOT" worktree add "$WORKTREE_PATH" -b "$BRANCH" origin/main',
                 "git worktree add ../x -b feat origin/main",
                 "cd repo && git worktree add -B feat ../x origin/main",
-                "git worktree add -b feat ../x"]
+                "git worktree add -b feat ../x",
+                "git worktree add --detach -b x ../p",
+                "git worktree add -bx ../p",
+                "git worktree add -b=x ../p"]
         for c in cmds:
             # WHEN checked
             r = agent_cli(self.p, "hook", "test", "--cmd", c, "--json")

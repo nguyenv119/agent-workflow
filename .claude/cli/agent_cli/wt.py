@@ -15,9 +15,8 @@ from . import core
 from .core import Exit
 
 SAFE = re.compile(r"[A-Za-z0-9._][A-Za-z0-9._-]*")
-# ponytail: the id is everything up to the first dash-word holding a digit (ids like 42, 7au.13.2,
-# <prefix>-7au.13.2); an all-letter hash id yields only its first word.
-BEAD = re.compile(r"feature/bd-((?:[A-Za-z]+-)*?[^-]*\d[^-]*|[^-]+)-")
+TOKEN = re.compile(r"[^-.]+(?:\.\d+)*")
+PREFIX = re.compile(r"""^issue-prefix:\s*["']?([\w.-]+)""", re.M)
 STALE_DAYS = 14
 EX_NEW = "agent-cli wt new 42 add-user-login --base origin/main"
 EX_RM = "agent-cli wt rm --branch feature/bd-42-add-user-login --delete-branch --yes"
@@ -56,9 +55,22 @@ def find(main, path=None, branch=None):
                  if (real and os.path.realpath(w["path"]) == real) or (branch and w["branch"] == branch)), None)
 
 
-def bead_of(branch):
-    m = BEAD.match(branch or "")
-    return m[1] if m else None
+def bead_prefix(main):
+    """The beads issue prefix: .beads/config.yaml `issue-prefix`, else the main checkout's dir name."""
+    f = Path(main) / ".beads/config.yaml"
+    m = PREFIX.search(f.read_text()) if f.is_file() else None
+    return m[1] if m else Path(main).name
+
+
+def bead_of(branch, prefix):
+    """The bead id in feature/bd-<id>-<slug>: [<prefix>-]<token>[.n...]. None when unsure: no bd- branch, or
+    no prefix and an all-letter token (it could be another project's prefix)."""
+    rest = (branch or "")[len("feature/bd-"):] if (branch or "").startswith("feature/bd-") else ""
+    has_prefix = rest.startswith(prefix + "-")
+    m = TOKEN.match(rest[len(prefix) + 1:] if has_prefix else rest)
+    if not m or not (has_prefix or re.search(r"\d", m[0])):
+        return None
+    return f"{prefix}-{m[0]}" if has_prefix else m[0]
 
 
 def dirty(path):
@@ -68,7 +80,7 @@ def dirty(path):
 def info(w, main):
     """A list row: path, branch, bead, dirty, ahead/behind origin/main, size_kb, age_days (last commit)."""
     p = w["path"]
-    row = {"path": p, "branch": w["branch"], "bead": bead_of(w["branch"]), "main": p == str(main)}
+    row = {"path": p, "branch": w["branch"], "bead": bead_of(w["branch"], bead_prefix(main)), "main": p == str(main)}
     if not os.path.isdir(p):
         return dict(row, missing=True, dirty=False, ahead=None, behind=None, size_kb=0, age_days=None)
     counts = git("rev-list", "--left-right", "--count", "origin/main...HEAD", cwd=p, check=False)
@@ -79,13 +91,19 @@ def info(w, main):
                 age_days=round((time.time() - int(ct)) / 86400, 1) if ct else None)
 
 
+def local_branch(main, ref):
+    """ref, or for a ref found only under refs/remotes/ (origin/<b>), the local <b> that tracks it."""
+    has = lambda r: git("show-ref", "--verify", "-q", r, cwd=main, check=False) is not None  # noqa: E731
+    return ref if has(f"refs/heads/{ref}") or not has(f"refs/remotes/{ref}") else ref.split("/", 1)[-1]
+
+
 def wt_new(a):
     for name, val in (("bead-id", a.bead_id), ("slug", a.slug)):
         if not SAFE.fullmatch(val):
             core.die(Exit.REFUSED, f"{name} {val!r}: use letters, digits, '.', '_' and '-' only", EX_NEW)
     start = time.time()
     main = main_root(a.repo)
-    branch = a.existing or f"feature/bd-{a.bead_id}-{a.slug}"
+    branch = local_branch(main, a.existing) if a.existing else f"feature/bd-{a.bead_id}-{a.slug}"
     path = main.parent / f"{main.name}-bd-{a.bead_id}-{a.slug}"
     seam = core.find_seam("wt-setup")
     if path.exists():
@@ -104,7 +122,13 @@ def wt_new(a):
         return Exit.OK
     else:
         git("fetch", "origin", "-q", cwd=main)
-        git("worktree", "add", "-q", str(path), *([a.existing] if a.existing else ["-b", branch, a.base]), cwd=main)
+        if a.existing:
+            branch = local_branch(main, a.existing)
+        track = a.existing and branch != a.existing and git("show-ref", "--verify", "-q", f"refs/heads/{branch}",
+                                                            cwd=main, check=False) is None
+        add = (["--track", "-b", branch, str(path), a.existing] if track else [str(path), branch] if a.existing
+               else ["-b", branch, str(path), a.base])
+        git("worktree", "add", "-q", *add, cwd=main)
         created = True
     if seam and not a.dry_run:
         try:  # --json keeps stdout one object: the seam's output streams to stderr instead
@@ -147,7 +171,11 @@ def merged_pr(branch, main):
 def bucket(row, main):
     if row["main"]:
         return "main"
-    if (row["ahead"] == 0 and not row["dirty"]) or merged_pr(row["branch"], main):
+    if row.get("missing"):
+        return "missing"
+    if row["ahead"] == 0 and row["behind"] == 0 and not row["dirty"]:
+        return "empty"
+    if (row["ahead"] == 0 and row["behind"] and not row["dirty"]) or merged_pr(row["branch"], main):
         return "merged"
     if not row["dirty"] and row["age_days"] is not None and row["age_days"] >= STALE_DAYS:
         return "stale"
@@ -162,6 +190,12 @@ def wt_audit(a):
     for row in rows:
         row["bucket"] = bucket(row, main)
         print(json.dumps(row) if a.json else f"{row['bucket']:7} {row['size_kb']:>9}K  {row['path']}  {row['branch']}")
+
+
+def deletable(main, b):
+    """Would `git branch -d b` succeed: b merged into HEAD or into its upstream."""
+    return any(git("merge-base", "--is-ancestor", b, t, cwd=main, check=False) is not None
+               for t in ("HEAD", f"{b}@{{upstream}}"))
 
 
 def wt_rm(a):
@@ -179,7 +213,8 @@ def wt_rm(a):
     out = {"path": w and w["path"], "branch": branch,
            "worktree": ("would remove" if dry else "removed") if w else "already done",
            "branch_deleted": "kept" if not a.delete_branch else "absent" if not has_branch
-           else "would delete" if dry else "deleted"}
+           else "deleted" if not dry else "would delete" if a.force or deletable(main, branch)
+           else "would keep (unmerged; needs --force)"}
     if not dry and w:
         git("worktree", "remove", *(["--force"] if a.force else []), w["path"], cwd=main, example=EX_RM)
     if not dry and has_branch and git("branch", "-d", branch, cwd=main, check=False) is None:
@@ -207,7 +242,7 @@ def register(sub):
     p_list = core.subcommand(ws, "list", "each worktree: branch, bead, dirty, ahead/behind origin/main, size, age",
                              ["agent-cli wt list", "agent-cli wt list --json"])
     p_list.set_defaults(func=wt_list)
-    p_audit = core.subcommand(ws, "audit", "read-only prune audit: biggest first, bucket merged|stale|active",
+    p_audit = core.subcommand(ws, "audit", "read-only prune audit: biggest first, bucket merged|empty|stale|active|missing",
                               ["agent-cli wt audit", "agent-cli wt audit --json"])
     p_audit.set_defaults(func=wt_audit)
     p_rm = core.subcommand(ws, "rm", "remove a worktree (dry run unless --yes); never touches the remote branch",
