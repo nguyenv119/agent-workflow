@@ -47,7 +47,7 @@ spawned implementer, exactly as described below — only the blow-by-blow
 description of that process disappears from chat. The findings themselves
 aren't hidden; they're in the bead history and the final PR, same as always.
 Autonomous Loop Mode already follows this — its per-iteration detail goes to
-the loop log file, not chat; only SUCCESS/BLOCKED surface at the end.
+the loop log file (`.claude/loop-<epic-id>.tsv`), not chat; only SUCCESS/BLOCKED surface at the end.
 
 ## Phase 1: Triage
 
@@ -536,7 +536,7 @@ Then load `.claude/skills/win-condition/SKILL.md`.
 
 **The eval lives out-of-tree** at the outer (un-versioned) `.claude/loop-evals/<epic-id>/` — never in the repo. If it doesn't exist yet, authoring it is the loop's first action (per win-condition R2). It runs locally as you (Claude Code), so it may reach the dev system directly (e.g. the dev database, the preview deploy, a dev job queue) to fetch / parse / seed / insert / update / delete.
 
-**Confirm guardrails once** before starting: max-iterations N, **per-bead max attempts (default 3)**, the stagnation thresholds (from the win-condition), and that merges stay manual. Then run the **chain-base preflight** (win-condition skill): `git fetch origin && git merge-base --is-ancestor origin/main <chain-base>` must be true — if not, merge main into the base first (per the repo CLAUDE.md "Branch Hygiene") and confirm the base's own PR is green before bead 1. Early warning: a schema-diff tool offering an *unrelated* drop means the branch is behind production — stop and reconcile the base, never strip it and continue. Initialize a loop log (e.g. `.claude/loop-<epic-id>.log`), one line per iteration.
+**Confirm guardrails once** before starting: max-iterations N, **per-bead max attempts (default 3)**, the stagnation thresholds (from the win-condition), and that merges stay manual. Then run the **chain-base preflight** (win-condition skill): `git fetch origin && git merge-base --is-ancestor origin/main <chain-base>` must be true — if not, merge main into the base first (per the repo CLAUDE.md "Branch Hygiene") and confirm the base's own PR is green before bead 1. Early warning: a schema-diff tool offering an *unrelated* drop means the branch is behind production — stop and reconcile the base, never strip it and continue. Initialize the loop log: `agent-cli log append .claude/loop-<epic-id>.tsv --phase start --action init --result ok` (one escaped TSV row per step; `agent-cli log show <file> --last 5` reads it back).
 
 **Session liveness (overnight runs):** `ScheduleWakeup` is a session-local timer — if the idle session gets reaped, the pending wakeup dies with it, silently (lived failure: 7.5h gap, zero work). Never end a turn idle-waiting on a timer. Keep ≥1 background task in flight at all times (implementer, test-runner, CI poller via Bash `run_in_background`) so task-completion re-invokes you — this is what kept an 11h/37-iteration run alive. For any wait on an external state, run `agent-cli wait --until '<status cmd>' --every 60 --cap <cap>` in the background instead of a sleep loop; parallel lanes sharing one resource wrap the work in one background script: `bash -c 'agent-cli lock acquire <name> --pid $$ --wait 30m || exit $?; <work>; agent-cli lock release <name> --pid $$'`. Genuinely idle multi-hour waits belong in a cloud scheduled routine, not this session. Append to the loop log every iteration — it doubles as the external heartbeat for any dead-man watchdog you run.
 
@@ -553,7 +553,8 @@ Then load `.claude/skills/win-condition/SKILL.md`.
    - **Red →** diagnose the root cause *before touching the next bead* (see "CI failure triage" below); fix on this branch — or at the chain base if the cause is upstream — push, and wait again. Cap **3 attempts per bead**, then mark the bead BLOCKED and **stop the loop**. Never stack more branches on a red base.
    - **Two acceptable shapes**: fully serial (simplest; ~10–15 min wall time per bead), or overlapped — bead N+1's implementer may start in its own worktree, but its branch is **not pushed and its PR not opened** until bead N is green, so a base fix can be merged forward before the child exists.
 4. **Verify** — run `agent-cli eval run .claude/loop-evals/<epic-id>`; exit 0 = WIN (it enforces exit 0 AND the sentinel last line, printed by the eval, not the implementer). Absence of errors alone is never success.
-5. **Record** — append to the loop log: action, result, verification output (exit code + key line), files touched, the try folder(s) `save_try.py` printed, and approximate token cost (track cost-per-accepted-change; if the accept rate craters, stop and re-tune rather than burning tokens).
+5. **Record** — append to the loop log: action, result, verification output (exit code + key line), files touched, the try folder(s) `save_try.py` printed, and approximate token cost (track cost-per-accepted-change; if the accept rate craters, stop and re-tune rather than burning tokens). One row per iteration:
+   `agent-cli log append .claude/loop-<epic-id>.tsv --phase iter-<n> --action "<action>" --result <pass|fail|blocked> --evidence "<path or key line>" --verdict <WIN|NO|BLOCKED> --cost-usd <x> --note "<diagnosis; files touched; try folder>"`
 6. **Stop checks** — exit the loop if:
    - win-condition met → **SUCCESS**
    - max-iterations reached → **BLOCKED**

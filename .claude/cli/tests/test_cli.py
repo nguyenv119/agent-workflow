@@ -11,7 +11,7 @@ from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from unittest import mock
 
-from helpers import CLAUDE, GIT, agent_cli, make_project, run
+from helpers import CLAUDE, GIT, TmpCase, agent_cli, make_project, run
 
 sys.path.insert(0, str(CLAUDE / "cli"))
 from agent_cli import core, main  # noqa: E402
@@ -21,12 +21,6 @@ LEAVES = [[], ["hook"], ["hook", "pretooluse"], ["hook", "test"], ["hook", "rule
           ["wt"], ["wt", "new"], ["wt", "list"], ["wt", "audit"], ["wt", "rm"],
           ["wait"], ["lock"], ["lock", "acquire"], ["lock", "release"], ["lock", "status"],
           ["pr"], ["pr", "status"], ["pr", "wait"], ["pr", "land"]]
-
-
-class TmpCase(unittest.TestCase):
-    def setUp(self):
-        self.tmp = Path(os.path.realpath(tempfile.mkdtemp(prefix="agent-cli-")))
-        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
 
 
 class Help(TmpCase):
@@ -83,7 +77,7 @@ class Help(TmpCase):
         names = list(next(a for a in root._actions if isinstance(a, argparse._SubParsersAction)).choices)
         # THEN every module registered exactly the commands the root lists, in list order
         self.assertTrue(all(callable(getattr(m, "register", None)) for m in main.COMMANDS))
-        self.assertEqual(names, ["hook", "eval", "self", "lib", "wt", "wait", "lock", "pr"])
+        self.assertEqual(names, ["hook", "eval", "self", "lib", "wt", "wait", "lock", "pr", "log"])
 
     def test_group_prints_its_help_when_called_bare(self):
         """core.group: a command group whose bare call prints its own help (R1), with a subparser set."""

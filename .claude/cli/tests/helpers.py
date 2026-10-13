@@ -8,6 +8,8 @@ import os
 import shutil
 import subprocess
 import sys
+import tempfile
+import unittest
 from pathlib import Path
 
 CLAUDE = Path(__file__).resolve().parents[2]  # this checkout's .claude/
@@ -16,6 +18,14 @@ GIT = ["git", "-c", "user.name=test", "-c", "user.email=test@example.com",
        "-c", "commit.gpgsign=false", "-c", "init.defaultBranch=main"]
 # Env vars that change agent-cli behaviour; tests start from none of them.
 CLEAN = ("CLAUDE_PROJECT_DIR", "AGENT_CLI_HOOKS", "AGENT_CLI_PATH_OFF")
+
+
+class TmpCase(unittest.TestCase):
+    """A test case with self.tmp, a fresh temp dir (symlinks resolved) removed after each test."""
+
+    def setUp(self):
+        self.tmp = Path(os.path.realpath(tempfile.mkdtemp(prefix="agent-cli-")))
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
 
 
 # REVIEW: mocking core dependency (time). A wait loop's interval and cap run in minutes; this clock lets a

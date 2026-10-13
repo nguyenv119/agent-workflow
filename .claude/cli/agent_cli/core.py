@@ -1,6 +1,6 @@
 """Shared helpers for agent-cli and the project CLIs that import it (Python 3.9+, stdlib only).
 
-Stable API: build_parser, Exit, emit, die, parse_duration, find_seam (plus duration, git, child_env,
+Stable API: build_parser, Exit, emit, out, die, parse_duration, find_seam (plus duration, git, child_env,
 find_project_file, run_seam, subcommand, group).
 """
 import argparse
@@ -40,6 +40,14 @@ def emit(obj, json_mode):
     else:
         for k, v in obj.items():
             print(f"{k}: {v}")
+
+
+def out(a, row, text):
+    """R7 for one result: `row` as JSON with --json (a.json), else the one-line `text`."""
+    if a.json:
+        emit(row, True)
+    else:
+        print(text)
 
 
 def parse_duration(text):

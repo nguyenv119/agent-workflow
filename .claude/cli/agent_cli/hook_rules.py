@@ -72,4 +72,8 @@ def builtin(cmd):
          "unless": pr_poll_re(cmd),  # a PR poll loop is hand-pr-poll's deny, not this warn
          "message": "Waiting on something? agent-cli wait --until '<status cmd>' --every 60 --cap 30m "
                     "(run_in_background) stops on success, passes through refused/blocked, exits 4 on timeout."},
+        {"id": "hand-loop-log", "mode": "warn", "requires": "agent-cli", "on": "raw", "needs": r"\bloop-",
+         "match": cmd + r"(?:echo|printf)\b[^|;&\n]*>>\s*[\"']?\S*\bloop-[^\s\"'/]*\.(?:log|txt)\b",
+         "message": "Loop logs: agent-cli log append .claude/loop-<epic-id>.tsv --phase ... --action ... --result ... "
+                    "(one TSV row, escaped, safe under concurrency)."},
     ]

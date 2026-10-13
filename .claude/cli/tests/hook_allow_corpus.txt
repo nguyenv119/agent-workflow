@@ -59,6 +59,15 @@ while read l; do echo $l; done; sleep 30
 echo "while x; do sleep 60; done"
 until test -f /tmp/done; do sleep 30; done  # expect-warn: hand-sleep-poll
 while ! test -f done; do echo wait; sleep 10; done  # expect-warn: hand-sleep-poll
+echo hi >> notes.txt
+echo hi >> notes/loopback.txt
+cat loop.log
+tail -n 20 .claude/loop-x.log
+grep -c fail .claude/loop-x.log
+echo "start" > .claude/loop-x.log
+agent-cli log append .claude/loop-x.tsv --phase start --action init --result ok
+git commit -m "docs: stop using echo >> .claude/loop-x.log"
+echo "iter 3: pass" >> .claude/loop-demo.log  # expect-warn: hand-loop-log
 ---
 git commit -m "$(cat <<'EOF'
 fix(eval): print the sentinel from the lib
