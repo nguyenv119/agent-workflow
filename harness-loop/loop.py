@@ -103,9 +103,10 @@ IMPROVER_TIMEOUT_S = 3600
 PROJECT_CHECK_MAX_USD = 1.0  # project_check.py's --max-budget-usd; booked when a call's cost is unknown
 DEFAULT_EXAM_BUDGET_USD = 30.0
 FIRST_ESTIMATE_USD = 15.0  # exam/run_exam.py FIRST_ESTIMATE_USD (a test pins they match)
-# ponytail: improver 10 + exam 30 + side 10 = the weekly 50; a real side check (5 tasks x 2 runs)
-# costs more, so raise it with the weekly cap.
-DEFAULT_SIDECHECK_BUDGET_USD = 10.0
+# Two side runs at FIRST_ESTIMATE_USD each. A default round with --sidecheck books improver 10 +
+# project check 1 + exam 30 + side 30 = 71 > the weekly 50, so check_budget refuses it until the
+# weekly cap is raised or smaller budgets are passed (reusing main's screen run, --budget-usd 15-19).
+DEFAULT_SIDECHECK_BUDGET_USD = 30.0
 SIDE_HOME = "loop-home"  # side runs live next to the private manifest: <manifest dir>/loop-home/runs
 
 SCORES_OPEN = "<!-- harness-loop:scores v1 -->"
@@ -739,12 +740,12 @@ def early_stop_line(run):
     return [f"early stop: {why}"] if why else []
 
 
-def check_screen_budget(budget, base_run):
-    """Die unless screen_against_main's per-run budget covers run_exam's first-try estimate (else nothing
-    starts and compare.py crashes on the empty run)."""
+def check_screen_budget(budget, base_run, flag="--budget-usd"):
+    """Die unless `budget`, split over main's run (skipped when base_run is reused) and the candidate's, gives
+    each run run_exam's first-try estimate (else nothing starts and compare.py crashes on the empty run)."""
     need = FIRST_ESTIMATE_USD * (1 if base_run else 2)
     if budget < need:
-        die(f"--budget-usd {budget:g} is too small: pass at least --budget-usd {need:g} (each screen run, "
+        die(f"{flag} {budget:g} is too small: pass at least {flag} {need:g} (each run, "
             f"{'the candidate' if base_run else 'main and the candidate'}, needs ${FIRST_ESTIMATE_USD:g} to start)")
 
 
@@ -916,6 +917,8 @@ def cmd_round(args):
     base_run = None if args.no_screen else find_base_run(base_sha, manifest)
     if not args.no_screen:
         check_screen_budget(args.budget_usd, base_run)
+        if args.sidecheck:  # the side check always runs main and the candidate
+            check_screen_budget(args.sidecheck_budget_usd, None, "--sidecheck-budget-usd")
     exam_budget = 0.0 if args.no_screen else args.budget_usd
     if args.sidecheck and not args.no_screen:
         exam_budget += args.sidecheck_budget_usd

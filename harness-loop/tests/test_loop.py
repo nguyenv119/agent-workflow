@@ -7,6 +7,7 @@ with try folders, then runs loop.py as a subprocess with a stub improver
 (LOOP_RUN_EXAM) and a fake `gh` on PATH. Nothing calls a model or a sandbox.
 """
 import datetime
+import importlib.util
 import json
 import os
 import shutil
@@ -389,8 +390,12 @@ SPEC_SIDE_FAIL = {**SPEC_PASS, "side-baseline": SIDE, "side-candidate": {**SIDE,
 
 
 class RoundSideCheck(LoopTestCase):
-    def side_round(self, spec, *extra, env=None):
-        """A stub round with a $10 side check on a private set named `secretset`."""
+    def side_round(self, spec, *extra, env=None, improver=STUB):
+        """
+        A stub round with a $30 side check on a private set named `secretset`. It reuses a booked main screen
+        run and screens with --budget-usd 20, since 30 + 30 would pass the $50 weekly cap.
+        """
+        self.r.base_run(env={"FAKE_EXAM_SPEC": json.dumps(spec)})
         self.addon = self.r.tmp / "addon"
         self.addon.mkdir(exist_ok=True)
         self.private = self.r.tmp / "private"
@@ -398,7 +403,7 @@ class RoundSideCheck(LoopTestCase):
         self.side = self.private / "side.json"
         self.side.write_text('{"set": "secretset"}\n')
         return self.r.round("--sidecheck", str(self.side), "--sidecheck-addon", str(self.addon),
-                            "--sidecheck-budget-usd", "10", *extra,
+                            "--budget-usd", "20", "--sidecheck-budget-usd", "30", *extra, improver=improver,
                             env={"FAKE_EXAM_SPEC": json.dumps(spec), **(env or {})})
 
     def test_screen_pass_runs_side_check_with_addon_and_adds_guard_line(self):
@@ -459,12 +464,31 @@ class RoundSideCheck(LoopTestCase):
 
     def test_screen_runs_keep_the_screen_budget(self):
         """The side budget is the side runs' own; it never raises the screen runs' caps."""
-        # GIVEN --budget-usd 30 (default) and a $10 side check
+        # GIVEN --budget-usd 20 with main's screen run reused, and a $30 side check
         # WHEN the round runs
         self.assertEqual(self.side_round(SPEC_SIDE_PASS).returncode, 0)
-        # THEN screen runs get 30/2 each and side runs 10/2 each
+        # THEN the candidate's screen run gets 20 and side runs 30/2 each
         caps = [(("side" if "--addon" in c else "screen"), c[c.index("--budget-usd") + 1]) for c in self.r.exam_calls()]
-        self.assertEqual(caps, [("screen", "15.00"), ("screen", "15.00"), ("side", "5.00"), ("side", "5.00")])
+        self.assertEqual(caps, [("screen", "20.00"), ("side", "15.00"), ("side", "15.00")])
+
+    def test_side_budget_below_two_first_try_estimates_is_refused_before_improver(self):
+        """
+        The side check splits --sidecheck-budget-usd between main's run and the candidate's; at $20 each
+        half is under run_exam's $15 first-try estimate, so neither would start and compare.py would fail
+        after the improver and screen had spent. The round dies first, naming the minimum.
+        """
+        # GIVEN an improver that leaves a marker
+        marker = self.r.tmp / "improver-ran"
+        imp = self.r.script("imp.sh", f"touch {marker}\n")
+        # WHEN a screened round with --sidecheck-budget-usd 20 starts (the base run is booked first)
+        p = self.side_round(SPEC_SIDE_PASS, "--sidecheck-budget-usd", "20", improver=imp)
+        # THEN it exits 2 naming --sidecheck-budget-usd 30; no improver, exam call, history or new spend
+        self.assertEqual(p.returncode, 2, p.stdout + p.stderr)
+        self.assertIn("--sidecheck-budget-usd 30", p.stderr)
+        self.assertFalse(marker.exists())
+        self.assertEqual((self.r.exam_calls(), self.r.history()), ([], []))
+        rows = [json.loads(line) for line in (self.r.home / "spend.jsonl").read_text().splitlines()]
+        self.assertEqual([r["kind"] for r in rows], ["exam-baseline"])
 
     def test_candidate_solving_fewer_side_tasks_opens_draft_and_is_not_queued(self):
         """
@@ -552,8 +576,9 @@ class RoundSideCheck(LoopTestCase):
         addon = self.r.tmp / "addon2"
         (addon / "private").mkdir(parents=True)
         (addon / "private/side.json").write_text('{"set": "secretset"}\n')
+        self.r.base_run()  # reused, so screen 20 + side 30 fits the $50 weekly cap
         args = ("--sidecheck", str(addon / "private/side.json"), "--sidecheck-addon", str(addon),
-                "--sidecheck-budget-usd", "10")
+                "--budget-usd", "20", "--sidecheck-budget-usd", "30")
         spec = {"FAKE_EXAM_SPEC": json.dumps(SPEC_SIDE_PASS)}
         # WHEN the round runs without the ignore line / THEN refused before any round starts
         p = self.r.round(*args, env=spec)
@@ -575,7 +600,7 @@ class RoundSideCheck(LoopTestCase):
         (self.r.tmp / "addon3").mkdir()
         # WHEN the round runs
         p = self.r.round("--sidecheck", str(side), "--sidecheck-addon", str(self.r.tmp / "addon3"),
-                         "--sidecheck-budget-usd", "10", env={"FAKE_EXAM_SPEC": json.dumps(SPEC_SIDE_PASS)})
+                         "--sidecheck-budget-usd", "30", env={"FAKE_EXAM_SPEC": json.dumps(SPEC_SIDE_PASS)})
         # THEN it is refused before any round starts
         self.assertEqual(p.returncode, 2)
         self.assertIn("improver reads", p.stderr)
@@ -1258,7 +1283,10 @@ class Budget(LoopTestCase):
         self.assertEqual((self.r.exam_calls(), self.r.history()), ([], []))
 
     def test_screened_round_reusing_main_run_needs_one_first_try_estimate(self):
-        """With a reusable main run the candidate gets the whole budget: $15 runs, $14 is refused naming 15."""
+        """
+        With a reusable main run the candidate gets the whole budget: $15 runs, $14 is refused naming 15.
+        Requiring 30 here would refuse cheap rounds that would have run.
+        """
         # GIVEN a booked main screen run at base_sha
         self.r.base_run()
         # WHEN a round with --budget-usd 14 starts / THEN it is refused naming --budget-usd 15
@@ -1272,10 +1300,14 @@ class Budget(LoopTestCase):
         self.assertEqual([c[c.index("--kind") + 1] for c in self.r.exam_calls()], ["candidate"])
 
     def test_first_try_estimate_matches_run_exam(self):
-        """loop.py's copy of the first-try estimate is run_exam.py's, so the up-front check and the run agree."""
-        # GIVEN run_exam imported from exam/
-        sys.path.insert(0, str(LOOP_DIR / "exam"))
-        import run_exam
+        """
+        loop.py's copy of the first-try estimate must be run_exam.py's; if one moves alone, the up-front
+        budget check passes a budget under which run_exam starts nothing, or refuses one that would run.
+        """
+        # GIVEN run_exam.py loaded by path, without touching sys.path
+        spec = importlib.util.spec_from_file_location("run_exam", LOOP_DIR / "exam/run_exam.py")
+        run_exam = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(run_exam)
         # WHEN both constants are read / THEN they are equal
         self.assertEqual(loop.FIRST_ESTIMATE_USD, run_exam.FIRST_ESTIMATE_USD)
 
@@ -1657,7 +1689,10 @@ class ExamPR(LoopTestCase):
         self.assertEqual(self.r.exam_calls(), [])
 
     def test_exam_budget_below_two_first_try_estimates_is_refused_before_any_run(self):
-        """With no reusable main run, --budget-usd 25 gives each run $12.50 < $15: refused naming 30, nothing spent."""
+        """
+        With no reusable main run, --budget-usd 25 gives each run $12.50 < $15: refused naming 30, nothing spent.
+        Without the check, neither run starts and compare.py fails after the exam was already booked.
+        """
         # GIVEN a PR changing a reviewer skill and no main screen run
         head = self.pr_head({self.REVIEWER: BASE_FILES[self.REVIEWER].replace("every", "each")})
         # WHEN examined with --budget-usd 25
