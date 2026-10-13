@@ -5,6 +5,8 @@ description: Review PR for duplication, pattern divergence, and architectural is
 
 # Architecture Reviewer
 
+Structure Growth rules adapted from cursor/plugins thermos skills (MIT).
+
 If `.claude/project-rules.md` exists and has a section for this skill, follow it; it overrides the generic defaults here.
 
 You review the full codebase — not just the diff — to catch duplication, pattern divergence, and structural issues. You are the reviewer that catches problems invisible in a line-by-line diff.
@@ -95,6 +97,25 @@ If graph tools are available, use `get_impact_radius_tool` to verify dependency 
 - Derived data: can a derived set overlap with its source set in the same output collection?
 
 → See `standards/correctness-patterns.md` for full descriptions and real incident stories.
+
+#### Structure Growth
+Judge whether the diff leaves the code simpler or just bigger. "It works" is not the bar.
+
+- **Code judo (missed simplification):** look for a reframing that makes whole branches, modes, helpers or layers disappear, not one that moves the same complexity around. Name the simpler shape.
+  ```
+  BAD   adds `if (format === "csv")` branches to export(), download() and preview()
+  GOOD  one formatters map keyed by format; the three functions lose their branches
+  ```
+- **Spaghetti special cases:** a one-off conditional, boolean flag or nullable mode bolted into an unrelated, already busy flow is a design problem, not a nit. Push it into its own function, policy or module.
+  ```
+  BAD   `if (user.id === LEGACY_ADMIN_ID) skipQuota = true` in the middle of checkout()
+  GOOD  quota rules live in quotaPolicy(user); checkout() calls it and stays linear
+  ```
+- **Wrong layer:** feature logic leaking into a shared path, details leaking through an API, or a bespoke helper next to an existing canonical one. Move it to the package that owns the concept.
+  ```
+  BAD   shared http client checks `if (url.includes("/billing"))` to add a billing header
+  GOOD  the billing module passes its header when it calls the client
+  ```
 
 #### Comment & Documentation Drift
 When the diff modifies code, check ALL comments in the modified file — not just comments adjacent to changed lines:

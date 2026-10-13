@@ -362,6 +362,7 @@ SKILL: Read and follow .claude/skills/test-runner/SKILL.md
 WORKTREE: <worktree_path>
 COMMANDS:
 - <quality-gate commands matching the changed code, scoped to the changed package(s) and dependents>
+- python3 .claude/skills/standards/check-file-size.py <base-branch>   # exit 1 = a file crossed 1,000 lines: split it, or give the reason in the PR body
 ```
 
 **Do NOT push if the sub-agent reports FAIL.** Fix locally first (spawn an implementer if the fix is non-trivial; save this attempt per §4c3 first, pass its folder as `PREVIOUS TRY:` and note a new start sha), then re-delegate.
