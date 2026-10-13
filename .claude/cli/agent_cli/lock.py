@@ -175,13 +175,15 @@ def take(name, pid, cap):
 def release(a):
     check_name(a.name, EXAMPLES[2])
     pid = a.pid
+    if pid <= 0:
+        core.die(Exit.REFUSED, f"--pid {pid} is not a process id", ONE_SCRIPT)
     with guard():
         held = read(a.name)
         if not held:
             return out(a, {"status": "already-done", "name": a.name}, f"already done: {a.name} is not held")
         if held["pid"] != pid and not a.force:
             core.die(Exit.REFUSED, f"{a.name} is held by {describe(held)}, not pid {pid}",
-                     f"agent-cli lock release {a.name} --force")
+                     f"agent-cli lock release {a.name} --pid $$ --force")
         if not a.dry_run:
             shutil.rmtree(root() / a.name)
     verb = "would-release" if a.dry_run else "released"

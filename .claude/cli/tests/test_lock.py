@@ -54,6 +54,19 @@ class Lock(unittest.TestCase):
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertTrue(r.stdout.startswith("released: gates"))
         self.assertFalse((self.state / "locks/gates").exists())
+
+    def test_pid_zero_is_refused(self):
+        """--pid 0 is not a process: acquire must not record it and release must not drop a lock whose
+        corrupt owner.json reads as pid 0; both refuse (2) and write nothing."""
+        for verb in ("acquire", "release"):
+            # GIVEN no locks
+            # WHEN acquire or release runs with --pid 0
+            r = self.lock(verb, "gates", "--pid", "0")
+            # THEN refused, and no lock written
+            with self.subTest(verb=verb):
+                self.assertEqual(r.returncode, 2, r.stderr)
+                self.assertIn("--pid 0 is not a process id", r.stderr)
+                self.assertFalse((self.state / "locks/gates").exists())
         self.assertEqual(self.lock("status").stdout, "no locks\n")
 
     def test_same_pid_acquire_is_already_held(self):
@@ -134,7 +147,7 @@ class Lock(unittest.TestCase):
         again = self.lock("release", "gates", "--pid", str(other))
         # THEN refused (2), released, then already done (0)
         self.assertEqual(refused.returncode, 2)
-        self.assertIn("example: agent-cli lock release gates --force", refused.stderr)
+        self.assertIn("example: agent-cli lock release gates --pid $$ --force", refused.stderr)
         self.assertEqual(forced.returncode, 0, forced.stderr)
         self.assertEqual((again.returncode, again.stdout), (0, "already done: gates is not held\n"))
 

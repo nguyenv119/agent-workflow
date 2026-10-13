@@ -4,6 +4,7 @@ import io
 import json
 import os
 import shutil
+import subprocess
 import sys
 import tempfile
 import time
@@ -99,12 +100,13 @@ class Wait(unittest.TestCase):
         self.assertEqual((code, rows[0]["last"]), (0, "final"))
 
     def test_slow_command_is_killed_at_the_cap(self):
-        """A hung status command cannot outlive the cap: real `sleep 30` with --cap 3s exits 4 in about 3s."""
+        """A hung status command cannot outlive the cap: real sleeps with --cap 3s exit 4 in about 3s, and the
+        whole process group dies, including a backgrounded child, so no orphan keeps running."""
         # GIVEN an installed project
         p = make_project(self.tmp / "proj")
-        # WHEN waiting on a command slower than the cap
+        # WHEN waiting on a command slower than the cap (odd durations: pgrep never matches other sleeps)
         t = time.monotonic()
-        r = agent_cli(p, "wait", "--until", "sleep 30", "--every", "5", "--cap", "3s", "--json")
+        r = agent_cli(p, "wait", "--until", "sleep 30.0417 & sleep 31.0417", "--every", "5", "--cap", "3s", "--json")
         took = time.monotonic() - t
         # THEN exit 4 within ~5s; the attempt is marked timed out
         self.assertEqual(r.returncode, 4, r.stderr)
@@ -112,6 +114,8 @@ class Wait(unittest.TestCase):
         rows = [json.loads(ln) for ln in r.stdout.splitlines()]
         self.assertEqual((rows[0]["exit"], rows[0]["timed_out"]), (None, True))
         self.assertEqual(rows[-1]["result"], "timeout")
+        left = subprocess.run(["pgrep", "-f", "sleep 3[01]\\.0417"], capture_output=True, text=True).stdout
+        self.assertEqual(left, "", "a sleep from the timed-out attempt is still running")
 
     def test_every_under_5s_is_refused_with_an_example(self):
         """R3: --every 2 is refused (exit 2) before running anything, with a correct invocation."""
