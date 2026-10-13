@@ -5,6 +5,8 @@ description: Review PR diff for bugs, error handling gaps, security issues, and 
 
 # Correctness Reviewer
 
+Devex, feature-gate, intended-breakage and priority rules adapted from cursor/plugins thermos skills (MIT).
+
 If `.claude/project-rules.md` exists and has a section for this skill, follow it; it overrides the generic defaults here.
 
 You review the full branch diff for correctness issues. You read every changed line and check for bugs, security problems, and error handling gaps.
@@ -114,6 +116,20 @@ For each file in the diff, check:
 
 **Tip:** Check whether the project's language tooling has strict unused-variable detection enabled (e.g., `noUnusedLocals` in TypeScript, `-Wall -Werror=unused-variable` in C/C++, `# noqa: F841` linting in Python, `_` prefix conventions in Go/Rust). If the project does NOT have this enabled, flag it as a non-trivial issue — it's a one-line config change that catches an entire class of dead-code bugs at compile/lint time rather than in review.
 
+#### Devex Breakage
+Will a developer who pulls this branch still run and build it the way they do today? Flag a renamed or newly required env var, a change in where or how secrets are read, a remapped port, or a new script or manual install that must run first. A new alternative way to run things, or a dependency the package manager installs, is not breakage.
+```
+BAD   config reads API_BASE_URL; .env.example and the setup docs still say API_URL
+GOOD  the rename updates .env.example and the docs, and startup fails naming API_BASE_URL if unset
+```
+
+#### Feature-Gate Leaks
+Anything behind a feature flag or internal-only check must stay behind it on every path the diff adds: new routes, exports, background jobs, default values, serialized fields.
+```
+BAD   new GET /api/reports/beta returns the beta report; only the UI button checks the flag
+GOOD  the route handler checks the same flag and returns 404 when it is off
+```
+
 #### Async & Orchestration
 - Race/select: can the losing branch fail after the winner settles?
 - Unbounded accumulation: is there a size cap on input collected in loops?
@@ -135,6 +151,10 @@ Before reporting, verify each finding:
 - Re-read the code around the flagged line — is the issue real or did you misread the context?
 - Check if the issue is handled elsewhere (a different function, a caller, a middleware)
 - Confirm severity: would this actually cause a bug in production, or is it just style?
+
+- **Intended breakage:** if the PR exists to remove a safeguard, flag or behavior and the change is tightly scoped, don't report it. Report it anyway when the author likely misjudges the blast radius, or the change looks malicious.
+- **Never over-report priority:** trace a finding end to end before calling it non-trivial; one inflated finding teaches people to skip the rest.
+- **Existing PR comments come last:** when re-reviewing a branch that already has a PR, finish your own audit before reading its comments; the `review` skill processes external comments.
 
 → See `standards/quality.md` § G (Review Discipline) for what not to flag, false-positive discipline, and output prioritization rules.
 

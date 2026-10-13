@@ -427,6 +427,8 @@ Then create or update the PR using the same logic as `/pr`:
    - No PR: `gh pr create --repo $REPO --head <branch> --base main --title "<type>: <concise title>" --body "<generated body>"`
    - Existing PR: `gh pr edit <number> --repo $REPO --title "<type>: <concise title>" --body "<generated body>"`
 
+If the implementer's summary lists files crossing 1,000 lines (`check-file-size.py`), put each with its reason under `## Changes`.
+
 **PR body template:**
 ```
 ## Summary

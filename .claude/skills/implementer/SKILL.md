@@ -103,6 +103,8 @@ Run quality gates — scoped to the changed package(s) and their dependents, not
 
 **Gate:** The sub-agent reports `RESULT: PASS`. If it reports FAIL, read the error summary, fix the issues, and re-delegate before proceeding.
 
+Also run `python3 .claude/skills/standards/check-file-size.py <base-branch>` directly (it is quiet). On exit 1, split each listed file, or list each crossing with its reason under `## Concerns` in your Phase 5 summary.
+
 ### Real-acceptance check (not just mocks)
 
 The unit/quality gates above are the **CI gate** — they prove the code is shaped right. They are **not** the acceptance bar (see `standards/quality.md` §H). The bead's `## Real acceptance` names a check **against reality**: a live API/model call, real corpus data, or a real dev-DB integration. If that check doesn't exist yet, **run it** — write a throwaway script (e.g. `*.live-check.ts`, `live_check.py`) (or exercise a real integration test), run it against reality, and paste its actual output into the PR as the acceptance evidence. The script itself is scratch work, not a deliverable: do **not** commit it, and do **not** park it in `.claude/loop-evals/` either — out-of-tree evals cause reviewer agents to falsely block on "no acceptance evidence" since they can't see them. The evidence belongs in the PR body. If a check is genuinely worth keeping permanently, promote it into `test/integration/` where CI actually runs it. Do **not** run a live check needing credentials you weren't given; leave it runnable and record the exact command in your Phase 5 summary.
