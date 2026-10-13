@@ -44,11 +44,13 @@ is refused before anything starts; so is a monthly.
 
 Leak scan: /Users/ always; tool names (EXAMPLE_LEAK) unless the line has "e.g."; plus private
 names, one regex per line, from $HARNESS_LOOP_HOME/leak-patterns.txt, which must exist (an
-empty file is a decision; a missing one is a mistake, so the round refuses). It reads the added
-lines, the commit message and proposal.md as the PR body shows it (Evidence reduced to masked paths).
+empty file is a decision; a missing one is a mistake, so the round refuses); and any concrete
+.claude/tries/<repo> path but this repo's. It reads the added lines, the commit message and
+proposal.md as the PR body shows it (Evidence reduced to masked paths).
 Project check: project_check.py, one Sonnet call over the same text, blocks a line that names or
 points to one specific project (or carries a rule only one project needs) with none of those
-words; it fails closed. Its cost is booked as project-check.
+words; it fails closed. It runs last, only when every other check passed; its cost is booked as
+project-check (at its $1 cap when unknown).
 
 Tries: the improver reads real /work try folders from every repo under ~/.claude/tries/ (Long,
 13 Oct); a cited ~/.claude/tries/<repo>/<bead>/try-N reaches the PR only as tries/<k>/try-N
@@ -80,6 +82,7 @@ GH_REPO = "nguyenv119/agent-workflow"
 WEEKLY_BUDGET_USD = 50.0  # Long, 12 Oct 2026
 IMPROVER_MAX_USD = 10.0
 IMPROVER_TIMEOUT_S = 3600
+PROJECT_CHECK_MAX_USD = 1.0  # project_check.py's --max-budget-usd; booked when a call's cost is unknown
 DEFAULT_EXAM_BUDGET_USD = 30.0
 # ponytail: improver 10 + exam 30 + side 10 = the weekly 50; a real side check (5 tasks x 2 runs)
 # costs more, so raise it with the weekly cap.
@@ -93,6 +96,9 @@ ALLOWED_PATH = re.compile(r"^(\.claude/.+|AGENTS\.md)$")
 EXAM_WORDS = re.compile(r"EXAM_MODE|exam mode", re.I)
 EXAMPLE_LEAK = re.compile(r"Neon|NEON_|pnpm|turbo|vitest|VITEST|rtk |PGlite|Trigger\.dev|Vercel|race-|svc-", re.I)
 TRY_PATH = re.compile(r"(?<![\w/.~-])((?:runs/|~/\.claude/tries/)[^\s`'\"<>()\[\],;]+)")
+# A concrete .claude/tries/<repo> outside the masked Evidence list names a (private) repo; <placeholders> and this
+# public repo's own folder pass.
+TRIES_NAME = re.compile(r"\.claude/tries/(?!<|agent-workflow/)[\w.-]")
 # The improver gets Bedrock only: never an Anthropic API key, OAuth token or admin AWS key.
 SCRUB_ENV = re.compile(r"^(ANTHROPIC_BASE_URL|AWS_ADMIN_.*|AWS_PROFILE"
                        r"|.*(TOKEN(?!S)|SECRET|KEY|PASSWORD|CREDENTIAL).*)$", re.I)
@@ -401,7 +407,7 @@ def private_patterns():
 
 def leak_hits(lines, private):
     return [line for line in lines
-            if "/Users/" in line or (private and private.search(line))
+            if "/Users/" in line or (private and private.search(line)) or TRIES_NAME.search(line)
             or (EXAMPLE_LEAK.search(line) and "e.g." not in line)]
 
 
@@ -423,14 +429,15 @@ def existing_dirs():
 def try_folders(text, existing=None):
     """(valid, invalid) try-folder citations: runs/... under $HARNESS_LOOP_HOME/runs or
     ~/.claude/tries/<repo>/..., each an existing dir inside its root (and in `existing`, if given)."""
-    valid, invalid = [], []
+    valid, invalid, seen = [], [], set()
     for p in dict.fromkeys(m.rstrip(".:") for m in TRY_PATH.findall(text)):
         root, rest = (HOME / "runs", p[len("runs/"):]) if p.startswith("runs/") else (TRIES, p[len("~/.claude/tries/"):])
         target = (root / rest).resolve()
         # a tries citation names at least <repo>/<bead>: a whole repo's folder is not one try
         deep = root is not TRIES or target.parent != TRIES.resolve()
         ok = (target.is_dir() and target.is_relative_to(root.resolve()) and target != root.resolve() and deep
-              and (existing is None or target in existing))
+              and (existing is None or target in existing) and target not in seen)  # try-1 and try-1/ are one try
+        seen.add(target)
         (valid if ok else invalid).append(p)
     return valid, invalid
 
@@ -478,6 +485,8 @@ def project_check(base, cand, body, round_n):
         return False, f"no verdict (exit {p.returncode}): {p.stderr.strip()[:200]}"
     if v.get("cost_usd") is not None:
         book("project-check", v["cost_usd"], round_n)
+    elif v.get("called"):
+        book("project-check", PROJECT_CHECK_MAX_USD, round_n, "cost unknown: booked at cap")
     if p.returncode == 0 and v.get("clean") is True:
         return True, f"${float(v.get('cost_usd') or 0):.4f}"
     if v.get("error"):
@@ -511,7 +520,6 @@ def run_checks(base, cand, proposal, private, existing=None, round_n=0):
     body = proposal_for_body(proposal, existing)  # what the PR shows: Evidence as masked paths, notes stay local
     hits = leak_hits(added + message.splitlines() + body.splitlines(), private)
     out.append(("leak scan", not hits, "leak: " + "; ".join(h.strip()[:80] for h in hits) if hits else ""))
-    out.append(("project check", *project_check(base, cand, body, round_n)))
     idea = re.search(r"^Idea:\s*\S", proposal, re.M)
     valid, invalid = try_folders(proposal, existing)
     ok = bool(proposal) and bool(idea) and len(valid) >= 2
@@ -520,6 +528,8 @@ def run_checks(base, cand, proposal, private, existing=None, round_n=0):
     out.append(("proposal", ok, detail))
     load = load_check(cand)
     out.append(("load check", not load, "; ".join(load)))
+    if all(ok for _, ok, _ in out):  # the one paid check runs last, and only on a round that can still pass
+        out.append(("project check", *project_check(base, cand, body, round_n)))
     return out, files
 
 
@@ -625,8 +635,9 @@ def mask_task(path, k=1):
     parts = path.split("/")
     if parts[0] == "runs" and len(parts) > 3:
         parts[2] = "task-" + hashlib.sha256(parts[2].encode()).hexdigest()[:8]
-    elif parts[:3] == ["~", ".claude", "tries"]:
-        parts = ["tries", str(k), *parts[5:]]
+    elif parts[:3] == ["~", ".claude", "tries"]:  # from the resolved path: x/../<repo> must not shift the cut
+        rel = (TRIES / "/".join(parts[3:])).resolve().relative_to(TRIES.resolve()).parts
+        parts = ["tries", str(k), *rel[2:]]
     return "/".join(parts)
 
 
@@ -651,7 +662,7 @@ def proposal_for_body(proposal, existing=None):
 
 def improver_settings(round_dir):
     deny = []
-    for p in (f"{AW_ROOT}/**", f"{HOME}/runs/**", *(f"{HOME}/{n}" for n in STATE_FILES)):
+    for p in (f"{AW_ROOT}/**", f"{HOME}/runs/**", f"{TRIES}/**", *(f"{HOME}/{n}" for n in STATE_FILES)):
         deny += [f"{tool_name}(/{p})" for tool_name in ("Edit", "Write", "NotebookEdit")]
     deny += ["Bash(git push:*)", "Bash(gh:*)"]
     f = round_dir / "improver-settings.json"
@@ -659,8 +670,17 @@ def improver_settings(round_dir):
     return f
 
 
+def bedrock_env():
+    """os.environ minus every credential but the Bedrock keys (the improver's and the project check's env)."""
+    return {k: v for k, v in os.environ.items() if k in BEDROCK_ENV or not SCRUB_ENV.match(k)}
+
+
+def on_bedrock(env):
+    return env.get("CLAUDE_CODE_USE_BEDROCK") == "1" and bool(env.get("AWS_ACCESS_KEY_ID"))
+
+
 def improver_env(round_dir, default):
-    env = {k: v for k, v in os.environ.items() if k in BEDROCK_ENV or not SCRUB_ENV.match(k)}
+    env = bedrock_env()
     env.update(HARNESS_LOOP_ROUND_DIR=str(round_dir), HARNESS_LOOP_HOME=str(HOME))
     if default:
         env["CLAUDE_CONFIG_DIR"] = str(round_dir / "claude-config")  # no user settings, memory or plugins
@@ -737,7 +757,7 @@ def side_home_ok(side_home, addon):
 def cmd_round(args):
     default = not args.improver_cmd
     if default:
-        if os.environ.get("CLAUDE_CODE_USE_BEDROCK") != "1" or not os.environ.get("AWS_ACCESS_KEY_ID"):
+        if not on_bedrock(os.environ):
             die("the default improver runs on Bedrock only: set CLAUDE_CODE_USE_BEDROCK=1 and AWS_ACCESS_KEY_ID")
         if args.improver_budget_usd > IMPROVER_MAX_USD:
             die(f"--improver-budget-usd is capped at ${IMPROVER_MAX_USD:.2f}")
@@ -755,7 +775,7 @@ def cmd_round(args):
     exam_budget = 0.0 if args.no_screen else args.budget_usd
     if args.sidecheck and not args.no_screen:
         exam_budget += args.sidecheck_budget_usd
-    check_budget((args.improver_budget_usd if default else 0.0) + exam_budget, "this round")
+    check_budget((args.improver_budget_usd + PROJECT_CHECK_MAX_USD if default else 0.0) + exam_budget, "this round")
 
     n = next_round()
     round_dir, wt, branch = HOME / "rounds" / str(n), HOME / "wt" / str(n), f"harness-loop/{n}"
