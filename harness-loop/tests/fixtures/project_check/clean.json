@@ -1,0 +1,8 @@
+{
+  "type": "result",
+  "subtype": "success",
+  "is_error": false,
+  "result": "{\"clean\": true, \"hits\": []}",
+  "total_cost_usd": 0.0076065,
+  "prompt_sha256": "67c20461458a5ad031bb21dfe057ae14816a4bad72f6c8f0f7e99df6f3f8efd3"
+}

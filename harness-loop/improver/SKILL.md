@@ -22,9 +22,10 @@ Your message lists the paths you need: `skill`, `worktree` (your branch, already
    and full scores, outcome, reason). Then try folders, failures first: under `runs/`
    (`<run>/<task>/try-<n>/`: `result.json`, `note.md`, `gates.txt`, `diff.patch`,
    `transcript.jsonl`, and `inner/` with the harness's own saved tries) and under `tries/`
-   (`<bead>/try-<n>/`, the same files minus `result.json`; a try may have
-   `transcript.missing`). Read raw transcripts, not just notes: find the step where the run
-   went wrong and which harness file told the agent to do what it did.
+   (`<repo>/<bead>/try-<n>/`: real `/work` on every repo using this harness, the same files
+   minus `result.json`; a try may have `transcript.missing`). Read raw transcripts, not just
+   notes: find the step where the run went wrong and which harness file told the agent to do
+   what it did.
    Use only runs whose `run.json` has `kind` of `baseline`, `candidate` or `pick` and a `set`
    that names a manifest in `harness-loop/tasks/`. Skip `harm` and `controls` runs (they fail
    on purpose) and any run of another set (it may hold private code).
@@ -37,14 +38,19 @@ Your message lists the paths you need: `skill`, `worktree` (your branch, already
    added, changed or deleted line, in any file, containing `EXAM_MODE` or the words "exam
    mode", and any edit to the coordinator's "Exam mode" section. A harness that behaves
    differently when examined cheats.
-5. **No leaks.** Never copy a task name, repo name, private path, code or text from a try
+5. **No leaks.** This repo is public; the tries come from private repos. Never copy a task
+   name, repo name, bead id, private path, table, service, person, code or text from a try
    folder into the change, the commit message or any `proposal.md` line except the Evidence
    paths (say "one task" or "three tries", never its name). Cite try folders only in
    `proposal.md`'s Evidence, and only as `runs/...` (relative to the loop home) or
-   `~/.claude/tries/agent-workflow/...` (with a literal `~`). The script scans the change,
-   the commit message and `proposal.md`: no absolute paths, and the words in `EXAMPLE_LEAK`
-   in `harness-loop/loop.py` (tool and service names, and fragments, e.g. `race-`, that
-   match inside any word) only on a line that says "e.g.".
+   `~/.claude/tries/<repo>/<bead>/try-<n>` (with a literal `~`); the PR shows those as masked
+   paths and the Evidence notes stay local. A lesson from one repo goes in as the general rule
+   behind it, never as that repo's rule. The script scans the change, the commit message and
+   `proposal.md` as the PR shows it: no absolute paths, and the words in `EXAMPLE_LEAK` in
+   `harness-loop/loop.py` (tool and service names, and fragments, e.g. `race-`, that match
+   inside any word) only on a line that says "e.g.". Then `harness-loop/project_check.py`
+   drops the round if a model finds a line naming or pointing to one specific project,
+   company, person, repo, table, tool or infra, or a rule only one project needs.
 6. **Generalize.** No task-specific or repo-specific hints. The test: would this help a
    developer working on many unfamiliar repos? No parameter tweaks (a count, a timeout, a
    threshold) without a new mechanism behind them.
@@ -78,7 +84,7 @@ Your message lists the paths you need: `skill`, `worktree` (your branch, already
 2. Read `harness-loop/improver/harness-map.md` in your worktree: it says which file steers
    which step of `/work`.
 3. Pick the failures. In `runs/`, open each run's `index.tsv` and `result.json` files; take
-   tries with `reward` 0 or a non-`ok` status first. In `tries/`, read `index.tsv`.
+   tries with `reward` 0 or a non-`ok` status first. In `tries/`, read each repo's `<repo>/index.tsv`.
 4. Read at least two failing transcripts end to end, each opened by its full folder path in
    its own command (no loops over folders): a citation counts only if your tool calls show
    that path. Write down, for each: the step that went
@@ -102,11 +108,11 @@ Idea: <one sentence: change, behaviour, why it raises solved tasks>
 Files: <path (section)>, ...
 Evidence:
   runs/<run>/<task>/try-<n>  - <one line: what went wrong there>
-  ~/.claude/tries/agent-workflow/<bead>/try-<n>  - <one line>
+  ~/.claude/tries/<repo>/<bead>/try-<n>  - <one line>
 Expected effect: <e.g. +1 solved on the screen; cost about flat>
 Risk: <what this could break or cost; for a repeated idea, what is different>
 ```
 
 All five fields are required; `Evidence:` needs at least two try folders that exist and that
 you opened by their full path. The one-line notes stay in the loop home; the public PR shows
-only the paths, with task folder names masked.
+only the paths, with task, repo and bead folder names masked.
