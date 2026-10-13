@@ -55,7 +55,7 @@ Every proposal carries proof that the check would have failed on a real past mis
 
 ### 6. Rule-to-enforcer table and retirements
 
-Keep a table in `report.md`: rule, where it is written, what enforces it (check name, or "nothing"). Carry it forward from last week's report under the same `<repo>` dir. For each memory note whose lesson a check now enforces, propose retiring the note (quote the check that replaces it). Never delete the note yourself.
+Keep a table in `report.md`: rule, where it is written, what enforces it (check name, or "nothing"). Start from the `## Rule -> enforcer` table in the repo's `AGENTS.md` (read it first; propose new rows for it in the report, never edit `AGENTS.md` yourself), then carry it forward from last week's report under the same `<repo>` dir. For each memory note whose lesson a check now enforces, propose retiring the note (quote the check that replaces it). Never delete the note yourself.
 
 ## report.md shape
 
