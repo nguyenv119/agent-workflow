@@ -29,7 +29,7 @@ Before writing a script for a chore (worktree, PR checks, waiting, locks, eval v
 
 ## Rule -> enforcer
 
-A PreToolUse hook (`agent-cli hook pretooluse`) checks each Bash command against these rules. Deny blocks the command and names the replacement; warn adds context and lets it run. `# agent-cli: allow <rule id>` in the command skips one rule; `AGENT_CLI_HOOKS=off` skips all. `agent-cli hook rules` lists them, project rules included.
+A PreToolUse hook (`agent-cli hook pretooluse`) checks each Bash command against these rules. Deny blocks the command and names the replacement; warn adds context and lets it run. `# agent-cli: allow <rule id>` in the command skips one rule; `AGENT_CLI_HOOKS=off` skips all. `agent-cli hook rules` lists them, project rules included. Rows marked `skill text only` have no hook yet: only the named skill asks for them, so nothing blocks a skip.
 
 | Rule id | What it stops | Replacement command | Mode |
 |---------|---------------|---------------------|------|
@@ -39,6 +39,8 @@ A PreToolUse hook (`agent-cli hook pretooluse`) checks each Bash command against
 | `hand-sleep-poll` | A foreground `while`/`until` loop that sleeps 3s or more | `agent-cli wait --until '<status cmd>' --every 60 --cap 30m` in the background | warn |
 | `hand-pr-poll` | A hand-written `while`/`until` loop that sleeps and polls `gh pr checks`/`gh pr view`/`gh api .../pulls`, or `gh pr checks --watch` | `agent-cli pr wait <n> --cap 40m` (run_in_background); one-shot `agent-cli pr status <n>` | deny |
 | `hand-loop-log` | `echo`/`printf >>` into a hand-rolled `loop-*.log` or `.txt` | `agent-cli log append .claude/loop-<epic-id>.tsv --phase ... --action ... --result ...` | warn |
+| `blast-radius-proof` | A risky bead (schema, shared infra, cross-service contract, prod-affecting) shipped on an asserted safety claim | `.claude/skills/blast-radius/SKILL.md`: one "Safe because / Proved by" paragraph with a command that ran, in the BEAD COMPLETE block | skill text only |
+| `measured-number-checklist` | A cost ratio, speedup or pass rate reported without vetting | `.claude/skills/win-condition/SKILL.md` § Before reporting a measured number: answer all 7, `not checked` where skipped | skill text only |
 
 ## Issue Tracking with bd (beads)
 
