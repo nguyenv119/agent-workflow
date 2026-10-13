@@ -35,9 +35,27 @@ SENTINEL = "<promise>WIN</promise>"
 WT_ADD = r"git\b(?:\s+-C\s+\S+)?\s+worktree\s+add\b"
 
 
+def pr_poll_re(cmd):
+    """A while/until loop that both sleeps and polls a PR (either order; the poll may be the condition,
+    and the sleep may open it: `while sleep 30; do gh pr checks 12 && break; done`), or
+    `gh pr checks --watch`. `for` over a fixed list is not polling."""
+    loop, body, sleep = cmd + r"(?:while|until)\b", body_re(cmd), cmd + SLEEP
+    return (r"(?:" + loop + body + sleep + body + PR_POLL + "|" + loop + body + PR_POLL + body + sleep
+            + "|" + loop + r"\s+(?:!\s+)?" + SLEEP + body + PR_POLL
+            + "|" + cmd + r"gh\s+pr\s+checks\b[^;&|\n]*--watch)")
+
+
+PR_POLL = r"gh\s+(?:pr\s+(?:checks|view)|api\s+\S*pulls)"
+SLEEP = r"sleep\s+\d"
+
+
 def builtin(cmd):
     """The built-in rules, anchored with this hook call's CMD (seam prefixes included)."""
     return [
+        {"id": "hand-pr-poll", "mode": "deny", "requires": "agent-cli", "on": "code",
+         "needs": r"gh\s+(?:pr|api)\b", "match": pr_poll_re(cmd),
+         "message": "Use: agent-cli pr wait <n> --cap 40m  (run_in_background; exit 0 green, 1 red, 4 timeout). "
+                    "One-shot: agent-cli pr status <n>."},
         {"id": "agent-cli-hand-verdict", "mode": "deny", "requires": "agent-cli", "needs": re.escape(SENTINEL),
          "match": cmd + r"(?:echo|printf)\b[^|;&)\n]*" + re.escape(SENTINEL),
          "message": "The eval prints WIN, not a worker. Use the verdict library: "
@@ -52,6 +70,7 @@ def builtin(cmd):
          "message": "For an existing branch: agent-cli wt new <id> <slug> --existing <branch>"},
         {"id": "hand-sleep-poll", "mode": "warn", "requires": "agent-cli", "on": "code", "needs": r"\bsleep\s+\d",
          "match": cmd + r"(?:while|until)\b" + body_re(cmd) + cmd + r"sleep\s+(?:\d{2,}|[3-9])\b",
+         "unless": pr_poll_re(cmd),  # a PR poll loop is hand-pr-poll's deny, not this warn
          "message": "Waiting on something? agent-cli wait --until '<status cmd>' --every 60 --cap 30m "
                     "(run_in_background) stops on success, passes through refused/blocked, exits 4 on timeout."},
     ]

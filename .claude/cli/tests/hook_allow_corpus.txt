@@ -19,6 +19,15 @@ git diff --stat origin/main...HEAD
 git commit -m "fix: echo the WIN line from the verdict lib, not by hand"
 gh pr checks 12
 gh pr view 12 --json state
+gh pr checks 12 --json name,bucket
+sleep 60
+gh pr list --state open
+git commit -m "retry for flaky test" && git push && sleep 20 && gh pr view 12 --json url
+for n in 53 54; do gh pr view $n --json state; done
+while read f; do wc -l "$f"; done < list.txt; sleep 30; gh pr view 12 --json url
+for i in 1 2 3; do gh pr checks $i; sleep 5; done
+agent-cli pr wait 12 --cap 40m
+gh api repos/o/r/pulls/12 --jq .mergeable_state
 gh pr create --title "x" --body "step 1\necho <promise>WIN</promise> by hand"
 sleep 5
 bd ready --json
@@ -45,10 +54,10 @@ echo '<promise>WIN</promise> is printed by the verdict lib' > notes.txt
 for f in *.md; do wc -l $f; done
 while read l; do echo $l; done < f
 while true; do sleep 1; done
-until gh pr checks 12; do sleep 2; done
+until test -f /tmp/done; do sleep 2; done
 while read l; do echo $l; done; sleep 30
 echo "while x; do sleep 60; done"
-until gh pr checks 12; do sleep 30; done  # expect-warn: hand-sleep-poll
+until test -f /tmp/done; do sleep 30; done  # expect-warn: hand-sleep-poll
 while ! test -f done; do echo wait; sleep 10; done  # expect-warn: hand-sleep-poll
 ---
 git commit -m "$(cat <<'EOF'

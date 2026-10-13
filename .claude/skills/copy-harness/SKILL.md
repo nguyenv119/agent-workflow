@@ -11,3 +11,12 @@ The installer in agent-workflow does this job. It lives in `harness-loop/`, whic
 2. Run `python3 "$AGENT_WORKFLOW_DIR/harness-loop/install_harness.py" --commit main --target <repo> [--addon <dir>]`. Pass `--addon` only when the user names a private add-on directory (project-only skills and `project-rules.md`, laid out like `.claude/`).
 3. If it exits 2, relay its message as-is. A previous install needs `--force`, which deletes only the files that install's manifest lists.
 4. Report the commit it printed and the number of files installed.
+
+`agent-cli pr status|wait|land` read three optional lines from the target's `.claude/project-rules.md`, under `## coordinator`. Tell the user they can add them with their repo's real check names (exact, case-sensitive); without `required-checks:` every non-skipped check is required:
+
+```
+## coordinator
+required-checks: <test check>, <lint check>, <preview deploy check>
+advisory-checks: <bot reviewer check>
+preview-check: <preview deploy check>
+```

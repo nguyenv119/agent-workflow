@@ -2,6 +2,7 @@
 
 Naming is the coordinator's: branch feature/bd-<id>-<slug> at <main>/../<main name>-bd-<id>-<slug>.
 """
+import functools
 import json
 import os
 import re
@@ -22,12 +23,7 @@ EX_NEW = "agent-cli wt new 42 add-user-login --base origin/main"
 EX_RM = "agent-cli wt rm --branch feature/bd-42-add-user-login --delete-branch --yes"
 
 
-def git(*args, cwd, check=True, example=EX_NEW):
-    """git's stdout, stripped; on failure with check, exit 1 with git's stderr."""
-    r = subprocess.run(["git", "-C", str(cwd), *args], capture_output=True, text=True)
-    if r.returncode and check:
-        core.die(Exit.FAIL, f"git {' '.join(args)}: {r.stderr.strip()}", example)
-    return r.stdout.strip() if r.returncode == 0 else None
+git = functools.partial(core.git, example=EX_NEW)  # pass cwd=; check=False -> None on failure
 
 
 def main_root(repo):

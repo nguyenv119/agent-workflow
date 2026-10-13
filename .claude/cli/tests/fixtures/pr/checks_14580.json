@@ -1,0 +1,122 @@
+[
+ {
+  "bucket": "skipping",
+  "link": "https://github.com/cli/cli/actions/runs/37981895366/job/113994281486",
+  "name": "check-requirements / close-unmet-requirements",
+  "state": "SKIPPED"
+ },
+ {
+  "bucket": "skipping",
+  "link": "https://github.com/cli/cli/actions/runs/37981895366/job/113994276447",
+  "name": "label-external",
+  "state": "SKIPPED"
+ },
+ {
+  "bucket": "skipping",
+  "link": "https://github.com/cli/cli/actions/runs/37981895366/job/113994274172",
+  "name": "close-no-help-wanted",
+  "state": "SKIPPED"
+ },
+ {
+  "bucket": "skipping",
+  "link": "https://github.com/cli/cli/actions/runs/37981895366/job/113994264382",
+  "name": "close-from-default-branch",
+  "state": "SKIPPED"
+ },
+ {
+  "bucket": "skipping",
+  "link": "https://github.com/cli/cli/actions/runs/37981895366/job/113994219984",
+  "name": "check-requirements / check-requirements",
+  "state": "SKIPPED"
+ },
+ {
+  "bucket": "skipping",
+  "link": "https://github.com/cli/cli/actions/runs/37981895366/job/113994219001",
+  "name": "ready-for-review",
+  "state": "SKIPPED"
+ },
+ {
+  "bucket": "skipping",
+  "link": "https://github.com/cli/cli/actions/runs/37981895366/job/113994218514",
+  "name": "close-unmet-requirements",
+  "state": "SKIPPED"
+ },
+ {
+  "bucket": "pass",
+  "link": "https://github.com/cli/cli/runs/110976356927",
+  "name": "CodeQL",
+  "state": "SUCCESS"
+ },
+ {
+  "bucket": "pass",
+  "link": "https://github.com/cli/cli/actions/runs/37048540763/job/110975886169",
+  "name": "CodeQL-Build (actions, none, security-and-quality)",
+  "state": "SUCCESS"
+ },
+ {
+  "bucket": "pass",
+  "link": "https://github.com/cli/cli/actions/runs/37048540763/job/110975885942",
+  "name": "CodeQL-Build (go, manual, ./.github/codeql/codeql-config.yml)",
+  "state": "SUCCESS"
+ },
+ {
+  "bucket": "pass",
+  "link": "https://github.com/cli/cli/actions/runs/37048500399/job/110975750525",
+  "name": "integration-tests (macos-latest)",
+  "state": "SUCCESS"
+ },
+ {
+  "bucket": "pass",
+  "link": "https://github.com/cli/cli/actions/runs/37048500399/job/110975750617",
+  "name": "build (macos-latest)",
+  "state": "SUCCESS"
+ },
+ {
+  "bucket": "pass",
+  "link": "https://github.com/cli/cli/actions/runs/37048500399/job/110975750544",
+  "name": "integration-tests (ubuntu-latest)",
+  "state": "SUCCESS"
+ },
+ {
+  "bucket": "pass",
+  "link": "https://github.com/cli/cli/actions/runs/37048500399/job/110975750548",
+  "name": "integration-tests (windows-latest)",
+  "state": "SUCCESS"
+ },
+ {
+  "bucket": "pass",
+  "link": "https://github.com/cli/cli/actions/runs/37048500199/job/110975749517",
+  "name": "govulncheck",
+  "state": "SUCCESS"
+ },
+ {
+  "bucket": "pass",
+  "link": "https://github.com/cli/cli/actions/runs/37048500399/job/110975750632",
+  "name": "build (windows-latest)",
+  "state": "SUCCESS"
+ },
+ {
+  "bucket": "pass",
+  "link": "https://github.com/cli/cli/actions/runs/37048501155/job/110975754383",
+  "name": "label-external / label_issues",
+  "state": "SUCCESS"
+ },
+ {
+  "bucket": "pass",
+  "link": "https://github.com/cli/cli/actions/runs/37048500399/job/110975750353",
+  "name": "build (ubuntu-latest)",
+  "state": "SUCCESS"
+ },
+ {
+  "bucket": "pass",
+  "link": "https://github.com/cli/cli/actions/runs/37048500199/job/110975749770",
+  "name": "lint",
+  "state": "SUCCESS"
+ },
+ {
+  "bucket": "skipping",
+  "link": "https://github.com/cli/cli/actions/runs/37048501155/job/110975755355",
+  "name": "close-from-default-branch / close-from-default-branch",
+  "state": "SKIPPED"
+ }
+]

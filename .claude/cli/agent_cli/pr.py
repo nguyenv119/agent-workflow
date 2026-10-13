@@ -1,0 +1,271 @@
+"""`agent-cli pr`: is this PR green (status), wait until it is (wait), merge it safely (land).
+
+Green is the coordinator's CI-green gate: every required check has bucket `pass` and mergeStateStatus is
+CLEAN, HAS_HOOKS (clean, with merge hooks) or UNSTABLE (only non-required checks are off then).
+A required check in bucket `skipping` counts as passing, as in GitHub branch protection, so a
+path-filtered required check never hangs a wait until the cap.
+Check names come from optional lines under `## coordinator` in .claude/project-rules.md:
+`required-checks: a, b`, `advisory-checks: c` and `preview-check: <name>`.
+"""
+import json
+import re
+import subprocess
+import time
+
+from . import core, wait
+from .core import Exit
+
+EX_STATUS = "agent-cli pr status 42 --repo <owner>/<repo>"
+EX_WAIT = "agent-cli pr wait 42 --cap 40m"
+EX_LAND = "agent-cli pr land 42 --method squash --yes"
+MIN_EVERY = 30  # seconds; GitHub's API budget (5,000 req/h) is shared by every session
+EXIT = {"READY": Exit.OK, "MERGED": Exit.OK, "FAILED": Exit.FAIL, "CONFLICT": Exit.FAIL, "CLOSED": Exit.FAIL,
+        "WAITING": Exit.PARTIAL, "NO_CHECKS": Exit.PARTIAL}
+GREEN_STATES = ("CLEAN", "HAS_HOOKS", "UNSTABLE")
+SECTION = re.compile(r"^##[ \t]+coordinator[ \t]*$(.*?)(?=^##[ \t]|\Z)", re.M | re.S)
+
+
+class GhError(Exception):
+    pass
+
+
+def config(text=None):
+    """{required: [names] or None (= every non-skipped check), advisory: [names], preview: name or None}."""
+    if text is None:
+        f = core.find_project_file("project-rules.md")
+        text = f.read_text() if f else ""
+    m = SECTION.search(text)
+
+    def line(key):
+        v = re.search(rf"^[ \t]*(?:[-*][ \t]+)?`?{key}:`?[ \t]*(.*)$", m[1], re.M) if m else None
+        return v[1].strip().strip("`").strip() if v else None
+    names = lambda s: [n.strip().strip("`") for n in s.split(",") if n.strip().strip("`")]  # noqa: E731
+    req, adv = line("required-checks"), line("advisory-checks")
+    return {"required": names(req) if req is not None else None, "advisory": names(adv or ""),
+            "preview": line("preview-check") or None}
+
+
+def gh(args, repo, timeout=120):
+    try:
+        return subprocess.run(["gh", *args, *(["--repo", repo] if repo else [])],
+                              capture_output=True, text=True, timeout=timeout)
+    except (OSError, subprocess.SubprocessError) as e:
+        raise GhError(f"gh {' '.join(args[:2])}: {e}")
+
+
+def fetch(n, repo, timeout=120):
+    """(view, checks) from one `gh pr view` and one `gh pr checks`, each killed after timeout seconds;
+    gh's "no checks reported" -> []."""
+    r = gh(["pr", "view", str(n), "--json", "baseRefName,headRefOid,mergeStateStatus,state,url"], repo, timeout)
+    try:
+        if r.returncode:
+            raise ValueError(r.stderr.strip())
+        view = json.loads(r.stdout)
+    except ValueError as e:
+        raise GhError(f"gh pr view {n}: {e}")
+    r = gh(["pr", "checks", str(n), "--json", "name,bucket,state,link"], repo, timeout)
+    if "no checks reported" in r.stderr:
+        return view, []
+    try:
+        return view, json.loads(r.stdout)
+    except ValueError:
+        raise GhError(f"gh pr checks {n}: {r.stderr.strip() or 'no JSON on stdout'}")
+
+
+def verdict(n, view, checks, cfg):
+    """The status object for one PR: READY, MERGED, CLOSED, FAILED, CONFLICT, NO_CHECKS or WAITING.
+
+    A WAITING PR whose required checks all passed carries blocked_on: the merge state holding it back."""
+    row = lambda c: {"name": c["name"], "bucket": c["bucket"], "link": c.get("link", "")}  # noqa: E731
+    adv = set(cfg["advisory"])
+    if cfg["required"] is None:
+        required, missing = [c for c in checks if c["bucket"] != "skipping" and c["name"] not in adv], []
+    else:
+        required = [c for c in checks if c["name"] in cfg["required"]]
+        missing = [x for x in cfg["required"] if x not in {c["name"] for c in required}]
+    ms = view["mergeStateStatus"]
+    passed = not missing and {c["bucket"] for c in required} <= {"pass", "skipping"}
+    if view["state"] in ("MERGED", "CLOSED"):
+        v = view["state"]
+    elif not checks:
+        v = "NO_CHECKS"
+    elif any(c["bucket"] in ("fail", "cancel") for c in required):
+        v = "FAILED"
+    elif ms == "DIRTY":
+        v = "CONFLICT"
+    elif passed:
+        v = "READY" if ms in GREEN_STATES else "WAITING"
+    else:
+        v = "WAITING"
+    preview = next((c.get("link") for c in checks if cfg["preview"] and c["name"] == cfg["preview"]), None)
+    out = {"pr": n, "url": view["url"], "head": view["headRefOid"], "merge_state": ms, "verdict": v,
+           "required": [row(c) for c in required], "advisory": [row(c) for c in checks if c["name"] in adv],
+           "missing_required": missing, "preview_url": preview or None}
+    if v == "WAITING" and passed:
+        out["blocked_on"] = ms
+    return out
+
+
+def emit_line(obj):
+    print(json.dumps(obj), flush=True)  # flushed: a background log shows each poll as it happens
+
+
+def wait_loop(n, poll, cap, every, grace, clock=time.monotonic, sleep=time.sleep, out=emit_line):
+    """Poll (poll(seconds_left) -> status) through wait.poll until a final verdict; exit code.
+
+    A new head restarts the cap (wait.RESTART) and the appear-grace; NO_CHECKS for grace seconds is
+    BLOCKED. A gh error after the first poll is printed and polling goes on (a first-poll error raises)."""
+    seen = {"head": None, "since": clock()}
+
+    def check(left):
+        try:
+            s = poll(left)
+        except GhError as e:
+            if seen["head"] is None:
+                raise
+            out({"pr": n, "error": str(e)})
+            return None
+        moved = seen["head"] is not None and s["head"] != seen["head"]
+        if moved:
+            out({"pr": n, "event": "head_changed", "from": seen["head"], "to": s["head"]})
+            seen["since"] = clock()
+        seen["head"] = s["head"]
+        out(s)
+        if EXIT[s["verdict"]] != Exit.PARTIAL:
+            return EXIT[s["verdict"]]
+        if s["verdict"] == "NO_CHECKS" and clock() - seen["since"] >= grace:
+            return Exit.BLOCKED
+        return wait.RESTART if moved else None
+
+    got = wait.poll(check, every, cap, clock, sleep)
+    return Exit.TIMEOUT if got is None else got
+
+
+def status_or_die(a, example):
+    try:
+        view, checks = fetch(a.pr, a.repo)
+    except GhError as e:
+        core.die(Exit.BLOCKED, str(e), example)
+    return view, verdict(a.pr, view, checks, config())
+
+
+def pr_status(a):
+    s = status_or_die(a, EX_STATUS)[1]
+    emit_line(s)
+    return EXIT[s["verdict"]]
+
+
+def duration(text, flag):
+    try:
+        return core.parse_duration(text)
+    except ValueError as e:
+        core.die(Exit.REFUSED, f"{flag}: {e}", EX_WAIT)
+
+
+def pr_wait(a):
+    cap, every, grace = duration(a.cap, "--cap"), duration(a.every, "--every"), duration(a.appear_grace,
+                                                                                         "--appear-grace")
+    if every < MIN_EVERY:
+        core.die(Exit.REFUSED, f"--every {a.every}: poll at most every {MIN_EVERY}s (GitHub API budget)",
+                 EX_WAIT + " --every 60")
+    cfg = config()
+    try:
+        code = wait_loop(a.pr, lambda left: verdict(a.pr, *fetch(a.pr, a.repo, max(1, left)), cfg),
+                         cap, every, grace)
+    except GhError as e:
+        core.die(Exit.BLOCKED, str(e), EX_WAIT)
+    if code == Exit.BLOCKED:
+        core.die(Exit.BLOCKED, f"no checks appeared within {a.appear_grace}; re-read the PR "
+                 "(\"no checks\" is never green)", f"agent-cli pr status {a.pr}")
+    return code
+
+
+def patch_id(base, sha):
+    """`git patch-id --stable` of the PR diff base...sha ('' for an empty diff), None when git cannot tell."""
+    diff = core.git("diff", f"{base}...{sha}", check=False, strip=False)
+    out = core.git("patch-id", "--stable", input=diff, check=False) if diff is not None else None
+    return None if out is None else (out.split() or [""])[0]
+
+
+def same_patch(n, base_ref, verified, head):
+    """Port of the patch-id re-check in step 3 of the pstack shipping playbook (github.com/cursor/plugins,
+    pstack/skills/poteto-mode/playbooks/shipping.md, MIT):
+    after a rebase, the verified head and the new head must carry the same change against the base."""
+    base = f"origin/{base_ref}"
+    if any(core.git("cat-file", "-e", f"{x}^{{commit}}", check=False) is None for x in (verified, head, base)):
+        core.git("fetch", "-q", "origin", base_ref, f"pull/{n}/head", check=False)
+    ids = [patch_id(base, verified), patch_id(base, head)]
+    if None in ids:
+        core.die(Exit.REFUSED, f"cannot compare patch-ids of {verified[:12]} and {head[:12]} against {base} "
+                 "here; run land from a clone of the PR's repo, or re-verify the new head yourself "
+                 f"(then land with --verified-head {head[:12]})", f"git fetch origin pull/{n}/head")
+    return ids[0] == ids[1]
+
+
+def verified_sha(text):
+    """--verified-head as given when it is 7-40 hex characters, else the full sha git resolves it to;
+    anything shorter or unresolvable is refused, since a 1-6 character prefix matches far too many heads."""
+    if re.fullmatch(r"[0-9a-fA-F]{7,40}", text):
+        return text.lower()
+    sha = core.git("rev-parse", "--verify", "-q", f"{text}^{{commit}}", check=False)
+    if not sha:
+        core.die(Exit.REFUSED, f"--verified-head {text!r}: give at least 7 hex characters of the sha you "
+                 "verified (or a ref that resolves to it here)", "agent-cli pr land 42 --verified-head 1a2b3c4d --yes")
+    return sha
+
+
+def pr_land(a):
+    if a.verified_head:
+        a.verified_head = verified_sha(a.verified_head)
+    view, s = status_or_die(a, EX_LAND)
+    if s["verdict"] != "READY":
+        why = "it is already merged" if s["verdict"] == "MERGED" else f"its verdict is {s['verdict']}, not READY"
+        core.die(Exit.REFUSED, f"PR {a.pr} not landed: {why}", f"agent-cli pr status {a.pr}" if s["verdict"] == "MERGED"
+                 else f"agent-cli pr wait {a.pr} --cap 40m, then agent-cli pr land {a.pr} --yes")
+    head = s["head"]
+    if a.verified_head and not head.startswith(a.verified_head) and not same_patch(
+            a.pr, view["baseRefName"], a.verified_head, head):
+        core.die(Exit.REFUSED, f"rebased content changed since {a.verified_head[:12]} (head is now {head[:12]}); "
+                 f"re-verify: review what changed and rerun your checks on {head[:12]} before landing it",
+                 f"git diff {a.verified_head[:12]} {head[:12]}")
+    dry = a.dry_run or not a.yes
+    if not dry:  # pinned to the head judged above; never --auto
+        r = gh(["pr", "merge", str(a.pr), f"--{a.method}", "--match-head-commit", head], a.repo)
+        if r.returncode:
+            core.die(Exit.FAIL, f"gh pr merge {a.pr}: {r.stderr.strip()}", EX_LAND)
+    emit_line({"pr": a.pr, "url": s["url"], "head": head, "method": a.method,
+               "landed": "would merge" if dry else "merged"})
+    return Exit.OK
+
+
+def register(sub):
+    _, ps = core.group(sub, "pr", "PR checks: green verdict (status), wait for it (wait), merge safely (land)",
+                       [EX_STATUS, EX_WAIT, "agent-cli pr land 42 --dry-run"])
+    p = core.subcommand(ps, "status", "one verdict: READY, FAILED, WAITING, CONFLICT, NO_CHECKS, MERGED or CLOSED "
+                        "(exit 0 READY/MERGED, 1 FAILED/CONFLICT/CLOSED, 5 WAITING/NO_CHECKS). READY = every "
+                        "required check passes (a skipped one counts) and mergeStateStatus is CLEAN, HAS_HOOKS or "
+                        "UNSTABLE; a WAITING PR with all required checks passed names the merge state in blocked_on",
+                        [EX_STATUS, "agent-cli pr status 42"])
+    p.set_defaults(func=pr_status)
+    pw = core.subcommand(ps, "wait", "poll status until green (0: READY or MERGED), red (1: FAILED, CONFLICT "
+                         "or CLOSED), no checks past the grace (3) or the cap (4); one JSON line per poll; a new "
+                         "head restarts the cap. Run it with Bash run_in_background",
+                         [EX_WAIT, "agent-cli pr wait 42 --cap 40m --every 60 --repo <owner>/<repo>",
+                          "agent-cli pr wait 42 --cap 0s"])
+    pw.add_argument("--cap", default="40m", help="give up after this long, exit 4 (default 40m)")
+    pw.add_argument("--every", default="60", help=f"seconds between polls, at least {MIN_EVERY} (default 60)")
+    pw.add_argument("--appear-grace", default="5m", help="no checks after this long: exit 3 (default 5m)")
+    pw.set_defaults(func=pr_wait)
+    pl = core.subcommand(ps, "land", "merge a READY PR pinned to its checked head (dry run unless --yes); "
+                         "refuses (2) anything else", ["agent-cli pr land 42 --dry-run", EX_LAND,
+                                                        "agent-cli pr land 42 --verified-head <sha> --yes"])
+    pl.add_argument("--method", choices=("merge", "squash"), default="merge", help="merge method (default merge)")
+    pl.add_argument("--verified-head", metavar="SHA",
+                    help="the head you verified (7+ hex characters, or a ref that resolves here); a different "
+                    "head lands only if its patch-id matches")
+    pl.add_argument("--dry-run", action="store_true", help="say what would be merged (the default without --yes)")
+    pl.add_argument("--yes", action="store_true", help="really merge")
+    pl.set_defaults(func=pr_land)
+    for q in (p, pw, pl):
+        q.add_argument("pr", type=int, metavar="<n>", help="the PR number")
+        q.add_argument("--repo", metavar="OWNER/NAME", help="the GitHub repo, when not the cwd's")
