@@ -131,6 +131,11 @@ harness-loop/exam/run_exam.py --harness main --tasks <same> --screen --agent con
 harness-loop/exam/compare.py <runA> <runB> --margin-from <runA2> --screen-rule
 ```
 
+`--screen --early-stop-vs <sealed baseline run>` runs the tasks cheapest first by the baseline's
+per-task cost and stops starting new ones once the screen rule can no longer pass (more cut or errored
+tries than the baseline, too few solves left, or cost past 1.25x). The run is then incomplete, with the
+reason in run.json `early_stop`. `loop.py` passes it for every candidate screen.
+
 Scoring: in the baseline, `budget_cut` and `error` tries are left out; in the candidate they count
 as unsolved at the full cap. The screen also fails on more candidate errors or an incomplete
 candidate run (details in `controls.md`). Harbor gets only an allowlisted host env (`HARBOR_ENV` in

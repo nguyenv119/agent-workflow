@@ -21,7 +21,8 @@ Prints  n= diff= se= ci95=± solvedA= solvedB= costA= costB= cutA= cutB= errA= e
 --margin-from A2 (a second run of A's harness): margin_raw = 1.96 x SE of the
 paired difference A vs A2, margin = max(margin_raw, 1/n), and verdict=win|lose|tie.
 --screen-rule: screen=pass iff solvedB >= solvedA - 1, costB <= 1.25 x costA,
-cutB <= cutA, errB <= errA and B is not incomplete.
+cutB <= cutA, errB <= errA and B is not incomplete. screen_fail_decided() is the same rule asked
+mid-run (run_exam.py --early-stop-vs).
 Exit: 0 ok, 2 usage / nothing to pair, 3 seal mismatch.
 """
 import argparse
@@ -100,6 +101,32 @@ def paired(a, b, b_is_candidate=True):
             rows.append((statistics.fmean(x for x, _ in ca), statistics.fmean(x for x, _ in cb),
                          sum(c for _, c in ca), sum(c for _, c in cb)))
     return rows, {st: (count(ta, st), count(tb, st)) for st in ("budget_cut", "error")}
+
+
+def screen_fail_decided(base, done, remaining, cap=DEFAULT_CAP):
+    """Why --screen-rule can no longer pass, whatever the remaining tasks do, or None (keep going).
+
+    base: load() of the sealed baseline; done: the candidate's finished try results; remaining: ids of the
+    candidate's tasks with a try not finished yet; cap: the candidate's max_budget_usd. Mirrors main()'s
+    pairing and screen rule as they will stand once every task has run; only a fail can be decided early."""
+    ta = base[0]
+    common = ({r["task"] for r in done} | set(remaining)) & set(ta)
+    ours = [r for r in done if r["task"] in common]
+    for st, word in (("budget_cut", "cut"), ("error", "error")):
+        b, a = sum(r["status"] == st for r in ours), sum(r["status"] == st for t in common for r in ta[t])
+        if b > a:
+            return f"{word} tries {b} > main's {a}"
+    paired = {t: counted(ta[t], False, 0) for t in common if counted(ta[t], False, 0)}
+    solved_a = sum(statistics.fmean(x for x, _ in c) >= 0.5 for c in paired.values())
+    finished = [counted([r for r in ours if r["task"] == t], True, cap) for t in paired if t not in remaining]
+    best = sum(statistics.fmean(x for x, _ in c) >= 0.5 for c in finished if c) + len(set(paired) & set(remaining))
+    if best < solved_a - 1:
+        return f"solved at most {best} < main's {solved_a} - 1"
+    cost_a = sum(c for rows in paired.values() for _, c in rows)
+    cost_b = sum(c for _, c in counted([r for r in ours if r["task"] in paired], True, cap))
+    if cost_b > 1.25 * cost_a + EPS:
+        return f"cost ${cost_b:.2f} > 1.25 x main's ${cost_a:.2f}"
+    return None
 
 
 def diff_stats(rows):

@@ -428,6 +428,55 @@ class RunExamTest(unittest.TestCase):
         self.assertEqual(set(self.results(run)), {"t2"})
         self.assertTrue(run.name.endswith("-demo-screen"))
 
+    def screen_baseline(self):
+        """A sealed main screen run of t1..t3, all solved, t2 cheapest ($3), then t3 ($6), then t1 ($9)."""
+        m = self.manifest({"t1": 2, "t2": 2, "t3": 2}, screen=("t1", "t2", "t3"))
+        self.spec.write_text(json.dumps({"t1": {"cost": 9.0}, "t2": {"cost": 3.0}, "t3": {"cost": 6.0}}))
+        self.run_exam("--tasks", m, "--budget-usd", 100, "--screen", "--kind", "baseline")
+        return m, self.only_run()
+
+    def test_early_stop_runs_cheapest_task_first_and_starts_nothing_after_a_decided_fail(self):
+        """
+        With --early-stop-vs the candidate runs main's cheapest task first (the dry run) and, once the
+        screen can no longer pass, starts nothing more and marks the run incomplete with the reason.
+        This is what keeps a broken candidate from paying for the whole screen.
+        """
+        # GIVEN main's sealed screen run, and a candidate that errors on t2 (main's cheapest task)
+        m, base = self.screen_baseline()
+        self.log.unlink()
+        self.spec.write_text(json.dumps({"t2": {"subtype": "error"}}))
+        # WHEN the candidate screen runs with --early-stop-vs main's run (exit 1: its only try errored)
+        self.run_exam("--tasks", m, "--budget-usd", 100, "--screen", "--early-stop-vs", base, check=False)
+        # THEN only t2 ran, and the run says why it stopped
+        self.assertEqual([Path(a[a.index("-p") + 1]).name for a in self.argvs()], ["t2"])
+        run = next(d for d in (self.home / "runs").iterdir() if d != base)
+        meta = json.loads((run / "run.json").read_text())
+        self.assertEqual(meta["status"], "incomplete")
+        self.assertIn("error", meta["early_stop"])
+
+    def test_early_stop_lets_a_passing_candidate_finish_every_task(self):
+        """A candidate that can still pass is never stopped: it runs every task, cheapest first, complete."""
+        # GIVEN main's sealed screen run and a candidate that solves everything at main's costs
+        m, base = self.screen_baseline()
+        self.log.unlink()
+        # WHEN the candidate screen runs with --early-stop-vs
+        self.run_exam("--tasks", m, "--budget-usd", 100, "--screen", "--early-stop-vs", base)
+        # THEN all three ran in main's cost order and the run is complete with no early stop
+        self.assertEqual([Path(a[a.index("-p") + 1]).name for a in self.argvs()], ["t2", "t3", "t1"])
+        run = next(d for d in (self.home / "runs").iterdir() if d != base)
+        meta = json.loads((run / "run.json").read_text())
+        self.assertEqual((meta["status"], meta.get("early_stop")), ("complete", None))
+
+    def test_early_stop_without_screen_is_refused(self):
+        """Early stop mirrors the screen rule only; on a full exam it would cut a run the margin needs."""
+        # GIVEN main's screen run, WHEN a non-screen run asks for early stop
+        m, base = self.screen_baseline()
+        p = self.run_exam("--tasks", m, "--budget-usd", 100, "--early-stop-vs", base, check=False)
+        # THEN it exits before any run
+        self.assertNotEqual(p.returncode, 0)
+        self.assertIn("--early-stop-vs", p.stderr)
+        self.assertEqual(len(list((self.home / "runs").iterdir())), 1)
+
     def test_controls_run_records_oracle_and_nop_rewards(self):
         """One controls run holds both Harbor control agents, keyed per agent."""
         # GIVEN two tasks
