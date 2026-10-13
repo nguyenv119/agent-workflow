@@ -8,7 +8,7 @@ and untracked files count. Choices:
 - A new file has before = 0, so a file created at 1,000+ lines counts as crossing.
 - A renamed file is compared with its old path, so moving a large file is not flagged.
 - Deleted files are skipped.
-Exit 1 and print "path: before -> after" per crossing file; exit 0 if none; exit 2 on a git or usage error.
+Exit 1 and print "path: before -> after" per crossing file; exit 0 if none; exit 2 on a git or usage error or a non-UTF-8 path.
 """
 import subprocess
 import sys
@@ -67,4 +67,7 @@ if __name__ == "__main__":
         sys.exit(main(sys.argv[1]))
     except subprocess.CalledProcessError as e:
         print(f"git {' '.join(e.cmd[1:])} failed: {e.stderr.decode().strip()}", file=sys.stderr)
+        sys.exit(2)
+    except UnicodeDecodeError:
+        print("a changed path is not valid UTF-8; check it by hand", file=sys.stderr)
         sys.exit(2)

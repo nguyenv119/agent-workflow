@@ -154,7 +154,7 @@ Before reporting, verify each finding:
 
 - **Intended breakage:** if the PR exists to remove a safeguard, flag or behavior and the change is tightly scoped, don't report it. Report it anyway when the author likely misjudges the blast radius, or the change looks malicious.
 - **Never over-report priority:** trace a finding end to end before calling it non-trivial; one inflated finding teaches people to skip the rest.
-- **Existing PR comments come last:** finish your own audit first, then read the PR's comments (`gh pr view --comments`), verify any finding you missed, and credit where it came from.
+- **Existing PR comments come last:** when re-reviewing a branch that already has a PR, finish your own audit before reading its comments; the `review` skill processes external comments.
 
 → See `standards/quality.md` § G (Review Discipline) for what not to flag, false-positive discipline, and output prioritization rules.
 

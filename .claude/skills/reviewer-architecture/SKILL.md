@@ -48,7 +48,11 @@ Don't just read the diff. Read the surrounding packages, existing implementation
 Before checking line-by-line patterns, step back and evaluate the solution at the architectural level.
 
 - **Is this the right solution?** Does it address the root cause, or is it a symptom fix? A symptom fix may be correct to ship now, but should be flagged so the team understands the trade-off.
-- **Is there a simpler way?** If you can see an approach that would accomplish the same goal with fewer moving parts, name it. Don't block the PR — but giving the implementer a cleaner path is valuable signal.
+- **Is there a simpler way?** Look for a reframing that makes whole branches, modes, helpers or layers disappear, not one that moves the same complexity around, and name it. One that deletes whole branches or layers is a finding; a smaller nicety is non-blocking signal.
+  ```
+  BAD   adds `if (format === "csv")` branches to export(), download() and preview()
+  GOOD  one formatters map keyed by format; the three functions lose their branches
+  ```
 - **What could go wrong?** Think adversarially: under what conditions does this approach break? Concurrency, empty inputs, missing config, downstream service degradation, gradual data growth?
 
 If the approach itself is wrong — not just the implementation details — say so clearly in your report. A finding like "this caches the full result set in memory; for the expected data volume this will OOM within 24 hours" is more valuable than ten line-level nits.
@@ -78,6 +82,11 @@ If graph tools are available, use `get_architecture_overview_tool` to see establ
 - Is there unnecessary coupling between packages?
 - Are dependencies flowing in the right direction? (handler → service → store, not reversed)
 - Are interfaces defined where they're used, not where they're implemented?
+- Is feature logic leaking into a shared path? Move it to the package that owns the concept.
+  ```
+  BAD   shared http client checks `if (url.includes("/billing"))` to add a billing header
+  GOOD  the billing module passes its header when it calls the client
+  ```
 
 If graph tools are available, use `get_impact_radius_tool` to verify dependency direction — it shows the full call graph.
 
@@ -101,20 +110,10 @@ If graph tools are available, use `get_impact_radius_tool` to verify dependency 
 #### Structure Growth
 Judge whether the diff leaves the code simpler or just bigger. "It works" is not the bar.
 
-- **Code judo (missed simplification):** look for a reframing that makes whole branches, modes, helpers or layers disappear, not one that moves the same complexity around. Name the simpler shape.
-  ```
-  BAD   adds `if (format === "csv")` branches to export(), download() and preview()
-  GOOD  one formatters map keyed by format; the three functions lose their branches
-  ```
 - **Spaghetti special cases:** a one-off conditional, boolean flag or nullable mode bolted into an unrelated, already busy flow is a design problem, not a nit. Push it into its own function, policy or module.
   ```
   BAD   `if (user.id === LEGACY_ADMIN_ID) skipQuota = true` in the middle of checkout()
   GOOD  quota rules live in quotaPolicy(user); checkout() calls it and stays linear
-  ```
-- **Wrong layer:** feature logic leaking into a shared path, details leaking through an API, or a bespoke helper next to an existing canonical one. Move it to the package that owns the concept.
-  ```
-  BAD   shared http client checks `if (url.includes("/billing"))` to add a billing header
-  GOOD  the billing module passes its header when it calls the client
   ```
 
 #### Comment & Documentation Drift

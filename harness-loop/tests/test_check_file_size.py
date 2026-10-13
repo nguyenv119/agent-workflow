@@ -55,6 +55,24 @@ class CheckFileSizeCase(unittest.TestCase):
         self.assertEqual(result.returncode, 1, result.stderr)
         self.assertIn("big.py: 990 -> 1010", result.stdout)
 
+    def test_untracked_1000_line_file_fails(self):
+        """
+        Verifies a new 1,000-line file that is neither committed nor staged still trips the check.
+
+        The implementer runs the check before committing, so untracked files must count or a
+        freshly written oversized file passes unnoticed.
+        """
+        # GIVEN — a feature branch with no changes, plus an untracked 1000-line new.py
+        repo = self.branch({"small.py": lines(10)}, {})
+        (repo / "new.py").write_text(lines(1000))
+
+        # WHEN — the check runs against main
+        result = self.check(repo)
+
+        # THEN — it fails and names new.py as a new file
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertIn("new.py: 0 -> 1000", result.stdout)
+
     def test_file_staying_under_1000_lines_passes(self):
         """
         Verifies a file that grows but stays under 1,000 lines does not trip the check.

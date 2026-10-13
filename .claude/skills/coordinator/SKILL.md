@@ -362,7 +362,6 @@ SKILL: Read and follow .claude/skills/test-runner/SKILL.md
 WORKTREE: <worktree_path>
 COMMANDS:
 - <quality-gate commands matching the changed code, scoped to the changed package(s) and dependents>
-- python3 .claude/skills/standards/check-file-size.py <base-branch>   # exit 1 = a file crossed 1,000 lines: split it, or give the reason in the PR body
 ```
 
 **Do NOT push if the sub-agent reports FAIL.** Fix locally first (spawn an implementer if the fix is non-trivial; save this attempt per §4c3 first, pass its folder as `PREVIOUS TRY:` and note a new start sha), then re-delegate.
@@ -427,6 +426,8 @@ Then create or update the PR using the same logic as `/pr`:
 5. Create or update (always pass `--head` and `--base` since the coordinator runs from the main repo, not the worktree):
    - No PR: `gh pr create --repo $REPO --head <branch> --base main --title "<type>: <concise title>" --body "<generated body>"`
    - Existing PR: `gh pr edit <number> --repo $REPO --title "<type>: <concise title>" --body "<generated body>"`
+
+If the implementer's summary lists files crossing 1,000 lines (`check-file-size.py`), put each with its reason under `## Changes`.
 
 **PR body template:**
 ```
