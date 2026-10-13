@@ -15,6 +15,8 @@ for resolving larger issues in follow-on work.
 | Close bead and clean up after merge | `/merged [branch-name]` |
 | End a session before `/clear` | `/handoff` |
 
+Before writing a script for a chore (worktree, PR checks, waiting, locks, eval verdicts), run `agent-cli --help`; project CLIs are listed at its end.
+
 `/plan` explores the codebase, discusses tradeoffs with you, files beads issues, and runs an architectural plan review. Use it before `/work` for new epics.
 
 `/work` triages the work, creates per-bead worktrees and branches, runs automated reviews with injected standards checklists, pushes branches, and auto-creates a PR for each bead. Dependent beads are blocked until their blockers are merged and closed. A PreToolUse hook enforces that reviewers receive their standards content — the coordinator cannot skip this step.
@@ -24,6 +26,15 @@ for resolving larger issues in follow-on work.
 `/merged` runs after you merge a PR on GitHub. It verifies the merge, closes the associated bead(s), removes the worktree, and deletes the branch. This is the gate that unblocks dependent beads.
 
 `/handoff` writes an end-of-session briefing to `~/.claude/handoffs/YYYY-MM-DD-<slug>.md` and posts only the path plus a two-line gist in chat. It is written so the next agent starts where this session ended: facts verified and how, approaches that failed and why, exact paths/IDs/commands, and every open item with its single next action. Run it before `/clear` — the file survives compaction, a chat summary does not.
+
+## Rule -> enforcer
+
+A PreToolUse hook (`agent-cli hook pretooluse`) checks each Bash command against these rules. Deny blocks the command and names the replacement; warn adds context and lets it run. `# agent-cli: allow <rule id>` in the command skips one rule; `AGENT_CLI_HOOKS=off` skips all. `agent-cli hook rules` lists them, project rules included.
+
+| Rule id | What it stops | Replacement command | Mode |
+|---------|---------------|---------------------|------|
+| `agent-cli-hand-verdict` | A worker printing the eval's WIN sentinel by hand | `source "$(agent-cli eval lib --sh)"`, then `win` | deny |
+| `agent-cli-demo-warn` | Nothing: proves warn mode on `true agent-cli-warn-demo` (removed by the wait/lock rules) | none | warn |
 
 ## Issue Tracking with bd (beads)
 

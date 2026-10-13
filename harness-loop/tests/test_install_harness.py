@@ -114,6 +114,29 @@ class InstallHarnessTest(unittest.TestCase):
             ".claude/skills/coordinator/SKILL.md", ".claude/skills/old/SKILL.md", "AGENTS.md",
         ])
 
+    def test_agent_cli_installs_executable_and_its_tests_stay_behind(self):
+        """
+        The agent-cli shim must stay executable in the target (the hooks run it
+        with `[ -x ... ]`, so a lost mode bit silently turns every rule off), and
+        .claude/cli/tests/ (tests plus this repo's allow corpus) is not product:
+        target projects keep their own corpus.
+        """
+        # GIVEN a commit with an executable shim, the cli package and its tests
+        shim = self.repo / ".claude/bin/agent-cli"
+        shim.parent.mkdir(parents=True)
+        shim.write_text("#!/usr/bin/env python3\n")
+        shim.chmod(0o755)
+        _, sha = make_repo(self.repo, {".claude/cli/agent_cli/main.py": "x\n",
+                                       ".claude/cli/tests/test_x.py": "x\n",
+                                       ".claude/cli/tests/hook_allow_corpus.txt": "git status\n"})
+        target = self.tmp / "t"
+        # WHEN installed
+        self.install(sha, target)
+        # THEN the shim is executable, the package is there and the tests are not
+        self.assertTrue(os.access(target / ".claude/bin/agent-cli", os.X_OK))
+        self.assertTrue((target / ".claude/cli/agent_cli/main.py").is_file())
+        self.assertFalse((target / ".claude/cli/tests").exists())
+
     def test_manifest_lists_every_file_the_install_wrote(self):
         """
         The manifest is what a later --force install deletes, so it must list

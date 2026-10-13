@@ -69,6 +69,10 @@ The harness gets agents to both with a loop.
 
 In short: `/plan` turns a feature into tasks with dependencies and a win condition. `/work` takes the unblocked tasks, gives each to an implementer in its own worktree, runs three reviewers in parallel and opens a PR. By default you merge each PR before the next task starts, and `/merged` closes the task and unblocks it. In autonomous mode the coordinator stacks PRs on each other and loops until the win condition passes. Merges stay yours either way.
 
+## agent-cli
+
+`.claude/bin/agent-cli` (Python 3.9+, stdlib only) is one command for the chores agents otherwise script by hand: eval verdicts today, with worktrees, PR checks, waits and locks to follow. A SessionStart hook puts it on PATH (`agent-cli self env`; outside Claude Code, `agent-cli self install --bin-dir <dir>`), and a PreToolUse hook denies or warns on hand-rolled versions of those chores (see `## Rule -> enforcer` in AGENTS.md). Every command has layered `--help` ending in examples, `--json` output and fixed exit codes (0 ok, 1 fail, 2 refused, 3 blocked, 4 timeout, 5 partial). A project plugs in through seams, files in its own `.claude/agent-cli-hooks/`: `path` (dirs of its own CLIs, listed in `agent-cli --help` and added to PATH), `command-prefixes` (wrapper words its agents put before commands) and `pretooluse-rules.json` (its own rules). Project CLIs can `from agent_cli.core import build_parser, Exit, emit, die` after putting `agent-cli lib path` on `sys.path`.
+
 ## Looping the plan review
 
 `/plan` runs the plan reviewer once after the tasks are filed, and shows you what it found. To keep going until it approves, say so in the same message: "run the plan reviewer again after each fix until it approves." The harness does not loop on its own. You decide when you trust the plan.
@@ -116,6 +120,7 @@ The win condition and the per-task acceptance check have to run against the dev 
     standards/      Shared rules injected into reviewers
   agents/           Subagent definitions (implementer, quick-reviewer)
   hooks/            Task-database sync, and a check that reviewers got their standards
+  bin/agent-cli     Shared chores CLI; its package and tests live in cli/
   settings.json     Permissions, plugins, hooks
 AGENTS.md           Loaded into every session: workflow rules and task tracker usage
 CLAUDE.md           Your project's build, test and lint commands

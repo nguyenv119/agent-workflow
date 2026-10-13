@@ -27,6 +27,15 @@
             "command": "echo \"You were just compacted. Your summary above is the handoff (also saved in ~/.claude/handoffs/ as a file ending in -compact-<first 8 chars of this session id>.md). Pick up from its TLDR and Next lines as if they were the user's kickoff message: do not re-verify anything listed as verified, do not retry anything listed as ruled out.\""
           }
         ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "timeout": 5,
+            "command": "[ -x \"$CLAUDE_PROJECT_DIR/.claude/bin/agent-cli\" ] && [ -n \"$CLAUDE_ENV_FILE\" ] && \"$CLAUDE_PROJECT_DIR/.claude/bin/agent-cli\" self env >> \"$CLAUDE_ENV_FILE\"; exit 0"
+          }
+        ]
       }
     ],
     "PreToolUse": [
@@ -37,6 +46,16 @@
             "type": "command",
             "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/bd-dolt-pull.sh",
             "timeout": 30
+          }
+        ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "timeout": 5,
+            "command": "[ -x \"$CLAUDE_PROJECT_DIR/.claude/bin/agent-cli\" ] && \"$CLAUDE_PROJECT_DIR/.claude/bin/agent-cli\" hook pretooluse 2>/dev/null; exit 0"
           }
         ]
       },
