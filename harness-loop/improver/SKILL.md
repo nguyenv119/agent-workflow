@@ -11,7 +11,7 @@ checks it, runs the exam on it and writes the scores. You never see the scores o
 change; the next round reads them in the history.
 
 Your message lists the paths you need: `skill`, `worktree` (your branch, already checked out),
-`history`, `runs`, `tries`, `round_dir`. Work only inside those.
+`history`, `runs`, `tries`, `round_dir`, maybe `proposals` (read only). Work only inside those.
 
 ## Hard rules
 
@@ -38,10 +38,10 @@ Your message lists the paths you need: `skill`, `worktree` (your branch, already
    added, changed or deleted line, in any file, containing `EXAM_MODE` or the words "exam
    mode", and any edit to the coordinator's "Exam mode" section. A harness that behaves
    differently when examined cheats.
-5. **No leaks.** This repo is public; the tries come from private repos. Never copy a task
-   name, repo name, bead id, private path, table, service, person, code or text from a try
-   folder into the change, the commit message or any `proposal.md` line except the Evidence
-   paths (say "one task" or "three tries", never its name). Cite try folders only in
+5. **No leaks.** This repo is public; the tries come from private repos. Never copy a task name,
+   repo name, bead id, private path, table, service, person, code or text from a try folder or
+   the proposals file into the change, the commit message or any `proposal.md` line except the
+   Evidence paths (say "one task" or "three tries", never its name). Cite try folders only in
    `proposal.md`'s Evidence, and only as `runs/...` (relative to the loop home) or
    `~/.claude/tries/<repo>/<bead>/try-<n>` (with a literal `~`); the PR shows those as masked
    paths and the Evidence notes stay local. A lesson from one repo goes in as the general rule
@@ -81,15 +81,16 @@ Your message lists the paths you need: `skill`, `worktree` (your branch, already
 ## Steps
 
 1. Read `history.jsonl`. Note what was tried, what won and lost, and why rounds were dropped.
+   Then `proposals`, if listed: prefer an idea there that changes a file in your worktree, copy
+   nothing from it (rule 5), and ignore its Evidence: cite >= 2 try folders you opened yourself.
 2. Read `harness-loop/improver/harness-map.md` in your worktree: it says which file steers
    which step of `/work`.
 3. Pick the failures. In `runs/`, open each run's `index.tsv` and `result.json` files; take
    tries with `reward` 0 or a non-`ok` status first. In `tries/`, read each repo's `<repo>/index.tsv`.
 4. Read at least two failing transcripts end to end, each opened by its full folder path in
    its own command (no loops over folders): a citation counts only if your tool calls show
-   that path. Write down, for each: the step that went
-   wrong, what the agent did instead, and the harness line that led it there (or the missing
-   line that would have stopped it).
+   that path. Write down, for each: the step that went wrong, what the agent did instead, and
+   the harness line that led it there (or the missing line that would have stopped it).
 5. Find the pattern shared by two or more tries. That is the evidence for your idea.
 6. Write the change in the file and section the map names for that step. Prefer a few added
    lines inside an existing section over a new section (rule 8: add, do not rewrite). A new

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """The harness loop: one improvement round at a time, checked and scored by scripts, never by Claude.
 
-    loop.py round --tasks <manifest> [--improver-cmd CMD] [--no-screen] [--budget-usd X]
+    loop.py round --tasks <manifest> [--improver-cmd CMD] [--no-screen] [--proposals FILE] [--budget-usd X]
                   [--improver-budget-usd Y] [--sidecheck <manifest> --sidecheck-addon <dir>
                   [--sidecheck-env docker|daytona] [--sidecheck-budget-usd Z]]
     loop.py monthly [--budget-usd X]
@@ -10,8 +10,8 @@
     loop.py guard <commit> [--base <ref>]
 
 round: make worktree $HARNESS_LOOP_HOME/wt/<n> on branch harness-loop/<n> off origin/main;
-write rounds/<n>/message.txt (paths only); hash, in this process's memory only, the main
-screen run it will reuse, history.jsonl, queue.json, spend.jsonl, and this checkout's state
+write rounds/<n>/message.txt (paths only; a `proposals:` line when --proposals names a file that
+exists); hash, in this process's memory only, the main screen run it will reuse, history.jsonl, queue.json, spend.jsonl, and this checkout's state
 (git status, HEAD, every ref but the round's, every file under harness-loop/, the shared
 .git config/hooks/info and the user's git config); run the
 improver (default: `claude -p --model opus` on Bedrock, see IMPROVER_ENV); re-check all of it
@@ -803,9 +803,10 @@ def proposal_for_body(proposal, existing=None):
 
 # ---- the improver ------------------------------------------------------------------------
 
-def improver_settings(round_dir):
+def improver_settings(round_dir, proposals=None):
     deny = []
-    for p in (f"{AW_ROOT}/**", f"{HOME}/runs/**", f"{TRIES}/**", *(f"{HOME}/{n}" for n in STATE_FILES)):
+    for p in (f"{AW_ROOT}/**", f"{HOME}/runs/**", f"{TRIES}/**", *(f"{HOME}/{n}" for n in STATE_FILES),
+              *([str(proposals)] if proposals else [])):
         deny += [f"{tool_name}(/{p})" for tool_name in ("Edit", "Write", "NotebookEdit")]
     deny += ["Bash(git push:*)", "Bash(gh:*)"]
     f = round_dir / "improver-settings.json"
@@ -830,14 +831,14 @@ def improver_env(round_dir, default):
     return env
 
 
-def improver_argv(args, msg, round_dir):
+def improver_argv(args, msg, round_dir, proposals=None):
     if args.improver_cmd:
         argv = shlex.split(args.improver_cmd)
         if not Path(argv[0]).is_absolute() and Path(argv[0]).exists():
             argv[0] = str(Path(argv[0]).resolve())
         return argv + [msg]
     return ["claude", "-p", "--model", "opus", "--permission-mode", "bypassPermissions",
-            "--settings", str(improver_settings(round_dir)), "--max-budget-usd", f"{args.improver_budget_usd:.2f}",
+            "--settings", str(improver_settings(round_dir, proposals)), "--max-budget-usd", f"{args.improver_budget_usd:.2f}",
             "--output-format", "stream-json", "--verbose", msg]
 
 
@@ -939,16 +940,18 @@ def cmd_round(args):
         print(f"round {n}: {outcome}{': ' + reason if reason else ''}")
 
     before = None
+    prop = Path(args.proposals).resolve() if args.proposals and Path(args.proposals).is_file() else None
     try:
         msg = "\n".join([
             "Follow the improver skill. Everything you need is at these paths.",
             f"skill: {wt}/harness-loop/improver/SKILL.md", f"worktree: {wt}",
             f"history: {HOME / 'history.jsonl'}", f"runs: {HOME / 'runs'}", f"tries: {TRIES}",
-            f"round_dir: {round_dir}", ""])
+            f"round_dir: {round_dir}"]
+            + ([f"proposals: {prop}"] if prop else []) + [""])
         (round_dir / "message.txt").write_text(msg)
-        argv = improver_argv(args, msg, round_dir)
+        argv = improver_argv(args, msg, round_dir, prop)
         if not default:
-            improver_settings(round_dir)
+            improver_settings(round_dir, prop)
         before, existing = snapshot(branch, base_run), existing_dirs()
         row["improver_cost_usd"] = "running"
         code, cost = run_improver(argv, wt, round_dir, improver_env(round_dir, default))
@@ -1251,6 +1254,7 @@ def main(argv=None):
     r.add_argument("--tasks", required=True)
     r.add_argument("--improver-cmd")
     r.add_argument("--no-screen", action="store_true")
+    r.add_argument("--proposals", help="a file of harness-wide ideas the improver reads first (skipped if missing)")
     r.add_argument("--budget-usd", type=float, default=DEFAULT_EXAM_BUDGET_USD,
                    help="most the round's exam runs may spend together")
     r.add_argument("--improver-budget-usd", type=float, default=IMPROVER_MAX_USD)
