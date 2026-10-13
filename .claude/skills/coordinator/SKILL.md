@@ -371,7 +371,7 @@ Reviewers + unit tests prove the code is *shaped* right; they do **not** prove i
 - Run it from the worktree with the real creds/data it needs (e.g. `set -a; source <env>; set +a; tsx <worktree>/<live-check>.ts`).
 - **If the real-acceptance check fails, do NOT push.** Fix (or spawn an implementer), re-run. A green unit suite with a failing real-acceptance is a FAIL.
 - Capture the check's key output **verbatim** — it goes into the `BEAD COMPLETE` block so the human approves on *evidence* ("dim 1024; cosine 0.83 vs 0.11"), not on "tests passed."
-- Risky beads: also run the blast-radius skill (`.claude/skills/blast-radius/SKILL.md`) and paste its 'Safe because' line.
+- Risky beads: also run the blast-radius skill (`.claude/skills/blast-radius/SKILL.md`) and paste its 'Safe because' and 'Proved by' lines.
 - **Migration/schema beads** (reality can't be fully exercised pre-merge): the real acceptance is the **from-zero apply on a real Postgres** — CI's migration check plus the preview deploy's migrate — NOT a local `db:verify` on an already-migrated branch.
 
 <!-- few-shot: coordinator-evidence-good-vs-bad -->

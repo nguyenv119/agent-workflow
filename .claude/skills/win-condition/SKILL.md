@@ -140,7 +140,7 @@ objects before claiming either).
 A cost ratio, speedup or pass rate is a claim. Before it goes into the coordinator's SUCCESS report or a PR body, answer each question below with evidence from a run. Write `not checked` for any you skipped; never leave one out. If 4 or 7 is `not checked`, call the number inconclusive.
 
 1. **What limits it?** Name the bottleneck (tokens, one slow call, rate limits, cold cache). If the number didn't move, the limiter says why.
-2. **Was it tuned on the test set?** Prompts or thresholds picked on the same cases you report on overstate the result.
+2. **Was it tuned on the test set?** Prompts or thresholds picked on the same cases you report on overstate the result. For a comparison, did both sides run with their production settings, not one on defaults?
 3. **Does it break a physical limit?** Do the arithmetic. Removing a step that costs 10% can't save more than 10%. A result past the limit measured a cache, a skip or a bug.
 4. **Did anything error?** Count failures, retries and timeouts on both sides. Errors are often cheap and fast.
 5. **Does it reproduce?** More than one run per side, alternating, with the range. A gap smaller than the run-to-run spread is no difference.
