@@ -1,4 +1,5 @@
 """Tests for `agent-cli eval init|run|controls`: tiny real eval scripts run through the installed CLI."""
+import hashlib
 import json
 import os
 import shutil
@@ -115,6 +116,75 @@ class Run(EvalCase):
         left = subprocess.run(["pgrep", "-f", "sleep 47.3"], capture_output=True, text=True).stdout.strip()
         self.assertEqual(left, "")
 
+    def test_sentinel_with_extra_spaces_is_not_win(self):
+        """The sentinel must match exactly; a padded line is a hand-printed look-alike, not the library's verdict."""
+        for i, line in enumerate((" " + SENTINEL, SENTINEL + " ")):
+            # GIVEN an eval whose last line is the sentinel with a leading or trailing space
+            d = self.eval_dir(f"printf '%s\\n' '{line}'\n", where=f"pad{i}")
+            # WHEN run
+            r, out = self.run_json(d)
+            # THEN not WIN: NO_SENTINEL, exit 1, and the line is recorded as printed
+            with self.subTest(line=line):
+                self.assertEqual((r.returncode, out["verdict"]), (1, "NO_SENTINEL"))
+                self.assertEqual(json.loads(Path(out["evidence"]).read_text())["last_line"], line)
+
+    def test_background_child_dies_when_the_eval_ends(self):
+        """A child the eval left running in the background is killed with its process group when the run ends."""
+        # GIVEN an eval that starts a long background sleep and then WINs at once
+        d = self.eval_dir(LIB_SH + "sleep 47.51 &\nwin\n")
+        # WHEN run
+        r, out = self.run_json(d)
+        # THEN WIN, and the background sleep is gone
+        self.assertEqual(out["verdict"], "WIN", r.stderr)
+        left = subprocess.run(["pgrep", "-f", "sleep 47.51"], capture_output=True, text=True).stdout.strip()
+        self.assertEqual(left, "")
+
+    def test_scripts_own_exit_4_is_fail_not_timeout(self):
+        """TIMEOUT means the cap fired; a script that exits 4 itself is an ordinary FAIL, exit 1."""
+        # GIVEN an eval that exits 4 at once
+        d = self.eval_dir("exit 4\n")
+        # WHEN run
+        r, out = self.run_json(d)
+        # THEN FAIL, exit 1, and the script's exit recorded
+        self.assertEqual((r.returncode, out["verdict"], out["exit"]), (1, "FAIL", 4))
+
+    def test_empty_only_is_refused(self):
+        """`--only ""` names no check; it is refused (exit 2) rather than run as a silent partial."""
+        # GIVEN a winning eval
+        d = self.eval_dir(LIB_SH + "win\n")
+        # WHEN run with an empty --only
+        r = self.cli("eval", "run", str(d), "--only", "")
+        # THEN exit 2 with an example, and no evidence written
+        self.assertEqual(r.returncode, 2)
+        self.assertRegex(r.stderr, r"^error: .+\n  example: agent-cli eval run ")
+        self.assertFalse((d / "evidence").exists())
+
+    def test_non_executable_entry_without_suffix_is_refused(self):
+        """An entry that is neither .sh/.py nor executable cannot run; exit 2 says how to fix it."""
+        # GIVEN a plain non-executable entry named check
+        d = self.eval_dir("echo hi\n", name="check")
+        # WHEN run with --entry check
+        r = self.cli("eval", "run", str(d), "--entry", "check")
+        # THEN exit 2 with a chmod example, no traceback
+        self.assertEqual(r.returncode, 2, r.stderr)
+        self.assertIn("  example: chmod +x ", r.stderr)
+        self.assertNotIn("Traceback", r.stderr)
+
+    def test_entry_that_cannot_start_is_error_with_evidence(self):
+        """An executable entry with no shebang fails to start: verdict ERROR, exit 1, evidence still written."""
+        # GIVEN an executable entry with no shebang line
+        d = self.eval_dir("echo hi\n", name="check")
+        (d / "check").chmod(0o755)
+        # WHEN run
+        r, out = self.run_json(d, "--entry", "check")
+        # THEN ERROR, exit 1, exit null, and both evidence files name the error
+        self.assertEqual((r.returncode, out["verdict"], out["exit"]), (1, "ERROR", None), r.stderr)
+        self.assertNotIn("Traceback", r.stderr)
+        ev = json.loads(Path(out["evidence"]).read_text())
+        self.assertEqual((ev["verdict"], ev["exit"]), ("ERROR", None))
+        self.assertIn("could not start", ev["error"])
+        self.assertIn("could not start", Path(out["evidence"]).with_suffix(".log").read_text())
+
     def test_only_exports_eval_only_and_never_wins(self):
         """--only runs one check: EVAL_ONLY is set and the verdict library refuses WIN with exit 5 (partial)."""
         # GIVEN an eval that echoes EVAL_ONLY then passes and calls win
@@ -201,6 +271,7 @@ class Controls(EvalCase):
     EVAL = LIB_SH + 'if [ "${INPUT:-full}" = empty ]; then fail "0 rows"; fi\nok "rows"\nwin\n'
 
     def control(self, d, name, text, executable=False):
+        """Write controls/<name> with text (made executable on request); returns its path."""
         c = d / "controls" / name
         c.parent.mkdir(exist_ok=True)
         c.write_text(text)
@@ -230,9 +301,51 @@ class Controls(EvalCase):
         self.control(d, "fail-skips-check", '#!/bin/bash\nexec bash "$EVAL_ENTRY"\n', executable=True)
         # WHEN controls run
         r = self.cli("eval", "controls", str(d))
-        # THEN exit 1 naming the control
+        # THEN exit 1 naming the control, and its evidence pins the control script's content
         self.assertEqual(r.returncode, 1, r.stdout)
         self.assertIn("fail-skips-check: WIN (MISMATCH", r.stdout)
+        ev = json.loads(next((d / "evidence").glob("*fail-skips-check.json")).read_text())
+        want = hashlib.sha256((d / "controls/fail-skips-check").read_bytes()).hexdigest()
+        self.assertEqual(ev["control_sha256"], want)
+
+    def test_env_fail_control_that_wins_exits_1_naming_it(self):
+        """A .env fail control whose input the eval accepts proves the eval cannot discriminate."""
+        # GIVEN an env fail control that feeds the eval good input
+        d = self.eval_dir(self.EVAL)
+        self.control(d, "fail-not-empty.env", "INPUT=full\n")
+        # WHEN controls run
+        r = self.cli("eval", "controls", str(d))
+        # THEN exit 1 naming it in the line and the summary
+        self.assertEqual(r.returncode, 1, r.stdout)
+        self.assertIn("fail-not-empty: WIN (MISMATCH", r.stdout)
+        self.assertIn("mismatched: fail-not-empty", r.stdout)
+
+    def test_control_that_cannot_start_is_reported_and_the_rest_still_run(self):
+        """A broken executable control (no shebang) tested nothing: it is named as ERROR and the others run."""
+        # GIVEN a broken executable fail control and a working env fail control after it
+        d = self.eval_dir(self.EVAL)
+        self.control(d, "fail-a-broken", "echo no shebang\n", executable=True)
+        self.control(d, "fail-b-empty.env", "INPUT=empty\n")
+        # WHEN controls run
+        r = self.cli("eval", "controls", str(d))
+        # THEN exit 1 naming the broken one, the next control still ran, and the broken one left evidence
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("fail-a-broken: no WIN (ERROR: could not start", r.stdout)
+        self.assertIn("fail-b-empty: no WIN (ok)", r.stdout)
+        self.assertNotIn("Traceback", r.stderr)
+        self.assertTrue(list((d / "evidence").glob("*fail-a-broken.log")))
+
+    def test_control_exiting_4_itself_does_not_stop_the_run(self):
+        """Only the cap stops controls early; a control whose script exits 4 is a plain no-WIN."""
+        # GIVEN a fail control making the eval exit 4, then a pass control
+        d = self.eval_dir(LIB_SH + '[ -n "$FOUR" ] && exit 4\nwin\n')
+        self.control(d, "fail-four.env", "FOUR=1\n")
+        self.control(d, "pass-ok.env", "")
+        # WHEN controls run
+        r = self.cli("eval", "controls", str(d))
+        # THEN both ran and both behaved: exit 0
+        self.assertEqual(r.returncode, 0, r.stdout)
+        self.assertIn("controls: 2/2", r.stdout)
 
     def test_pass_control_that_does_not_win_exits_1(self):
         """A pass control that fails means the eval rejects a known-good case: exit 1."""
@@ -267,8 +380,10 @@ class Controls(EvalCase):
         self.control(d, "fail-hang.env", "HANG=1\n")
         # WHEN controls run with a 1s cap
         r = self.cli("eval", "controls", str(d), "--cap", "1s")
-        # THEN exit 4
+        # THEN exit 4, and the hung sleep was killed with its process group
         self.assertEqual(r.returncode, 4, r.stdout)
+        left = subprocess.run(["pgrep", "-f", "sleep 47.41"], capture_output=True, text=True).stdout.strip()
+        self.assertEqual(left, "")
 
     def test_no_fail_control_is_blocked_exit_3(self):
         """An eval with no fail control has not been tested (win-condition skill): exit 3 says so."""

@@ -7,7 +7,7 @@ import datetime
 import hashlib
 import json
 import os
-import subprocess
+import shutil
 import sys
 import tempfile
 import time
@@ -20,9 +20,10 @@ from .hook_rules import SENTINEL
 EVAL_LIB = Path(__file__).resolve().parent / "eval_lib"
 DIR = ".claude/loop-evals/<epic-id>"
 ENTRIES = ("win.sh", "win.py")
-# script exit -> verdict; exit 0 is WIN or NO_SENTINEL, anything unlisted is FAIL
-VERDICTS = {2: "REFUSED", 3: "BLOCKED", 4: "TIMEOUT", 5: "PARTIAL"}
-EXITS = {"WIN": Exit.OK, "NO_SENTINEL": Exit.FAIL, "FAIL": Exit.FAIL, "REFUSED": Exit.REFUSED,
+# script exit -> verdict; exit 0 is WIN or NO_SENTINEL, anything unlisted (a script's own 4 included) is FAIL.
+# TIMEOUT is only the cap firing; ERROR is an entry that could not start.
+VERDICTS = {2: "REFUSED", 3: "BLOCKED", 5: "PARTIAL"}
+EXITS = {"WIN": Exit.OK, "NO_SENTINEL": Exit.FAIL, "FAIL": Exit.FAIL, "ERROR": Exit.FAIL, "REFUSED": Exit.REFUSED,
          "BLOCKED": Exit.BLOCKED, "TIMEOUT": Exit.TIMEOUT, "PARTIAL": Exit.PARTIAL}
 NO_FAIL_CONTROL = "An eval with no fail control has not been tested."
 TAIL = 65536  # bytes of stdout read back to find the last line
@@ -97,12 +98,13 @@ def register(sub):
     p.set_defaults(func=init)
 
     p = core.subcommand(es, "run", "run an eval; exit 0 only for WIN (exit 0 AND the sentinel last), "
-                        "1 fail or no sentinel, 2/3 passed through, 4 cap, 5 partial (--only)",
+                        "1 fail, no sentinel or entry could not start, 2/3 passed through, 4 cap, 5 partial (--only)",
                         [f"agent-cli eval run {DIR}", f"agent-cli eval run {DIR} --only rows --json",
                          f"agent-cli eval run {DIR} --entry check.py --cap 20m"])
     p.description = ("Runs the entry with the eval dir as cwd and writes evidence/<UTC ts>.log (stdout, then "
                      "stderr) and .json\n{exit, last_line, verdict, duration_s, entry_sha256, git_head} "
-                     "(git_head: HEAD of the repo at your cwd, or null).")
+                     "(git_head: HEAD of the repo at your cwd, or null; exit is null when the cap fired or the "
+                     "entry could not start).")
     p.add_argument("dir")
     p.add_argument("--entry", help=f"script in the dir to run (default: the first of {', '.join(ENTRIES)})")
     p.add_argument("--only", metavar="CHECK", help="export EVAL_ONLY=CHECK; the run can then never WIN (exit 5)")
@@ -148,24 +150,19 @@ def resolve(a, example):
     if entry is None:
         core.die(Exit.REFUSED, f"no entry {' or '.join(names)} in {d}", f"agent-cli eval init {d}")
     entry = entry.resolve()
-    argv = ([sys.executable] if entry.suffix == ".py" else ["bash"] if entry.suffix == ".sh" else []) + [str(entry)]
-    return d, entry, argv
+    runner = [sys.executable] if entry.suffix == ".py" else ["bash"] if entry.suffix == ".sh" else []
+    if not runner and not os.access(entry, os.X_OK):
+        core.die(Exit.REFUSED, f"entry {entry} is not executable and is not .sh or .py", f"chmod +x {entry}")
+    return d, entry, runner + [str(entry)]
 
 
 def verdict(code, last, only):
+    """The verdict for exit code (None = the cap fired) and last non-empty stdout line; see VERDICTS."""
     if code is None:
         return "TIMEOUT"
     if code == 0 and last == SENTINEL:
         return "PARTIAL" if only else "WIN"  # a partial run can never WIN, even with a hand-printed sentinel
     return "NO_SENTINEL" if code == 0 else VERDICTS.get(code, "FAIL")
-
-
-def git_head():
-    try:
-        r = subprocess.run(["git", "rev-parse", "HEAD"], capture_output=True, text=True, timeout=10)
-    except (OSError, subprocess.SubprocessError):
-        return None
-    return r.stdout.strip() if r.returncode == 0 else None
 
 
 def evidence_paths(d, suffix=""):
@@ -183,47 +180,62 @@ def evidence_paths(d, suffix=""):
             n += 1
 
 
-def execute(d, entry, argv, cap, extra_env, only=None, control=None):
-    """Run one eval (or control) with evidence; returns the evidence record plus its path."""
-    env = {k: v for k, v in os.environ.items() if k not in ("EVAL_ONLY", "CONTROL", "EVAL_ENTRY")}
-    env["PATH"] = os.pathsep.join(core.path_dirs() + [env.get("PATH", "")])
+def execute(d, entry, argv, cap, extra_env, only=None, control=None, control_file=None):
+    """Run one eval (or control) with evidence; returns the evidence record plus its path.
+
+    An argv that cannot start (OSError: no shebang, not executable) is verdict ERROR, exit null, still with evidence.
+    control_file: an executable control's path, hashed into control_sha256.
+    """
+    env = core.child_env(drop=("EVAL_ONLY", "CONTROL", "EVAL_ENTRY"))
     env.update(extra_env)
     if only:
         env["EVAL_ONLY"] = only
     log_path, json_path = evidence_paths(d, f"-{control}" if control else "")
     start = time.monotonic()
+    error = None
     with tempfile.TemporaryFile() as out, tempfile.TemporaryFile() as err:
-        code = wait.run_capped(argv, cap, stdout=out, stderr=err, cwd=str(d), env=env)
+        try:
+            code = wait.run_capped(argv, cap, stdout=out, stderr=err, cwd=str(d), env=env)
+        except OSError as e:
+            code, error = None, f"could not start {argv[0]}: {e}"
         duration = round(time.monotonic() - start, 1)
+        out.seek(0, os.SEEK_END)
         out.seek(max(0, out.tell() - TAIL))
         lines = [ln for ln in out.read().decode(errors="replace").splitlines() if ln.strip()]
         with open(log_path, "wb") as log:
             for f, head in ((out, b""), (err, b"--- stderr ---\n")):
+                if not f.seek(0, os.SEEK_END):
+                    continue
+                f.seek(-1, os.SEEK_END)
+                newline = f.read(1) == b"\n"
                 f.seek(0)
-                body = f.read()
-                if body:
-                    log.write(head + body + (b"" if body.endswith(b"\n") else b"\n"))
-    last = lines[-1].strip() if lines else ""
-    rec = {"exit": code, "last_line": last, "verdict": verdict(code, last, only), "duration_s": float(duration),
-           "entry_sha256": hashlib.sha256(entry.read_bytes()).hexdigest(), "git_head": git_head()}
+                log.write(head)
+                shutil.copyfileobj(f, log)
+                if not newline:
+                    log.write(b"\n")
+            if error:
+                log.write(f"--- error ---\n{error}\n".encode())
+    last = lines[-1].rstrip("\r\n") if lines else ""
+    rec = {"exit": code, "last_line": last, "verdict": "ERROR" if error else verdict(code, last, only),
+           "duration_s": float(duration), "entry_sha256": hashlib.sha256(entry.read_bytes()).hexdigest(),
+           "git_head": core.git("rev-parse", "HEAD", check=False, timeout=10)}
+    if error:
+        rec["error"] = error
     if control:
         rec["control"] = control
+    if control_file:
+        rec["control_sha256"] = hashlib.sha256(Path(control_file).read_bytes()).hexdigest()
     if only:
         rec["only"] = only
     json_path.write_text(json.dumps(rec, indent=2) + "\n")
     return rec, json_path
 
 
-def cap_seconds(a, example):
-    try:
-        return core.parse_duration(a.cap)
-    except ValueError as e:
-        core.die(Exit.REFUSED, str(e), example)
-
-
 def run(a):
     example = f"agent-cli eval run {DIR}"
-    cap = cap_seconds(a, example)
+    cap = core.duration(a.cap, example)
+    if a.only is not None and not a.only.strip():
+        core.die(Exit.REFUSED, "--only needs a check name", f"agent-cli eval run {DIR} --only rows")
     d, entry, argv = resolve(a, example)
     rec, path = execute(d, entry, argv, cap, {}, only=a.only)
     core.emit({"dir": str(d), "verdict": rec["verdict"], "exit": rec["exit"], "duration_s": rec["duration_s"],
@@ -260,7 +272,7 @@ def env_file(path):
 
 def controls(a):
     example = f"agent-cli eval controls {DIR}"
-    cap = cap_seconds(a, example)
+    cap = core.duration(a.cap, example)
     d, entry, argv = resolve(a, example)
     found = [c for c in find_controls(d) if c[0].startswith(("fail-", "pass-"))]
     if not any(name.startswith("fail-") for name, _, _ in found):
@@ -271,23 +283,26 @@ def controls(a):
         extra = {"CONTROL": name}
         if kind == "env":
             extra = {**env_file(path), **extra}
-            cmd = argv
+            cmd, control_file = argv, None
         else:
             extra["EVAL_ENTRY"] = str(entry)
-            cmd = [str(path.resolve())]
-        rec, ev = execute(d, entry, cmd, cap, extra, control=name)
-        if rec["verdict"] == "TIMEOUT":
+            control_file = path.resolve()
+            cmd = [str(control_file)]
+        rec, ev = execute(d, entry, cmd, cap, extra, control=name, control_file=control_file)
+        if rec["verdict"] == "TIMEOUT":  # only the cap firing stops the run early
             core.emit({"control": name, "verdict": "TIMEOUT", "evidence": str(ev)}, a.json)
             return Exit.TIMEOUT
         won, want = rec["verdict"] == "WIN", name.startswith("pass-")
-        if won != want:
+        broken = rec["verdict"] == "ERROR"  # a control that could not start tested nothing
+        good = won == want and not broken
+        if not good:
             mismatched.append(name)
         if a.json:
-            print(json.dumps({"control": name, "win": won, "ok": won == want, "verdict": rec["verdict"],
+            print(json.dumps({"control": name, "win": won, "ok": good, "verdict": rec["verdict"],
                               "evidence": str(ev)}))
         else:
-            note = "ok" if won == want else ("MISMATCH: a fail control must not WIN" if won
-                                             else "MISMATCH: a pass control must WIN")
+            note = ("ok" if good else f"ERROR: {rec['error']}" if broken
+                    else "MISMATCH: a fail control must not WIN" if won else "MISMATCH: a pass control must WIN")
             print(f"{name}: {'WIN' if won else 'no WIN'} ({note})")
     ok = len(found) - len(mismatched)
     if a.json:

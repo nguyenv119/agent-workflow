@@ -9,6 +9,7 @@ import tempfile
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
+from unittest import mock
 
 from helpers import CLAUDE, GIT, agent_cli, make_project, run
 
@@ -303,6 +304,45 @@ class Core(unittest.TestCase):
         for bad in ("", "5x", "-1m", "m"):
             with self.assertRaises(ValueError):
                 core.parse_duration(bad)
+
+    def test_duration_refuses_a_bad_value_with_exit_2_and_the_example(self):
+        """core.duration is parse_duration for commands: a bad value exits 2 naming a correct invocation."""
+        # GIVEN a good and a bad duration
+        # WHEN parsed
+        err = io.StringIO()
+        with redirect_stderr(err), self.assertRaises(SystemExit) as cm:
+            core.duration("5x", "agent-cli wait --cap 30m")
+        # THEN seconds for the good one, exit 2 + example for the bad one
+        self.assertEqual(core.duration("2m", "unused"), 120)
+        self.assertEqual(cm.exception.code, 2)
+        self.assertIn("  example: agent-cli wait --cap 30m", err.getvalue())
+
+    def test_git_returns_none_or_exits_1_when_git_cannot_run(self):
+        """core.git never raises: with git missing it returns None, or with check exits 1 and the example."""
+        # GIVEN no git on PATH
+        with mock.patch.dict(os.environ, {"PATH": ""}):
+            # WHEN called without and with check
+            quiet = core.git("rev-parse", "HEAD", check=False)
+            err = io.StringIO()
+            with redirect_stderr(err), self.assertRaises(SystemExit) as cm:
+                core.git("rev-parse", "HEAD", example="agent-cli wt list")
+        # THEN None, then exit 1 naming the git command and the example
+        self.assertIsNone(quiet)
+        self.assertEqual(cm.exception.code, 1)
+        self.assertIn("error: git rev-parse HEAD: ", err.getvalue())
+        self.assertIn("  example: agent-cli wt list", err.getvalue())
+
+    def test_child_env_drops_names_and_puts_bin_first_on_path(self):
+        """core.child_env is os.environ minus the dropped names, with agent-cli's bin ahead of $PATH."""
+        # GIVEN a variable to drop and one to keep
+        with mock.patch.dict(os.environ, {"DROP_ME": "1", "KEEP_ME": "2", "PATH": "/usr/bin"}):
+            # WHEN the child env is built
+            env = core.child_env(drop=("DROP_ME",))
+        # THEN dropped, kept, and bin first with the old PATH last
+        self.assertNotIn("DROP_ME", env)
+        self.assertEqual(env["KEEP_ME"], "2")
+        self.assertEqual(env["PATH"].split(os.pathsep)[0], str(core.BIN))
+        self.assertEqual(env["PATH"].split(os.pathsep)[-1], "/usr/bin")
 
     def test_emit_json_and_text(self):
         """R7: --json is one object per line; text mode is `key: value` lines."""
