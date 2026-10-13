@@ -112,6 +112,8 @@ Gate results go in a second, smaller table. **Stacked PRs (when the user asks fo
 
 Nothing was added to the repo, so nothing stops regrowth. Schedule a report-mode rescan (weekly is plenty) as a scheduled routine (the `schedule` skill): Phase 2a + 2b with the pinned knip and frozen config, diff against the last lists in the KB, post the delta with reasoning. Deletion still goes through Phase 3–4. Filing that routine is the last step of the first prune, not an afterthought.
 
+The `gardener` skill is that weekly driver: its first pass is this rescan in report mode, next to a pass on repeated agent mistakes. Schedule `/gardener` rather than a separate prune routine.
+
 ## Hard rules
 
 - Nothing from this lane enters the product repo except deletion PRs. No knip install, no config file, no CI wiring.
