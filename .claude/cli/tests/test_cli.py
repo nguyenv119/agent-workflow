@@ -17,7 +17,8 @@ from agent_cli import core, main  # noqa: E402
 
 LEAVES = [[], ["hook"], ["hook", "pretooluse"], ["hook", "test"], ["hook", "rules"], ["eval"], ["eval", "lib"],
           ["self"], ["self", "env"], ["self", "install"], ["lib"], ["lib", "path"],
-          ["wt"], ["wt", "new"], ["wt", "list"], ["wt", "audit"], ["wt", "rm"]]
+          ["wt"], ["wt", "new"], ["wt", "list"], ["wt", "audit"], ["wt", "rm"],
+          ["wait"], ["lock"], ["lock", "acquire"], ["lock", "release"], ["lock", "status"]]
 
 
 class TmpCase(unittest.TestCase):
@@ -80,7 +81,7 @@ class Help(TmpCase):
         names = list(next(a for a in root._actions if isinstance(a, argparse._SubParsersAction)).choices)
         # THEN every module registered exactly the commands the root lists, in list order
         self.assertTrue(all(callable(getattr(m, "register", None)) for m in main.COMMANDS))
-        self.assertEqual(names, ["hook", "eval", "self", "lib", "wt"])
+        self.assertEqual(names, ["hook", "eval", "self", "lib", "wt", "wait", "lock"])
 
     def test_group_prints_its_help_when_called_bare(self):
         """core.group: a command group whose bare call prints its own help (R1), with a subparser set."""

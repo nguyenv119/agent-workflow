@@ -91,14 +91,18 @@ class Deny(HookCase):
 
 
 class Warn(HookCase):
-    def test_warn_rule_adds_context_without_a_decision(self):
-        """A warn rule returns additionalContext and no permissionDecision, so the command still runs."""
-        # GIVEN the demo warn command
+    def test_sleep_poll_loop_warns_without_a_decision(self):
+        """A foreground while/until loop sleeping 3s+ gets the wait hint as context and no permissionDecision.
+
+        Warn, not deny: a generic loop is too broad to block safely, so the command must still run.
+        """
+        # GIVEN a hand-written poll loop
         # WHEN the hook reads it
-        out = self.decision(self.hook("true agent-cli-warn-demo"))
-        # THEN it carries context and no decision
+        out = self.decision(self.hook("until gh pr checks 12; do sleep 30; done"))
+        # THEN it carries the wait hint and no decision
         self.assertNotIn("permissionDecision", out)
-        self.assertIn("agent-cli-demo-warn", out["additionalContext"])
+        self.assertIn("agent-cli wait --until", out["additionalContext"])
+        self.assertIn("allow hand-sleep-poll", out["additionalContext"])
 
 
 class SafetyRules(HookCase):

@@ -42,7 +42,14 @@ bash eval.sh | tail -1
 for f in *.md; do echo "$f"; done
 while read -r line; do echo "$line"; done < list.txt
 echo '<promise>WIN</promise> is printed by the verdict lib' > notes.txt
-true agent-cli-warn-demo  # expect-warn: agent-cli-demo-warn
+for f in *.md; do wc -l $f; done
+while read l; do echo $l; done < f
+while true; do sleep 1; done
+until gh pr checks 12; do sleep 2; done
+while read l; do echo $l; done; sleep 30
+echo "while x; do sleep 60; done"
+until gh pr checks 12; do sleep 30; done  # expect-warn: hand-sleep-poll
+while ! test -f done; do echo wait; sleep 10; done  # expect-warn: hand-sleep-poll
 ---
 git commit -m "$(cat <<'EOF'
 fix(eval): print the sentinel from the lib
