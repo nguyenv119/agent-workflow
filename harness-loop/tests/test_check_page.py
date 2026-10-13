@@ -1,4 +1,4 @@
-"""Tests for .claude/skills/document/check_page.py: the document page and desk card format checker.
+"""Tests for .claude/skills/document/check_page.py: the document page and to-do card format checker.
 
 Format rules written as prose in the document skill kept getting broken, so the checkable ones live
 in this script instead. Each rule gets one page (or card) that passes and one that fails. Pages and
@@ -214,7 +214,7 @@ class PageRules(unittest.TestCase):
 class CardRules(unittest.TestCase):
     def test_complete_card_passes(self):
         """A needs-you card with every field filled and plain prose passes; a false positive here
-        would block every desk render."""
+        would block every card render."""
         # GIVEN one good card
         # WHEN the card dir is checked
         out = check_cards({"cache-size.json": GOOD_CARD})

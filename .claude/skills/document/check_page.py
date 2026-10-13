@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Check a document page or a folder of desk cards against the format rules a script can check.
+"""Check a document page or a folder of to-do cards against the format rules a script can check.
 
     check_page.py <page.html>      every div.layer has h3, p.pain, figure.dia, p.done; no "Layer..."
                                    h3 outside a div.layer; no div.upd/div.ltodo outside For agents
@@ -9,7 +9,7 @@
                                    ids or PR numbers; no token-shaped strings; no em dashes.
                                    --prefix flags NAME-<3-5 chars> even when the id is letter-only.
 
-A desk card is one JSON object per <dir>/*.json, with string fields: id, status, title, background,
+A to-do card is one JSON object per <dir>/*.json, with string fields: id, status, title, background,
 why, choice, recommendation, detail (a path to the project page or notes). status "needs-you" means
 the card waits on the reader to decide, so every field from title to detail must be filled. Prose
 fields (title to recommendation) must not carry tracker ids or PR numbers; detail is exempt.
@@ -153,7 +153,7 @@ def check_page(html):
 
 
 def check_cards(folder, prefixes=()):
-    """Return the list of violations for every *.json desk card in folder."""
+    """Return the list of violations for every *.json to-do card in folder."""
     out = []
     for f in sorted(Path(folder).glob("*.json")):
         try:
