@@ -1,6 +1,7 @@
 """Shared helpers for agent-cli and the project CLIs that import it (Python 3.9+, stdlib only).
 
-Stable API: build_parser, Exit, emit, die, parse_duration, find_seam (plus find_project_file, run_seam).
+Stable API: build_parser, Exit, emit, die, parse_duration, find_seam (plus find_project_file, run_seam,
+subcommand, group).
 """
 import argparse
 import enum
@@ -80,6 +81,13 @@ def subcommand(sub, name, summary, examples):
     return sub.add_parser(name, help=summary, summary=summary, examples=examples)
 
 
+def group(sub, name, summary, examples):
+    """A command group: (parser, its subparsers); called bare it prints its own help (R1)."""
+    p = subcommand(sub, name, summary, examples)
+    p.set_defaults(func=lambda a: p.print_help())
+    return p, p.add_subparsers(title="Commands", metavar="<command>")
+
+
 @functools.lru_cache(maxsize=None)
 def _claude_dirs():
     """Candidate .claude/ dirs, first hit wins: the install's, $CLAUDE_PROJECT_DIR's, then walking up
@@ -131,7 +139,11 @@ def path_dirs():
     return [str(BIN)] + [str(root / d) if not os.path.isabs(d) else d for d in seam_lines("path")]
 
 
-def run_seam(path, args):
-    """Run a seam executable with path_dirs() ahead of $PATH; returns the CompletedProcess (text captured)."""
+def run_seam(path, args, **kw):
+    """Run a seam executable with path_dirs() ahead of $PATH; returns the CompletedProcess.
+
+    Output streams to ours by default (worktree setup can run for minutes); kw pass to subprocess.run,
+    e.g. capture_output=True, text=True.
+    """
     env = {**os.environ, "PATH": os.pathsep.join(path_dirs() + [os.environ.get("PATH", "")])}
-    return subprocess.run([str(path), *args], env=env, capture_output=True, text=True)
+    return subprocess.run([str(path), *args], env=env, **kw)

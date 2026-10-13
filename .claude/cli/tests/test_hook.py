@@ -121,6 +121,7 @@ class SafetyRules(HookCase):
     def test_bypass_comment_skips_only_that_rule(self):
         """`# agent-cli: allow <id>` lets a deliberate command through; other ids do not."""
         # GIVEN the bypass comment for the verdict rule, and one naming another rule
+        # WHEN the hook reads each command
         ok = self.hook('echo "<promise>WIN</promise>"  # agent-cli: allow agent-cli-hand-verdict')
         other = self.hook('echo "<promise>WIN</promise>"  # agent-cli: allow some-other-rule')
         # THEN only the matching bypass lets it through
@@ -158,16 +159,80 @@ class SafetyRules(HookCase):
         self.assertEqual(len(r.stderr.strip().splitlines()), 1, r.stderr)
         self.assertIn("pretooluse-rules.json", r.stderr)
 
-    def test_bad_project_regex_is_ignored(self):
-        """A rule whose regex does not compile drops the project file, not the hook."""
-        # GIVEN a rules file with an unbalanced regex
-        p = make_project(self.tmp / "re", {"pretooluse-rules.json": json.dumps(
-            [{"id": "x", "match": "(", "mode": "deny", "message": "m"}])})
-        # WHEN tested
-        r = agent_cli(p, "hook", "test", "--cmd", "ls")
-        # THEN it allows and names the file
-        self.assertEqual(r.returncode, 0, r.stderr)
-        self.assertIn("pretooluse-rules.json", r.stderr)
+    def project_rules(self, name, rules):
+        """hook test --json on the sentinel command and on `frob x`, in a project with these seam rules."""
+        p = make_project(self.tmp / name, {"pretooluse-rules.json": json.dumps(rules)})
+        res = [agent_cli(p, "hook", "test", "--cmd", c, "--json") for c in ('echo "<promise>WIN</promise>"', "frob x")]
+        return [[x["id"] for x in json.loads(r.stdout)["rules"]] for r in res], res[0].stderr
+
+    GOOD = {"id": "good", "match": "{CMD}frob\\b", "mode": "warn", "message": "m"}
+
+    def assert_only_bad_rule_skipped(self, bad, label):
+        """The bad rule is skipped with one stderr line naming the file and label; built-ins and `good` stay."""
+        # WHEN both commands are tested with the bad rule ahead of a good one
+        fired, err = self.project_rules(label.strip("#"), [bad, self.GOOD])
+        # THEN the built-in deny and the good rule still fire, and stderr names the file and the rule once
+        self.assertEqual(fired, [[VERDICT], ["good"]], err)
+        self.assertEqual(len(err.strip().splitlines()), 1, err)
+        self.assertIn("pretooluse-rules.json", err)
+        self.assertIn(label, err)
+
+    def test_bad_project_regex_skips_only_that_rule(self):
+        """A rule whose regex does not compile is dropped alone, never the file or the built-ins."""
+        # GIVEN a rule with an unbalanced regex
+        self.assert_only_bad_rule_skipped({"id": "bad-re", "match": "(", "mode": "deny", "message": "m"}, "bad-re")
+
+    def test_rule_missing_match_skips_only_that_rule(self):
+        """A rule with no `match` would KeyError at evaluate time; it is skipped at load instead."""
+        # GIVEN a rule without match
+        self.assert_only_bad_rule_skipped({"id": "no-match", "mode": "deny", "message": "m"}, "no-match")
+
+    def test_non_string_match_skips_only_that_rule(self):
+        # GIVEN a rule whose match is a list
+        self.assert_only_bad_rule_skipped({"id": "list-match", "match": ["x"], "mode": "deny", "message": "m"},
+                                          "list-match")
+
+    def test_non_string_requires_skips_only_that_rule(self):
+        # GIVEN a rule whose requires is a number
+        self.assert_only_bad_rule_skipped({"id": "num-req", "match": "frob", "requires": 3, "mode": "deny",
+                                           "message": "m"}, "num-req")
+
+    def test_non_string_needs_skips_only_that_rule(self):
+        # GIVEN a rule whose needs is an object
+        self.assert_only_bad_rule_skipped({"id": "obj-needs", "match": "frob", "needs": {}, "mode": "deny",
+                                           "message": "m"}, "obj-needs")
+
+    def test_non_string_unless_skips_only_that_rule(self):
+        # GIVEN a rule whose unless is null
+        self.assert_only_bad_rule_skipped({"id": "null-unless", "match": "frob", "unless": None, "mode": "deny",
+                                           "message": "m"}, "null-unless")
+
+    def test_bad_mode_skips_only_that_rule(self):
+        # GIVEN a rule with an unknown mode
+        self.assert_only_bad_rule_skipped({"id": "bad-mode", "match": "frob", "mode": "block", "message": "m"},
+                                          "bad-mode")
+
+    def test_rule_without_id_is_named_by_index(self):
+        """A rule with no usable id is named by its position in the array."""
+        # GIVEN a non-object entry at index 0
+        self.assert_only_bad_rule_skipped("not a rule", "#0")
+
+    def test_project_rule_reusing_a_builtin_id_is_rejected(self):
+        """A project rule cannot shadow a built-in: its id would also make the built-in's bypass ambiguous."""
+        # GIVEN a project warn rule reusing the built-in deny's id
+        self.assert_only_bad_rule_skipped({"id": VERDICT, "match": "frob", "mode": "warn", "message": "m"}, VERDICT)
+
+    def test_builtin_deny_fires_with_a_bad_project_rule_present(self):
+        """The hand-verdict deny is never switched off by a broken project rule (the pretooluse path)."""
+        # GIVEN a project whose only rule is broken
+        p = make_project(self.tmp / "deny", {"pretooluse-rules.json": json.dumps(
+            [{"id": "broken", "mode": "deny", "message": "m"}])})
+        # WHEN the hook reads a hand-printed sentinel
+        r = agent_cli(p, "hook", "pretooluse", stdin=bash_event('echo "<promise>WIN</promise>"'))
+        # THEN it is denied by the built-in
+        out = json.loads(r.stdout)["hookSpecificOutput"]
+        self.assertEqual(out["permissionDecision"], "deny")
+        self.assertIn(VERDICT, out["permissionDecisionReason"])
 
     def test_commands_over_20kb_are_not_matched(self):
         """Python re cannot be interrupted, so huge commands skip matching to bound hook time."""
@@ -176,6 +241,16 @@ class SafetyRules(HookCase):
         # WHEN the hook reads it
         # THEN nothing is decided
         self.assertIsNone(self.decision(self.hook(cmd)))
+
+    def test_command_just_under_20kb_is_still_matched(self):
+        """The bound is exclusive of the limit: a command of exactly 20 KB is still checked."""
+        # GIVEN a denied command padded to exactly 20 KB
+        head = 'echo "<promise>WIN</promise>"; : '
+        cmd = head + "x" * (hook.MAX_CMD - len(head))
+        self.assertEqual(len(cmd), hook.MAX_CMD)
+        # WHEN the hook reads it
+        # THEN it is denied
+        self.assertEqual(self.decision(self.hook(cmd))["permissionDecision"], "deny")
 
 
 class RuleFields(HookCase):

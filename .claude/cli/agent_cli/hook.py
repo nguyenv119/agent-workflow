@@ -1,4 +1,4 @@
-"""PreToolUse hook framework: the command's code view, rule loading and evaluation, the hook verbs.
+"""PreToolUse hook framework: the command's code view, rule loading and evaluation, the `hook` verbs.
 
 Safety: fails open (any error prints nothing, exit 0); AGENT_CLI_HOOKS=off disables every rule;
 `# agent-cli: allow <id>` skips one rule; only Bash is inspected; commands over 20 KB are not matched.
@@ -103,29 +103,51 @@ def _skip_heredocs(s, i, pending):
 
 
 def load_rules():
-    """(cmd regex, rules): built-ins plus the project's seam rules; a bad project file is ignored with one
-    stderr line naming it."""
+    """Built-ins plus the project's seam rules. A file that is not a JSON array is ignored, and a bad rule
+    is skipped alone, each with one stderr line naming the file (and the rule's id, or #index)."""
     cmd = hook_rules.cmd_re(core.seam_lines("command-prefixes"))
     rules = [dict(r, source="builtin") for r in hook_rules.builtin(cmd)]
     f = core.find_seam("pretooluse-rules.json")
-    if f:
+    if not f:
+        return rules
+    try:
+        project = json.loads(f.read_text())
+        if not isinstance(project, list):
+            raise ValueError("must be a JSON array of rules")
+    except Exception as e:  # an unreadable file drops the project rules, never the hook
+        sys.stderr.write(f"agent-cli hook: ignoring {f}: {e}\n")
+        return rules
+    body, ids = hook_rules.body_re(cmd), {r["id"] for r in rules}
+    for i, r in enumerate(project):
+        label = r["id"] if isinstance(r, dict) and isinstance(r.get("id"), str) else f"#{i}"
         try:
-            project = json.loads(f.read_text())
-            if not isinstance(project, list):
-                raise ValueError("must be a JSON array of rules")
-            body = hook_rules.body_re(cmd)
-            for r in project:
-                for k in ("match", "unless", "needs"):
-                    if k in r:
-                        r[k] = r[k].replace("{CMD}", cmd).replace("{BODY}", body)
-                        re.compile(r[k])
-                if not (isinstance(r["id"], str) and r["mode"] in ("deny", "warn") and isinstance(r["message"], str)
-                        and r.get("on", "code") in ("code", "raw")):
-                    raise ValueError(f"rule {r.get('id')!r}: needs id, mode deny|warn, message, on code|raw")
-            rules += [dict(r, source="project") for r in project]
-        except Exception as e:  # any shape error drops the whole project file, never the hook
-            sys.stderr.write(f"agent-cli hook: ignoring {f}: {e}\n")
+            rule = _project_rule(r, cmd, body, ids)
+        except (ValueError, re.error) as e:
+            sys.stderr.write(f"agent-cli hook: ignoring rule {label} in {f}: {e}\n")
+            continue
+        ids.add(rule["id"])
+        rules.append(rule)
     return rules
+
+
+def _project_rule(r, cmd, body, taken):
+    """A validated copy of one project rule with {CMD}/{BODY} filled in; raises ValueError or re.error."""
+    if not isinstance(r, dict):
+        raise ValueError("must be a JSON object")
+    if not isinstance(r.get("id"), str) or r["id"] in taken:
+        raise ValueError("needs a string id not used by a built-in or an earlier rule")
+    if not (r.get("mode") in ("deny", "warn") and isinstance(r.get("message"), str)
+            and r.get("on", "code") in ("code", "raw") and isinstance(r.get("match"), str)):
+        raise ValueError("needs match, mode deny|warn, message, on code|raw")
+    for k in ("unless", "needs", "requires"):
+        if k in r and not isinstance(r[k], str):
+            raise ValueError(f"{k} must be a string")
+    rule = dict(r, source="project")
+    for k in ("match", "unless", "needs"):
+        if k in rule:
+            rule[k] = rule[k].replace("{CMD}", cmd).replace("{BODY}", body)
+            re.compile(rule[k])
+    return rule
 
 
 def active(rule):
@@ -202,3 +224,23 @@ def list_rules(json_mode):
         else:
             state = "active" if row["active"] else f"inactive (needs {row['requires']})"
             print(f"{row['id']}  {row['mode']}  {row['source']}  {state}")
+
+
+def register(sub):
+    _, hs = core.group(sub, "hook", "PreToolUse rules that point hand-rolled chores at the right command",
+                       ["agent-cli hook test --cmd 'echo \"<promise>WIN</promise>\"'", "agent-cli hook rules --json"])
+    p = core.subcommand(hs, "pretooluse",
+                        "read a PreToolUse event on stdin; print a deny or warn envelope, or nothing",
+                        ["echo '{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"ls\"}}' "
+                         "| agent-cli hook pretooluse"])
+    p.set_defaults(func=lambda a: pretooluse())
+    p = core.subcommand(hs, "test", "show which rules fire on a command (exit 2 when one denies)",
+                        ["agent-cli hook test --cmd 'echo \"<promise>WIN</promise>\"'",
+                         "agent-cli hook test --cmd 'gh pr checks 12' --json"])
+    p.add_argument("--cmd", required=True, help="the Bash command to check")
+    p.add_argument("--json", action="store_true", help="one JSON object: decision and rules")
+    p.set_defaults(func=lambda a: test(a.cmd, a.json))
+    p = core.subcommand(hs, "rules", "list built-in and project rules and whether each is active",
+                        ["agent-cli hook rules", "agent-cli hook rules --json"])
+    p.add_argument("--json", action="store_true", help="one JSON object per rule")
+    p.set_defaults(func=lambda a: list_rules(a.json))

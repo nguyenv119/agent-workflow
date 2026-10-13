@@ -1,4 +1,5 @@
 """Tests for agent-cli's help, exit codes, `self`, `lib`, `eval lib` and the core helpers project CLIs import."""
+import argparse
 import io
 import json
 import os
@@ -12,7 +13,7 @@ from pathlib import Path
 from helpers import CLAUDE, GIT, agent_cli, make_project, run
 
 sys.path.insert(0, str(CLAUDE / "cli"))
-from agent_cli import core  # noqa: E402
+from agent_cli import core, main  # noqa: E402
 
 LEAVES = [[], ["hook"], ["hook", "pretooluse"], ["hook", "test"], ["hook", "rules"], ["eval"], ["eval", "lib"],
           ["self"], ["self", "env"], ["self", "install"], ["lib"], ["lib", "path"]]
@@ -68,6 +69,33 @@ class Help(TmpCase):
         r = agent_cli(p, "--help")
         # THEN the CLI is listed with its summary
         self.assertRegex(r.stdout, r"Project CLIs:\n  proj-cli\s+proj-cli: does project chores\n")
+
+    def test_each_command_module_registers_itself(self):
+        """build() takes its top-level commands from main.COMMANDS, one register(sub) per module, so a new
+        command module is one list entry."""
+        # GIVEN the module list
+        # WHEN the root parser is built
+        root = main.build()
+        names = list(next(a for a in root._actions if isinstance(a, argparse._SubParsersAction)).choices)
+        # THEN every module registered exactly the commands the root lists, in list order
+        self.assertTrue(all(callable(getattr(m, "register", None)) for m in main.COMMANDS))
+        self.assertEqual(names, ["hook", "eval", "self", "lib"])
+
+    def test_group_prints_its_help_when_called_bare(self):
+        """core.group: a command group whose bare call prints its own help (R1), with a subparser set."""
+        # GIVEN a parser with one group holding one leaf
+        root = core.build_parser("demo", "a demo", ["demo grp leaf"])
+        sub = root.add_subparsers(title="Commands", metavar="<command>", parser_class=core.Parser)
+        grp, gs = core.group(sub, "grp", "a group", ["demo grp leaf"])
+        core.subcommand(gs, "leaf", "a leaf", ["demo grp leaf"]).set_defaults(func=lambda a: "leaf")
+        out = io.StringIO()
+        # WHEN the group is called bare, and the leaf is called
+        with redirect_stdout(out):
+            root.parse_args(["grp"]).func(None)
+        leaf = root.parse_args(["grp", "leaf"]).func(None)
+        # THEN the group printed its help and the leaf ran
+        self.assertTrue(out.getvalue().startswith("demo grp: a group\n"), out.getvalue())
+        self.assertEqual(leaf, "leaf")
 
     def test_bad_usage_exits_2_with_an_example(self):
         """R3/R8: a bad invocation fails fast on stderr with `error:` and a correct example, exit 2."""
@@ -306,10 +334,38 @@ class Core(unittest.TestCase):
         seam = tmp / "s"
         seam.write_text('#!/bin/sh\necho "$1 $PATH"\n')
         seam.chmod(0o755)
-        # WHEN run
-        r = core.run_seam(seam, ["arg"])
+        # WHEN run with capture asked for (kwargs pass through to subprocess.run)
+        r = core.run_seam(seam, ["arg"], capture_output=True, text=True)
         # THEN the args pass through and .claude/bin leads PATH
         self.assertTrue(r.stdout.startswith(f"arg {CLAUDE / 'bin'}:"), r.stdout)
+
+    def test_run_seam_streams_output_by_default(self):
+        """A long seam (e.g. a worktree setup) shows its output live: nothing is captured unless asked."""
+        # GIVEN a seam script that prints a marker and exits 3, and a file standing in for our stdout
+        tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, tmp, ignore_errors=True)
+        seam = tmp / "s"
+        seam.write_text('#!/bin/sh\necho streamed-$1\nexit 3\n')
+        seam.chmod(0o755)
+        # WHEN run with no kwargs, its stdout inherited from ours
+        with open(tmp / "out", "w") as out:
+            r = _run_inheriting(seam, out)
+        # THEN the output went to our stdout, not into the result, and the exit code is kept
+        self.assertIsNone(r.stdout)
+        self.assertEqual(r.returncode, 3)
+        self.assertEqual((tmp / "out").read_text(), "streamed-x\n")
+
+
+def _run_inheriting(seam, out):
+    """core.run_seam(seam, ["x"]) with the process's fd 1 pointed at out, so inheritance is observable."""
+    saved = os.dup(1)
+    sys.stdout.flush()
+    os.dup2(out.fileno(), 1)
+    try:
+        return core.run_seam(seam, ["x"])
+    finally:
+        os.dup2(saved, 1)
+        os.close(saved)
 
 
 if __name__ == "__main__":

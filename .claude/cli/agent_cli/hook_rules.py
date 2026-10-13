@@ -5,6 +5,8 @@ A rule: {id, match, unless?, needs?, requires?, on?: "code"|"raw", mode: "deny"|
 stripped) unless on == "raw"; `needs` is a cheap regex on the raw command checked first; a rule with
 `requires` fires only when that command resolves. Project rules (seam pretooluse-rules.json) may write
 {CMD} and {BODY} for the two pieces below.
+Built-in rules use builtin()'s `cmd` argument (this call's CMD, seam prefixes included), never the
+module-level CMD/BODY constants, which lack the prefixes.
 """
 import re
 
@@ -41,7 +43,7 @@ def builtin(cmd):
                     "source \"$(agent-cli eval lib --sh)\" and call win; run evals with agent-cli eval run <dir> "
                     "(coming in the eval bead)."},
         # Proves warn mode end to end; remove once the wait/lock bead ships its own warn rule.
-        # Not anchored at command position, so `true agent-cli-warn-demo` (a harmless command) triggers it.
+        # Deliberately unanchored (no cmd prefix): acceptance runs `true agent-cli-warn-demo`, an argument.
         {"id": "agent-cli-demo-warn", "mode": "warn", "requires": "agent-cli",
          "match": r"\bagent-cli-warn-demo\b",
          "message": "agent-cli-demo-warn: demo warn rule fired; this text is hook context, the command still ran."},
