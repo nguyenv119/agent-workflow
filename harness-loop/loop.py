@@ -52,8 +52,8 @@ points to one specific project (or carries a rule only one project needs) with n
 words; it fails closed. It runs last, only when every other check passed; its cost is booked as
 project-check (at its $1 cap when unknown).
 
-Tries: the improver reads real /work try folders from every repo under ~/.claude/tries/ (Long,
-13 Oct); a cited ~/.claude/tries/<repo>/<bead>/try-N reaches the PR only as tries/<k>/try-N
+Tries: the improver reads real /work try folders from every repo under ~/.claude/tries/ (owner
+decision, 13 Oct 2026); a cited ~/.claude/tries/<repo>/<bead>/try-N reaches the PR only as tries/<k>/try-N
 (the k-th cited try).
 
 Env: HARNESS_LOOP_HOME (default ~/.harness-loop); LOOP_RUN_EXAM / LOOP_COMPARE replace the
