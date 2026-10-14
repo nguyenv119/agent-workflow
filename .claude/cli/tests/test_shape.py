@@ -21,7 +21,7 @@ CASES = [
     ("cd /x/y && git status", "git status"),
     ("cd /x; cd y; ls -la", "ls -la"),
     ("cd /x", "cd <path>"),
-    ("FOO=bar BAZ=1 make build", "make build"),
+    ("FOO=bar BAZ=1 make build", "make <arg>"),
     ("timeout 30 pytest -x", "pytest -x"),
     ("nohup python3 server.py &", "python3 <arg>"),
     ("wrapx raw DATABASE_URL=postgres://u:pw@h/db psql -c 'select 1' --csv", "psql -c <str> --csv"),
@@ -31,7 +31,7 @@ CASES = [
     ("echo 'hi there'", "echo <str>"),
     ("echo `date`", "echo <str>"),
     ("cat <<'EOF' > out.txt\nbody line\nEOF", "cat <heredoc> > <arg>"),
-    ("python3 - <<EOF\nprint(1)\nEOF\necho done", "python3 - <heredoc>; echo done"),
+    ("python3 - <<EOF\nprint(1)\nEOF\necho done", "python3 - <heredoc>; echo <arg>"),
     # numbers, ids, paths, urls
     ("sleep 30", "sleep <n>"),
     ("head -n 20 notes", "head -n <n> <arg>"),
@@ -51,7 +51,7 @@ CASES = [
     ("git log | head -n 5", "git log | head -n <n>"),
     ("test -f x || exit 1", "test -f <v> || exit <n>"),
     ("git add .\ngit commit -m 'msg'", "git add <path>; git commit -m <str>"),
-    ("(cd x && make test)", "make test"),
+    ("(cd x && git status)", "git status"),
     ("make 2>&1 | tee log.txt", "make 2>&1 | tee <arg>"),
     ("ls >/dev/null", "ls > <path>"),
     ("curl -s \\\n  https://x.example.com/a", "curl -s <url:x.example.com>"),
@@ -62,9 +62,21 @@ CASES = [
     ("ls # agent-cli: allow some-rule", "ls"),
     ("git add a.py b.py c.py", "git add <arg>"),
     ("git checkout -- file.py", "git checkout -- <arg>"),
+    # a value never sits in a name slot
+    ("git c324f28ab", "git <id>"),
+    ("curl https://sk-live-PLANTED0123456789.example.com", "curl <url>"),
+    ("echo correcthorse | tool login --password-stdin", "echo <arg> | tool <arg> --password-stdin"),
+    ("ssh myprivatehost", "ssh <arg>"),
+    ("command -v hunterpw", "-v <v>"),
+    ("mysql -uroot -pS3cr3tPw db", "mysql -u<v> -p<v> <v>"),
+    ("echo dGhpc2lzYXNlY3JldA== | base64 -d", "echo <arg> | base64 -d"),
+    # commands run by path keep their name; known multi-command tools keep their subcommand
+    ("/opt/x/.claude/bin/agent-cli wt list --json", "<path>/agent-cli wt <arg> --json"),
+    ("./scripts/deploy.sh --dry-run", "<path>/deploy.sh --dry-run"),
+    ("demo-cli run job", "demo-cli run <arg>"),
 ]
 
-UNPARSEABLE = ['echo "abc', "echo 'abc", "echo $(date", "echo `date", "", "   ", "# only a comment"]
+UNPARSEABLE = ["cat <<$D\nsecret line\n$D", 'echo "abc', "echo 'abc", "echo $(date", "echo `date", "", "   ", "# only a comment"]
 
 
 class Shape(unittest.TestCase):
@@ -113,7 +125,8 @@ class Shape(unittest.TestCase):
         self.assertEqual(shape(a, WRAP), "gh pr <arg> <n> --repo <path> --json <v> && curl -s <url:h.example.com> -H <str>")
 
     def test_wrapper_is_kept_without_the_seam(self):
-        """With no seam words, a wrapper is an ordinary command word.
+        """With no seam words, a wrapper is an ordinary command word (and, not being a known
+        multi-command tool, its next words are values).
 
         The seam is the only place a project names its wrappers; shape must not hard-code any, or a
         generic install would strip words that are real commands elsewhere.
@@ -121,7 +134,7 @@ class Shape(unittest.TestCase):
         # GIVEN no prefixes
         # WHEN a wrapped command is shaped
         # THEN the wrapper stays as the command word
-        self.assertEqual(shape("wrapx git status", ()), "wrapx git <arg>")
+        self.assertEqual(shape("wrapx git status", ()), "wrapx <arg>")
 
     def test_shape_never_contains_a_value_typed_in_any_position(self):
         """A planted value in every value position never appears in the shape.
@@ -130,17 +143,21 @@ class Shape(unittest.TestCase):
         test_record (which greps the files on disk).
         """
         # GIVEN a secret in each position
-        s = "sk-live-PLANTED0123456789"
-        commands = [f"S={s} make", f"curl -H 'Authorization: {s}' https://h.example.com", f"tool {s}",
+        s, w = "sk-live-PLANTED0123456789", "correcthorsebatterystaple"  # w: no digits, all lowercase
+        commands = [f"echo {w}", f"printf {w} | gpg --batch", f"tool -p{w}", f"command -v {w}", f"ssh {w}",
+                    f"echo {w}== | base64 -d", f"cat <<$D\n{w}\n$D", f"curl https://{s}.example.com",
+                    f"sudo -S {w}", f"env -u {w} make",
+                    f"S={s} make", f"curl -H 'Authorization: {s}' https://h.example.com", f"tool {s}",
                     f"curl https://h.example.com/x?key={s}", f"curl https://h.example.com/{s}/x",
                     f"deploy --token {s}", f"deploy --token={s}", f"cat <<EOF\n{s}\nEOF", f"export K={s}",
                     f"{s} --x", f"tool -{s}", f"curl https://{s}@h.example.com"]
         for command in commands:
             with self.subTest(command=command):
                 # WHEN shaped
-                got = shape(command, WRAP) or ""
-                # THEN no 6-char piece of the secret survives
-                self.assertFalse([s[i:i + 6] for i in range(len(s) - 5) if s[i:i + 6] in got], got)
+                got = (shape(command, WRAP) or "").lower()
+                # THEN no 6-char piece of either secret survives
+                self.assertFalse([x[i:i + 6] for x in (s.lower(), w) for i in range(len(x) - 5)
+                                  if x[i:i + 6] in got], got)
 
 
 if __name__ == "__main__":

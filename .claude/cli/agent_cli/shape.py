@@ -1,8 +1,11 @@
 """A Bash command's shape: command and subcommand names and flag names kept, every value masked.
 
-`git -C /x log -5 "a b"` -> `git -C <path> log ...`: quoted text -> <str>, heredoc bodies -> <heredoc>,
-numbers -> <n>, hex ids and UUIDs -> <id>, anything with / -> <path>, URLs -> <url:host>, X=value ->
-X=<v>, a flag's value -> <v>, other bare words -> <arg>. Leading `cd <x> &&` chains and the prefixes
+`gh pr view 12 --repo a/b --json state` -> `gh pr <arg> <n> --repo <path> --json <v>`: quoted text ->
+<str>, heredoc bodies -> <heredoc>, numbers -> <n>, hex ids and UUIDs -> <id>, anything with / -> <path>,
+URLs -> <url:host> (<url> when the host looks like a value), X=value -> X=<v>, a flag's value -> <v>,
+other bare words -> <arg>. A command run by path keeps its name (`<path>/deploy.sh`). The second word is
+kept only after a tool known to take subcommands (SUBCOMMAND_TOOLS, or a name ending in -cli); a short
+flag with a value glued on keeps its letter only (`-p<v>`). Leading `cd <x> &&` chains and the prefixes
 hook_rules.cmd_re knows (env, timeout N, VAR=x and the project's command-prefixes seam words) are
 stripped. The shape never holds a value from the command, so it is safe to store.
 """
@@ -16,11 +19,16 @@ SEPS = ("&&", "||", "|", ";", "&")
 REDIR = re.compile(r"(?:&>>?|>>|>\||>&|<&|<>|<<<|>|<)")
 NAME = re.compile(r"[A-Za-z_][\w.+-]{0,39}")
 SUB = re.compile(r"[a-z][a-z0-9-]{0,23}")
+# Tools whose second word is a subcommand; after any other command the second word is a value.
+SUBCOMMAND_TOOLS = frozenset("""git gh bd agent-cli docker kubectl helm npm npx yarn cargo go pip pip3 uv poetry
+brew apt apt-get aws gcloud az terraform systemctl launchctl claude conda dolt hg svn rustup nix deno bun gem
+bundle dotnet swift xcrun tmux openssl""".split())
+SHORT_FLAGS = re.compile(r"-[A-Za-z]|-[a-z]{2,4}")  # -x, or a run like -la / -xvf; -pS3cret is not one
 DIGITS4 = re.compile(r"\d{4}")
 NUMBER = re.compile(r"-?\d+(?:[.,]\d+)?[A-Za-z%]{0,2}")
 ID = re.compile(r"(?=[0-9a-fA-F]*[a-fA-F])[0-9a-fA-F]{7,}|[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}")
 FLAG = re.compile(r"(--?[A-Za-z][\w.-]{0,30})(=.*)?", re.S)
-ASSIGN = re.compile(r"([A-Za-z_]\w{0,63})=", re.S)
+ASSIGN = re.compile(r"([A-Za-z_]\w{0,63})=(?=[^=])", re.S)  # `abc==` (base64 padding) is not X=v
 URL = re.compile(r"[A-Za-z][\w+.-]*://([^/?#\s]*)")
 HOST = re.compile(r"[a-z0-9][a-z0-9.-]{0,252}")
 
@@ -82,17 +90,18 @@ def _strip(seg, cmd):
 
 def _segment(seg):
     """One simple command's shape: command word, up to one subcommand word, then placeholders."""
-    out, after_flag = [], False
+    out, after_flag, tool = [], False, None
     for i, it in enumerate(seg):
         kind, text = it
         if kind == "heredoc":
             piece = "<heredoc>"
         elif kind == "redir":
             piece = text
-        elif i == 0 and NAME.fullmatch(text) and not DIGITS4.search(text):
-            piece = text
-        elif i == 1 and seg[0][0] == "word" and out[0] == seg[0][1] and SUB.fullmatch(text) \
-                and not DIGITS4.search(text) and not ID.fullmatch(text):
+        elif i == 0 and kind == "word" and _name(text.rsplit("/", 1)[-1]):
+            tool = text.rsplit("/", 1)[-1]
+            piece = tool if "/" not in text else f"<path>/{tool}"
+        elif i == 1 and tool and (tool in SUBCOMMAND_TOOLS or tool.endswith("-cli")) and _name(text) \
+                and SUB.fullmatch(text):
             piece = text
         else:
             piece = _value(text, after_flag)
@@ -102,6 +111,11 @@ def _segment(seg):
     return " ".join(out)
 
 
+def _name(t):
+    """A word that can be kept as a command or subcommand name: not a number, id or digit-laden value."""
+    return bool(NAME.fullmatch(t)) and not DIGITS4.search(t) and not ID.fullmatch(t) and not NUMBER.fullmatch(t)
+
+
 def _value(t, after_flag):
     """The placeholder for one word outside the command/subcommand slots (flag names are kept)."""
     m = ASSIGN.match(t)
@@ -109,6 +123,8 @@ def _value(t, after_flag):
         return f"{m[1]}=<v>"
     m = FLAG.fullmatch(t)
     if m and not DIGITS4.search(m[1]):
+        if not m[1].startswith("--") and not SHORT_FLAGS.fullmatch(m[1]):
+            return m[1][:2] + "<v>"  # -pS3cret: a short flag with its value glued on
         return m[1] + ("=<v>" if m[2] is not None else "")
     if Q in t:
         return "<str>"
@@ -165,7 +181,9 @@ def _tokens(s):
         elif c == "#" and not buf and (i == 0 or s[i - 1] in hook.WORD_START):
             nl = s.find("\n", i)
             i = len(s) if nl < 0 else nl
-        elif s.startswith("<<", i) and not s.startswith("<<<", i) and hook.HEREDOC.match(s, i):
+        elif s.startswith("<<", i) and not s.startswith("<<<", i):
+            if not hook.HEREDOC.match(s, i):  # e.g. <<$D: the body's end cannot be found, so its lines
+                return None                   # would be read as commands
             end()
             m = hook.HEREDOC.match(s, i)
             pending.append((next(g for g in m.groups()[1:] if g is not None), m[1] == "-"))

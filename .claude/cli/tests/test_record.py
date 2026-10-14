@@ -12,10 +12,16 @@ sys.path.insert(0, str(CLAUDE / "cli"))
 from agent_cli import record  # noqa: E402
 
 SECRET = "sk-live-PLANTED0123456789"
+WORD = "correcthorsebatterystaple"  # a secret with no digits and no capitals
 NOW = dt.datetime(2026, 10, 14, 5, 6, 7, tzinfo=dt.timezone.utc)
 SEAMS = {"command-prefixes": "# wrappers\nwrapx\nwrapx raw\n",
          "pretooluse-rules.json": json.dumps([{"id": "raw-sql-demo", "mode": "warn", "match": "{CMD}psql\\b",
                                                "message": "use the sql command"}])}
+
+
+def store_rows(store):
+    """Every row in every day file under store."""
+    return [json.loads(ln) for f in sorted(Path(store).glob("*.jsonl")) for ln in f.read_text().splitlines()]
 
 
 def event(command, name="PostToolUse", session="sess-a", cwd=None, **extra):
@@ -65,7 +71,10 @@ class Recorder(TmpCase):
         self.assertEqual(self.rows(), [want])
 
     def test_repo_falls_back_to_the_cwd_basename_outside_git(self):
-        """Outside a git repo, repo is the cwd's own name, so rows still say where they ran."""
+        """Outside a git repo, repo is the cwd's own name, so rows still say where they ran.
+
+        Without it, commands run outside any repo would carry repo null and a per-repo report would drop them.
+        """
         # GIVEN a plain dir
         d = self.tmp / "plain-dir"
         d.mkdir()
@@ -90,7 +99,11 @@ class Recorder(TmpCase):
         self.assertEqual(row["repo"], "mainrepo")
 
     def test_failure_exit_code_is_parsed(self):
-        """PostToolUseFailure's "Exit code N" becomes exit N; no code (an interrupt) becomes null."""
+        """PostToolUseFailure's "Exit code N" becomes exit N; no code (an interrupt) becomes null.
+
+        A report that tells failing chores from working ones needs the real code; guessing 1 for an
+        interrupt would count a user's Ctrl-C as a failed command.
+        """
         # GIVEN a failure with a code and one without
         failed = event("ls /nope", name="PostToolUseFailure", error="Exit code 2\nls: /nope: No such file")
         cut = event("sleep 9", name="PostToolUseFailure", error="interrupted", is_interrupt=True)
@@ -100,7 +113,10 @@ class Recorder(TmpCase):
         self.assertIsNone(record.record(cut, now=NOW)["exit"])
 
     def test_unparseable_command_is_recorded_with_a_null_shape(self):
-        """A command shape() cannot parse still gets a row, with shape null and nothing of the command."""
+        """A command shape() cannot parse still gets a row, with shape null and nothing of the command.
+
+        Dropping the row would hide how often parsing fails; storing any text would break the privacy rule.
+        """
         # GIVEN an unbalanced quote carrying a value
         # WHEN recorded
         row = record.record(event('echo "unclosed value'), now=NOW)
@@ -119,7 +135,10 @@ class Recorder(TmpCase):
         self.assertFalse(self.store.exists())
 
     def test_long_shape_is_truncated_to_1kb(self):
-        """A shape over 1 KB is cut at 1 KB, so each line stays one atomic append under 4 KB."""
+        """A shape over 1 KB is cut at 1 KB, so each line stays one atomic append under 4 KB.
+
+        Appends over the pipe-buffer size can interleave between concurrent sessions and corrupt rows.
+        """
         # GIVEN a command with 600 distinct segments
         cmd = " && ".join(f"t{i} -x" for i in range(600))
         # WHEN recorded
@@ -135,7 +154,9 @@ class Recorder(TmpCase):
         is a plain file under the home dir. If any 6+ char piece of the secret survives, the store is a
         credential leak.
         """
-        # GIVEN 8 commands with the secret in a different spot each, plus output that carries it
+        # GIVEN 8 commands with the secret in a different spot each, 5 more with a digit-free secret in the
+        # slots that keep words (first argument, glued short flag, after a stripped prefix, base64 padding,
+        # an unterminated-looking heredoc), plus output that carries both
         commands = [f"SECRET={SECRET} make deploy",
                     f'curl -H "Authorization: Bearer {SECRET}" https://api.example.com',
                     f"tool {SECRET}",
@@ -144,15 +165,17 @@ class Recorder(TmpCase):
                     f"deploy --token {SECRET}",
                     f"cat <<EOF\n{SECRET}\nEOF",
                     f"export API_KEY={SECRET}"]
-        out = {"stdout": f"token={SECRET}", "stderr": SECRET, "interrupted": False}
+        commands += [f"echo {WORD}", f"tool -p{WORD}", f"command -v {WORD}", f"echo {WORD}== | base64 -d",
+                     f"cat <<$D\n{WORD}\n$D"]
+        out = {"stdout": f"token={SECRET} {WORD}", "stderr": SECRET, "interrupted": False}
         # WHEN each is recorded as a success, and once as a failure whose error carries it
         for c in commands:
             record.record(event(c, tool_response=out), now=NOW)
         record.record(event(commands[0], name="PostToolUseFailure", error=f"Exit code 1\n{SECRET}"), now=NOW)
         # THEN 9 rows exist and no 6+ char substring of the secret is in any byte under the store
-        self.assertEqual(len(self.rows()), 9)
-        blob = b"".join(f.read_bytes() for f in self.store.rglob("*") if f.is_file())
-        pieces = {SECRET[i:j] for i in range(len(SECRET)) for j in range(i + 6, len(SECRET) + 1)}
+        self.assertEqual(len(self.rows()), 14)
+        blob = b"".join(f.read_bytes() for f in self.store.rglob("*") if f.is_file()).lower()
+        pieces = {x[i:j] for x in (SECRET.lower(), WORD) for i in range(len(x)) for j in range(i + 6, len(x) + 1)}
         self.assertEqual([p for p in sorted(pieces) if p.encode() in blob], [])
 
     def test_old_day_files_are_deleted_once_a_day(self):
@@ -161,11 +184,12 @@ class Recorder(TmpCase):
         Without retention the store grows by thousands of rows a day forever; without the marker every
         Bash call would list the dir.
         """
-        # GIVEN a 50-day-old file, a 10-day-old file and a non-day file
+        # GIVEN files 50, 46, 45 and 10 days old, and a non-day file
         self.store.mkdir()
         old, recent, other = (self.store / "2026-08-25.jsonl", self.store / "2026-10-04.jsonl",
                               self.store / "notes.txt")
-        for f in (old, recent, other):
+        day46, day45 = self.store / "2026-08-29.jsonl", self.store / "2026-08-30.jsonl"
+        for f in (old, recent, other, day46, day45):
             f.write_text("{}\n")
         # WHEN one event is recorded, then a new old file appears and a second event is recorded
         record.record(event("ls"), now=NOW)
@@ -174,12 +198,17 @@ class Recorder(TmpCase):
         record.record(event("ls"), now=NOW)
         # THEN the first old file is gone, the recent and other files stay, and the late one survives today
         self.assertEqual((old.exists(), recent.exists(), other.exists(), late.exists()), (False, True, True, True))
+        # AND at the boundary the 46-day-old file went and the 45-day-old one stayed
+        self.assertEqual((day46.exists(), day45.exists()), (False, True))
         # AND the next day's first event sweeps the late one
         record.record(event("ls"), now=NOW + dt.timedelta(days=1))
         self.assertFalse(late.exists())
 
     def test_keep_days_comes_from_the_env(self):
-        """AGENT_CLI_SHAPES_KEEP_DAYS sets the window (5 here deletes a 10-day-old file)."""
+        """AGENT_CLI_SHAPES_KEEP_DAYS sets the window (5 here deletes a 10-day-old file).
+
+        If the env var were ignored, a user who must keep less history could not shrink the store.
+        """
         # GIVEN a 10-day-old file and a 5-day window
         self.store.mkdir()
         f = self.store / "2026-10-04.jsonl"
@@ -203,7 +232,7 @@ class Recorder(TmpCase):
                       env={"AGENT_CLI_SHAPES_DIR": str(self.store)})
         # THEN nothing printed, exit 0, and the row has the wrapper stripped and the rule id
         self.assertEqual((r.returncode, r.stdout, r.stderr), (0, "", ""))
-        (row,) = [json.loads(ln) for f in self.store.glob("*.jsonl") for ln in f.read_text().splitlines()]
+        (row,) = store_rows(self.store)
         self.assertEqual((row["shape"], row["rules"], row["repo"]), ("psql -c <str>", ["raw-sql-demo"], "proj"))
 
 
@@ -218,14 +247,18 @@ class HookVerbs(TmpCase):
         return agent_cli(self.p, "hook", name, stdin=stdin, env={"AGENT_CLI_SHAPES_DIR": str(store)})
 
     def test_failure_verb_records_the_exit_code(self):
-        """posttoolusefailure records the event with its exit code."""
+        """posttoolusefailure records the event with its exit code.
+
+        This verb is what the PostToolUseFailure settings entry calls; if it did not record, no failing
+        command would ever reach the store.
+        """
         # GIVEN a failure event
         e = json.dumps(event("ls /nope", name="PostToolUseFailure", error="Exit code 1\nno such file"))
         # WHEN fed to the verb
         r = self.verb("posttoolusefailure", e, self.tmp / "s")
         # THEN one row with exit 1
         self.assertEqual((r.returncode, r.stdout), (0, ""))
-        (row,) = [json.loads(ln) for f in (self.tmp / "s").glob("*.jsonl") for ln in f.read_text().splitlines()]
+        (row,) = store_rows(self.tmp / "s")
         self.assertEqual((row["shape"], row["exit"]), ("ls <path>", 1))
 
     def test_garbage_stdin_exits_0_silently(self):
