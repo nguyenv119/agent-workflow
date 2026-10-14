@@ -21,7 +21,7 @@ advisory-checks: <bot reviewer check>
 preview-check: <preview deploy check>
 ```
 
-One more optional line under `## coordinator` widens what counts as a CLI bead (the coordinator then loads the cli-for-agents skill and gives reviewers its checklist). Without it, only beads touching `.claude/cli/` count:
+One more optional line under `## coordinator` widens what counts as a CLI bead (the coordinator then loads the cli-for-agents skill and gives reviewers its checklist). Without it, only beads touching agent-cli's own code count:
 
 ```
 ## coordinator

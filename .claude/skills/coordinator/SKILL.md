@@ -296,7 +296,7 @@ Format each extracted section as a numbered checklist item, e.g.:
 
 Inject the constructed checklist as `<checklist>` in each reviewer prompt below.
 
-**CLI beads.** A bead is a CLI bead when any file in its "Files to modify" is under `.claude/cli/`, or under a prefix on the `cli-paths:` line (comma-separated) under `## coordinator` in `.claude/project-rules.md`. For a CLI bead:
+**CLI beads.** A bead is a CLI bead when any file in its "Files to modify" is under the dir `agent-cli lib path` prints (agent-cli's own code and tests), or under a prefix on the `cli-paths:` line (comma-separated) under `## coordinator` in `.claude/project-rules.md`. For a CLI bead:
 - The implementer prompt gets one more line: `SKILL: also read .claude/skills/cli-for-agents/SKILL.md and house-rules.md`.
 - Read both files fresh from the worktree (same rule as the standards files: never from memory) and add to the Correctness and Architecture checklists one item per `##` section of `SKILL.md` (title it with the section heading, e.g. **Fail fast with actionable errors**) plus one item per house rule in `house-rules.md` (title it with the rule's heading, e.g. **One exit-code table per CLI**). Each item asks whether the changed CLI meets that rule, citing it as cli-for-agents "<section>" or house-rules "<rule>".
 - Put a `CLI BEAD: yes` line in those two reviewer prompts, after the checklist. The reviewer-standards hook then blocks the spawn unless the prompt carries the house-rules heading and at least one skill section heading.

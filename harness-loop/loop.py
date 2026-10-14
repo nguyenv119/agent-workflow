@@ -163,7 +163,8 @@ WORK_LOADED = ("AGENTS.md", ".claude/settings.json", ".claude/hooks/", ".claude/
                ".claude/agents/implementer.md", ".claude/agents/quick-reviewer.md",
                *(f".claude/skills/{s}/" for s in ("coordinator", "implementer", "reviewer-correctness",
                                                   "reviewer-tests", "reviewer-architecture", "test-runner",
-                                                  "standards", "quick", "win-condition", "blast-radius")))
+                                                  "standards", "quick", "win-condition", "blast-radius",
+                                                  "cli-for-agents")))
 FRONTMATTER_FILE = re.compile(r"\.claude/(skills/[^/]+/SKILL|agents/[^/]+)\.md")
 
 
