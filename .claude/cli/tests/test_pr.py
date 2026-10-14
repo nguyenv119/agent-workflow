@@ -481,6 +481,20 @@ class StatusCli(CliCase):
         self.assertIn("verdict: READY\n", r.stdout)
         self.assertFalse(r.stdout.startswith("{"))
 
+    def test_status_without_json_prints_nested_values_as_json(self):
+        """In `key: value` mode the check lists and a missing preview link are JSON, not Python reprs, so a red
+        PR's failing check name and link are readable by any caller."""
+        # GIVEN a PR whose one required check failed
+        self.rules("## coordinator\nrequired-checks: lint\n")
+        self.set_pr(view(), [check("lint", "fail")])
+        # WHEN status runs without --json
+        r = self.cli("status", "42")
+        fields = dict(ln.split(": ", 1) for ln in r.stdout.splitlines())
+        # THEN the required list parses as JSON and names the check, and preview_url is null
+        self.assertEqual(r.returncode, Exit.FAIL, r.stderr)
+        self.assertEqual(json.loads(fields["required"])[0]["name"], "lint")
+        self.assertEqual(fields["preview_url"], "null")
+
     def test_status_waiting_exits_5(self):
         """WAITING is partial (exit 5): the PR is neither green nor red yet."""
         # GIVEN a pending required build

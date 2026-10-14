@@ -99,8 +99,10 @@ def verdict(n, view, checks, cfg):
 
 
 def emit_line(obj, json_mode=True):
-    """house-rules "--json": obj as one JSON line, else `key: value` lines; flushed, so a background log
-    shows each poll as it happens."""
+    """house-rules "--json": obj as one JSON line, else `key: value` lines whose lists and nulls are JSON;
+    flushed, so a background log shows each poll as it happens."""
+    if not json_mode:
+        obj = {k: json.dumps(v) if v is None or isinstance(v, (list, dict)) else v for k, v in obj.items()}
     core.emit(obj, json_mode)
     sys.stdout.flush()
 
