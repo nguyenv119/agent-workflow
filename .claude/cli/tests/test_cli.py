@@ -77,7 +77,7 @@ class Help(TmpCase):
         names = list(next(a for a in root._actions if isinstance(a, argparse._SubParsersAction)).choices)
         # THEN every module registered exactly the commands the root lists, in list order
         self.assertTrue(all(callable(getattr(m, "register", None)) for m in main.COMMANDS))
-        self.assertEqual(names, ["hook", "eval", "self", "lib", "wt", "wait", "lock", "pr", "log"])
+        self.assertEqual(names, ["hook", "eval", "self", "lib", "wt", "wait", "lock", "pr", "log", "page", "card"])
 
     def test_group_prints_its_help_when_called_bare(self):
         """core.group: a command group whose bare call prints its own help (R1), with a subparser set."""
