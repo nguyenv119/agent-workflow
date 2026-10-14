@@ -524,7 +524,8 @@ class StatusCli(CliCase):
         self.assertIn("Could not resolve to a PullRequest", r.stderr)
 
     def test_help_has_examples_for_each_verb(self):
-        """Each pr verb's --help ends with an Examples: block (R2), and bare `pr` prints the group help."""
+        """Each pr verb's --help ends with an Examples: block (cli-for-agents "`--help` that works"), and bare `pr`
+        prints the group help."""
         # GIVEN the three verbs
         for verb in ("status", "wait", "land"):
             # WHEN help is asked
@@ -593,7 +594,7 @@ class WaitCli(CliCase):
         self.assertIn("example:", r.stderr)
 
     def test_bad_cap_is_refused(self):
-        """An unparseable --cap fails fast with exit 2 and an example (R3)."""
+        """An unparseable --cap fails fast with exit 2 and an example (cli-for-agents "Fail fast with actionable errors")."""
         # GIVEN a PR
         self.set_pr(view(), [check("lint", "pass")])
         # WHEN the cap is garbage

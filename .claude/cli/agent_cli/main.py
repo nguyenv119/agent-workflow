@@ -37,7 +37,8 @@ def build():
                 examples=["agent-cli hook test --cmd 'echo \"<promise>WIN</promise>\"'",
                           'source "$(agent-cli eval lib --sh)"', "agent-cli self env"])
     sub = root.add_subparsers(title="Commands", metavar="<command>", parser_class=core.Parser)
-    root.set_defaults(func=lambda a: root.print_help())  # a bare group shows its help, never prompts (R1)
+    # a bare group shows its help, never prompts (house-rules "Never prompt")
+    root.set_defaults(func=lambda a: root.print_help())
     for module in COMMANDS:
         module.register(sub)
     return root

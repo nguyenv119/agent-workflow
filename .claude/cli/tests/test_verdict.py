@@ -51,7 +51,7 @@ class Verdict(unittest.TestCase):
                 self.assertEqual(r.stdout.count(SENTINEL), 1)
 
     def test_refuse_and_blocked_exit_2_and_3(self):
-        """refuse/blocked end the eval with R8's refused (2) and blocked (3) codes, no sentinel."""
+        """refuse/blocked end the eval with refused (2) and blocked (3) from house-rules "exit-code table", no sentinel."""
         for name, run in (("sh", sh), ("py", py)):
             # GIVEN each call followed by win
             # WHEN run

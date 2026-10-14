@@ -1,0 +1,4 @@
+repo: https://github.com/cursor/plugins
+commit: 26a1497493298e36d8bf39208a57bb59252a811e
+path: cli-for-agent/skills/cli-for-agents/SKILL.md
+license: cli-for-agent/LICENSE

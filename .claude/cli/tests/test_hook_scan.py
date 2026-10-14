@@ -164,7 +164,8 @@ class Files(ScanCase):
         self.assertEqual([Path(h["file"]).parent.name for h in hits], ["evals"])
 
     def test_usage_errors_exit_2_with_an_example(self):
-        """No paths and no scan-dirs, a missing path, a bad --since, and --stdin with paths each exit 2 (R3)."""
+        """No paths and no scan-dirs, a missing path, a bad --since, and --stdin with paths each exit 2
+        (cli-for-agents "Fail fast with actionable errors")."""
         # GIVEN no project-rules.md
         cases = [(), ("missing-dir",), (str(self.tree), "--since", "soon"), ("--stdin", str(self.tree))]
         for args in cases:

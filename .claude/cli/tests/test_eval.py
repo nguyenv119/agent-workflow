@@ -95,7 +95,7 @@ class Run(EvalCase):
         self.assertEqual((r.returncode, out["verdict"]), (1, "FAIL"))
 
     def test_refused_and_blocked_pass_through(self):
-        """Script exits 2 / 3 (refused / blocked under R8) come out as the CLI's own exit code."""
+        """Script exits 2 / 3 (refused / blocked, house-rules "exit-code table") come out as the CLI's own exit code."""
         for code, verdict in ((2, "REFUSED"), (3, "BLOCKED")):
             # GIVEN an eval exiting with that code
             d = self.eval_dir(f"exit {code}\n", where=f"ev{code}")
@@ -415,7 +415,7 @@ class Init(EvalCase):
                 self.assertEqual((r.returncode, out["verdict"]), (1, "FAIL"), r.stderr)
 
     def test_init_twice_never_overwrites(self):
-        """R4: a second init reports `exists:` per file and keeps an edited eval as it is."""
+        """cli-for-agents "Idempotency": a second init reports `exists:` per file and keeps an edited eval as it is."""
         # GIVEN an init, then an edit to win.sh
         d = self.tmp / "x"
         self.cli("eval", "init", str(d))
@@ -429,7 +429,7 @@ class Init(EvalCase):
         self.assertEqual((d / "win.sh").read_text(), "edited\n")
 
     def test_dry_run_writes_nothing(self):
-        """R5: --dry-run says what it would create and leaves the disk alone."""
+        """cli-for-agents "Destructive actions": --dry-run says what it would create and leaves the disk alone."""
         # GIVEN no dir
         d = self.tmp / "dry"
         # WHEN init --dry-run

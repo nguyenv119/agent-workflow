@@ -25,7 +25,8 @@ LEAVES = [[], ["hook"], ["hook", "pretooluse"], ["hook", "test"], ["hook", "rule
 
 class Help(TmpCase):
     def test_every_help_starts_with_its_summary_and_ends_with_examples(self):
-        """R2: each layer's --help opens with `<prog>: <summary>` and ends in an Examples: block.
+        """cli-for-agents "`--help` that works": each layer's --help opens with `<prog>: <summary>` and ends in an
+        Examples: block.
 
         Project CLIs list themselves via `<cli> --help | head -1`, and agents copy the examples.
         """
@@ -44,7 +45,7 @@ class Help(TmpCase):
                 self.assertGreater(len(lines), ex + 1)
 
     def test_bare_command_prints_root_help(self):
-        """`agent-cli` alone prints the command list (exit 0), never prompts (R1)."""
+        """`agent-cli` alone prints the command list (exit 0), never prompts (house-rules "Never prompt")."""
         # GIVEN an installed project
         p = make_project(self.tmp / "proj")
         # WHEN run with no args
@@ -80,7 +81,8 @@ class Help(TmpCase):
         self.assertEqual(names, ["hook", "eval", "self", "lib", "wt", "wait", "lock", "pr", "log", "page", "card"])
 
     def test_group_prints_its_help_when_called_bare(self):
-        """core.group: a command group whose bare call prints its own help (R1), with a subparser set."""
+        """core.group: a command group whose bare call prints its own help (house-rules "Never prompt"), with a
+        subparser set."""
         # GIVEN a parser with one group holding one leaf
         root = core.build_parser("demo", "a demo", ["demo grp leaf"])
         sub = root.add_subparsers(title="Commands", metavar="<command>", parser_class=core.Parser)
@@ -96,7 +98,8 @@ class Help(TmpCase):
         self.assertEqual(leaf, "leaf")
 
     def test_bad_usage_exits_2_with_an_example(self):
-        """R3/R8: a bad invocation fails fast on stderr with `error:` and a correct example, exit 2."""
+        """cli-for-agents "Fail fast with actionable errors" + house-rules "exit-code table": a bad invocation fails fast on
+        stderr with `error:` and a correct example, exit 2."""
         # GIVEN an installed project
         p = make_project(self.tmp / "proj")
         # WHEN eval lib is called without its required flag
@@ -195,7 +198,8 @@ class SeamLookup(TmpCase):
 
 class SelfInstall(TmpCase):
     def test_install_links_then_reports_exists(self):
-        """R4: the first run links bin-dir/agent-cli; a second run reports `exists:` and changes nothing."""
+        """cli-for-agents "Idempotency": the first run links bin-dir/agent-cli; a second run reports `exists:` and
+        changes nothing."""
         # GIVEN an empty bin dir
         p = make_project(self.tmp / "proj")
         bindir = self.tmp / "bin"
@@ -221,7 +225,7 @@ class SelfInstall(TmpCase):
         self.assertEqual(r.stdout.strip(), str(p / ".claude/cli"))
 
     def test_dry_run_writes_nothing(self):
-        """R5: --dry-run says what it would do and leaves the bin dir alone."""
+        """cli-for-agents "Destructive actions": --dry-run says what it would do and leaves the bin dir alone."""
         # GIVEN an empty bin dir
         p = make_project(self.tmp / "proj")
         bindir = self.tmp / "bin"
@@ -283,9 +287,9 @@ class LibAndEvalPaths(TmpCase):
 
 class Core(unittest.TestCase):
     def test_exit_codes(self):
-        """R8 exit codes are fixed numbers every caller and eval relies on."""
+        """house-rules "exit-code table": exit codes are fixed numbers every caller and eval relies on."""
         # GIVEN / WHEN the enum
-        # THEN values match R8
+        # THEN values match house-rules "exit-code table"
         self.assertEqual([int(c) for c in core.Exit], [0, 1, 2, 3, 4, 5])
         self.assertEqual(core.Exit.TIMEOUT, 4)
 
@@ -339,7 +343,7 @@ class Core(unittest.TestCase):
         self.assertEqual(env["PATH"].split(os.pathsep)[-1], "/usr/bin")
 
     def test_emit_json_and_text(self):
-        """R7: --json is one object per line; text mode is `key: value` lines."""
+        """house-rules "--json": --json is one object per line; text mode is `key: value` lines."""
         # GIVEN an object
         obj = {"id": 3, "url": "u"}
         # WHEN emitted both ways
@@ -353,7 +357,8 @@ class Core(unittest.TestCase):
         self.assertEqual(b.getvalue(), "id: 3\nurl: u\n")
 
     def test_die_prints_error_and_example_then_exits_with_code(self):
-        """R3: die writes `error:` and `  example:` to stderr and exits with the given code."""
+        """cli-for-agents "Fail fast with actionable errors": die writes `error:` and `  example:` to stderr and
+        exits with the given code."""
         # GIVEN a captured stderr
         err = io.StringIO()
         # WHEN die runs

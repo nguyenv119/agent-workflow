@@ -66,7 +66,8 @@ class Wait(unittest.TestCase):
         self.assertEqual(clock.sleeps, [5, 5])
 
     def test_refused_and_blocked_pass_through_at_once(self):
-        """Exit 2 or 3 (refused / blocked under R8) stops on the first attempt with that same code."""
+        """Exit 2 or 3 (refused / blocked, house-rules "exit-code table") stops on the first attempt with that
+        same code."""
         for status, result in ((2, "refused"), (3, "blocked")):
             # GIVEN a command that refuses or blocks
             # WHEN waited on
@@ -125,7 +126,8 @@ class Wait(unittest.TestCase):
         self.assertEqual(left, "", "a sleep from the timed-out attempt is still running")
 
     def test_every_under_5s_is_refused_with_an_example(self):
-        """R3: --every 2 is refused (exit 2) before running anything, with a correct invocation."""
+        """cli-for-agents "Fail fast with actionable errors": --every 2 is refused (exit 2) before running anything,
+        with a correct invocation."""
         # GIVEN an installed project
         p = make_project(self.tmp / "proj")
         # WHEN --every is below the minimum, and when a duration is malformed
