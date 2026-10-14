@@ -70,7 +70,7 @@ class Lock(unittest.TestCase):
         self.assertEqual(self.lock("status").stdout, "no locks\n")
 
     def test_same_pid_acquire_is_already_held(self):
-        """R4: acquiring a lock you already hold is a no-op, exit 0."""
+        """cli-for-agents "Idempotency": acquiring a lock you already hold is a no-op, exit 0."""
         # GIVEN a held lock
         pid = self.live()
         self.lock("acquire", "gates", "--pid", str(pid))

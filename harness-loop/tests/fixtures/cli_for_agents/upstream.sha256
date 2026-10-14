@@ -1,0 +1,4 @@
+# commit: 26a1497493298e36d8bf39208a57bb59252a811e
+# sha256 of cursor/plugins files at that commit, from: gh api repos/cursor/plugins/contents/<path>?ref=<commit> (base64-decoded, bytes as fetched)
+1cddd028d24ece48cd538fc1d84e49f5922dc8d04ee88caf12666b0557575e09  cli-for-agent/skills/cli-for-agents/SKILL.md
+702f5f331b56aff0e33d8c7826df5202559f894145eb70355c6477b55b5bb8a0  cli-for-agent/LICENSE

@@ -80,7 +80,8 @@ class New(WtCase):
         self.assertEqual(run(["git", "branch", "--show-current"], self.path).stdout.strip(), self.branch)
 
     def test_second_new_prints_exists_and_exits_0(self):
-        """R4: rerunning `wt new` for the same bead prints `exists: <path>` and succeeds, creating nothing."""
+        """cli-for-agents "Idempotency": rerunning `wt new` for the same bead prints `exists: <path>` and succeeds,
+        creating nothing."""
         # GIVEN an existing worktree for the bead
         self.new()
         # WHEN it is asked for again
@@ -103,7 +104,7 @@ class New(WtCase):
         self.assertEqual(json.loads(r.stdout.strip().splitlines()[-1])["setup"], "ran")
 
     def test_json_stdout_stays_one_object_when_the_seam_prints(self):
-        """R7: with --json the seam's output streams to stderr, so stdout is exactly one JSON line."""
+        """house-rules "--json": with --json the seam's output streams to stderr, so stdout is exactly one JSON line."""
         # GIVEN a seam that prints a line
         self.seam(SETUP)
         # WHEN created with --json
@@ -178,7 +179,7 @@ class New(WtCase):
     def test_existing_remote_ref_gets_a_local_tracking_branch_and_reruns(self):
         """--existing origin/<b> checks out local <b> tracking it (not a detached HEAD), so a rerun is `exists:`.
 
-        R4: recording origin/<b> as the branch made the identical rerun exit 2.
+        cli-for-agents "Idempotency": recording origin/<b> as the branch made the identical rerun exit 2.
         """
         # GIVEN a branch that exists only on origin
         run(["git", "push", "-q", "origin", "main:review-me"], self.p)
@@ -196,7 +197,7 @@ class New(WtCase):
         self.assertEqual((again.returncode, again.stdout), (0, f"exists: {path}\n"))
 
     def test_dry_run_creates_nothing(self):
-        """R5: --dry-run says what it would create and writes nothing."""
+        """cli-for-agents "Destructive actions": --dry-run says what it would create and writes nothing."""
         # GIVEN a seam that would leave a marker
         self.seam(SETUP)
         # WHEN dry-run
@@ -327,7 +328,7 @@ class Audit(WtCase):
 
 class Rm(WtCase):
     def test_rm_without_yes_is_a_dry_run(self):
-        """R5: `wt rm` without --yes prints what it would remove and removes nothing."""
+        """cli-for-agents "Destructive actions": `wt rm` without --yes prints what it would remove and removes nothing."""
         # GIVEN a worktree
         self.new()
         # WHEN rm runs without --yes
@@ -404,7 +405,8 @@ class Rm(WtCase):
         self.assertIn("--force", r.stderr)
 
     def test_branch_with_no_worktree_is_still_deleted(self):
-        """R4: no worktree is `already done`, but --delete-branch still deletes the local branch (as /merged did)."""
+        """cli-for-agents "Idempotency": no worktree is `already done`, but --delete-branch still deletes the local
+        branch (as /merged did)."""
         # GIVEN a branch and no worktree
         run(["git", "branch", self.branch, "origin/main"], self.p)
         # WHEN rm runs for it

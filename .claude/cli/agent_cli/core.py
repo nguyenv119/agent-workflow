@@ -29,13 +29,14 @@ class Exit(enum.IntEnum):
 
 
 def die(code, msg, example):
-    """R3: `error: <msg>` and a correct invocation on stderr, then exit with code."""
+    """cli-for-agents "Fail fast with actionable errors": `error: <msg>` and a correct invocation on stderr, then
+    exit with code."""
     sys.stderr.write(f"error: {msg}\n  example: {example}\n")
     sys.exit(int(code))
 
 
 def emit(obj, json_mode):
-    """R7: one JSON object per line with --json, else `key: value` lines."""
+    """house-rules "--json": one JSON object per line with --json, else `key: value` lines."""
     if json_mode:
         print(json.dumps(obj))
     else:
@@ -44,7 +45,7 @@ def emit(obj, json_mode):
 
 
 def out(a, row, text):
-    """R7 for one result: `row` as JSON with --json (a.json), else the one-line `text`."""
+    """house-rules "--json" for one result: `row` as JSON with --json (a.json), else the one-line `text`."""
     if a.json:
         emit(row, True)
     else:
@@ -102,8 +103,9 @@ def git(*args, cwd=".", check=True, example="agent-cli --help", input=None, stri
 
 
 class Parser(argparse.ArgumentParser):
-    """argparse with help as `<prog>: <summary>`, usage, options, then an Examples: block (R2);
-    usage errors exit 2 with the first example (R3)."""
+    """argparse with help as `<prog>: <summary>`, usage, options, then an Examples: block
+    (cli-for-agents "`--help` that works"); usage errors exit 2 with the first example
+    (cli-for-agents "Fail fast with actionable errors")."""
 
     def __init__(self, *args, summary="", examples=(), **kw):
         kw.setdefault("formatter_class", argparse.RawDescriptionHelpFormatter)
@@ -133,7 +135,7 @@ def subcommand(sub, name, summary, examples):
 
 
 def group(sub, name, summary, examples):
-    """A command group: (parser, its subparsers); called bare it prints its own help (R1)."""
+    """A command group: (parser, its subparsers); called bare it prints its own help (house-rules "Never prompt")."""
     p = subcommand(sub, name, summary, examples)
     p.set_defaults(func=lambda a: p.print_help())
     return p, p.add_subparsers(title="Commands", metavar="<command>")

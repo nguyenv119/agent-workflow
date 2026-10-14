@@ -128,7 +128,8 @@ class Log(TmpCase):
         self.assertEqual(sorted(r["action"] for r in self.show_json()), sorted(f"lane {i}" for i in range(20)))
 
     def test_bad_input_is_refused_with_an_example(self):
-        """R3: a missing required flag, a non-.tsv path, a non-number cost or --last 0 exit 2 with an example,
+        """cli-for-agents "Fail fast with actionable errors": a missing required flag, a non-.tsv path, a non-number
+        cost or --last 0 exit 2 with an example,
         and write nothing."""
         # GIVEN an installed project
         # WHEN called wrongly
@@ -225,7 +226,7 @@ class Log(TmpCase):
         self.assertEqual([x["cost_usd"] for x in self.show_json()], ["0.80"])
 
     def test_help_has_examples_and_bare_group_prints_help(self):
-        """R2: `log` alone and each verb's --help end in an Examples block."""
+        """cli-for-agents "`--help` that works": `log` alone and each verb's --help end in an Examples block."""
         # GIVEN an installed project
         # WHEN asking for help three ways
         outs = [self.log(), self.log("append", "--help"), self.log("show", "--help")]
@@ -236,7 +237,8 @@ class Log(TmpCase):
 
 
 class Duplicate(TmpCase):
-    """R4 in-process with a fixed clock, so the same-second case is not a race against the wall clock."""
+    """cli-for-agents "Idempotency" in-process with a fixed clock, so the same-second case is not a race against the
+    wall clock."""
 
     def setUp(self):
         super().setUp()
