@@ -113,6 +113,20 @@ class Threshold(StoreCase):
         # THEN a third of the runs failed
         self.assertEqual([(x["sessions"], x["count"], round(x["exit_fail_share"], 3)) for x in rows], [(3, 3, 0.333)])
 
+    def test_a_row_with_no_session_counts_as_a_run_not_a_session(self):
+        """A row with session null adds to count but not to sessions.
+
+        Sessions is the bar for a repeat; counting every unnamed row as a new session would push a
+        one-off over --min-sessions.
+        """
+        # GIVEN a shape in 2 named sessions plus 2 rows with no session
+        self.rec("ls -la", [0, 1, None, None])
+        # WHEN the report runs with --min-sessions 2, and with the default 3
+        r, got = self.repeats("--since", "3650d", "--min-sessions", "2")
+        # THEN it has 2 sessions and 4 runs, and the default bar drops it
+        self.assertEqual([(x["sessions"], x["count"]) for x in got], [(2, 4)], r.stderr)
+        self.assertEqual(self.shapes("--since", "3650d"), [])
+
     def test_repo_flag_keeps_one_repos_runs(self):
         """--repo counts only the rows recorded in that repo.
 
@@ -300,19 +314,21 @@ class Window(StoreCase):
 
         The replay windows of Test A are cut on --commands input, so its bounds must match the store's.
         """
-        # GIVEN rows at 10:00Z, 10:59:59Z, at 11:00Z written as 13:00+02:00, and at 11:00Z, 3 sessions each
+        # GIVEN rows at 10:00Z, 10:59:59Z, 10:30Z written as 12:30+02:00, 11:00Z written as 13:00+02:00,
+        # and 11:00Z, 3 sessions each (12:30+02:00 is in only once converted to UTC)
         rows = []
         for i in range(3):
             rows += [{"ts": "2026-04-02T10:00:00Z", "session": f"s{i}", "cmd": "echo start"},
                      {"ts": "2026-04-02T10:59:59.500Z", "session": f"s{i}", "cmd": "ls -la"},
                      {"ts": "2026-04-02T13:00:00+02:00", "session": f"s{i}", "cmd": "pwd"},
+                     {"ts": "2026-04-02T12:30:00+02:00", "session": f"s{i}", "cmd": "whoami"},
                      {"ts": "2026-04-02T11:00:00Z", "session": f"s{i}", "cmd": "date"}]
         cmds = self.write_commands(rows)
         # WHEN the window is 10:00 to 11:00 UTC
         got = self.shapes("--commands", str(cmds), "--from", "2026-04-02T10:00", "--until", "2026-04-02T11:00",
                           env=UTC_ENV)
-        # THEN 10:00 and 10:59:59.5 are in; both spellings of 11:00 are out
-        self.assertEqual(sorted(got), ["echo <arg>", "ls -la"])
+        # THEN 10:00, 10:59:59.5 and 12:30+02:00 are in; both spellings of 11:00 are out
+        self.assertEqual(sorted(got), ["echo <arg>", "ls -la", "whoami"])
 
     def test_until_with_a_bare_date_includes_that_whole_day(self):
         """--until YYYY-MM-DD keeps the whole day; the next midnight is out.
@@ -407,6 +423,21 @@ class Cache(StoreCase):
         self.assertEqual((r.returncode, len(rows)), (0, 1), r.stderr)
         cache = json.loads((self.store / "repeats-cache.json").read_text())
         self.assertEqual(cache, {"ls -la": {"sessions": 4, "count": 4}, "pwd": {"sessions": 3, "count": 3}})
+
+    def test_a_cache_that_cannot_be_written_exits_3(self):
+        """--write-cache into a store dir that refuses writes exits 3 (blocked), not a traceback.
+
+        The gardener runs this unattended; a crash would hide why the warning hook's cache went stale.
+        """
+        # GIVEN a store dir the report cannot write into
+        self.rec("ls -la", 3)
+        self.store.chmod(0o500)
+        self.addCleanup(self.store.chmod, 0o700)
+        # WHEN the report runs with --write-cache
+        r, _ = self.repeats("--since", "3650d", "--write-cache")
+        # THEN it exits 3 and no cache exists
+        self.assertEqual(r.returncode, 3, r.stderr)
+        self.assertFalse((self.store / "repeats-cache.json").exists())
 
     def test_without_write_cache_nothing_is_written(self):
         """The report is read-only unless --write-cache is given.
