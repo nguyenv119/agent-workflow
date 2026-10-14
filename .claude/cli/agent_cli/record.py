@@ -37,17 +37,13 @@ def record(event, now=None):
         return None
     command = data["tool_input"]["command"]
     now = now or dt.datetime.now(dt.timezone.utc)
-    s = shape(command)
-    hits = [r["id"] for r in hook.evaluate(command, hook.load_rules(), bypass=False)]
-    allowed = set(hook.BYPASS.findall(command))
     exit_code = 0
     if data.get("hook_event_name") == "PostToolUseFailure":
         m = EXIT_CODE.search(str(data.get("error") or ""))
         exit_code = int(m[1]) if m else None
     row = {"ts": now.strftime("%Y-%m-%dT%H:%M:%SZ"), "session": _short(data.get("session_id")),
            "agent": _short(data.get("agent_id")), "repo": _repo(data.get("cwd")),
-           "shape": s[:MAX_SHAPE] if s else None, "exit": exit_code,
-           "rules": [i for i in hits if i not in allowed], "bypassed": [i for i in hits if i in allowed]}
+           "exit": exit_code, **fields(command, hook.load_rules())}
     d = store_dir()
     d.mkdir(parents=True, exist_ok=True, mode=0o700)
     fd = os.open(str(d / f"{now:%Y-%m-%d}.jsonl"), os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600)
@@ -57,6 +53,18 @@ def record(event, now=None):
         os.close(fd)
     _sweep(d, now)
     return row
+
+
+def fields(command, rules, prefixes=None, tools=None):
+    """{shape, rules, bypassed} for a raw command, the part of a row that comes from its text (the report
+    calls this too, for raw commands it replays): the shape cut to MAX_SHAPE, the ids of the rules that
+    fire, and those of the rules that match but a `# agent-cli: allow <id>` comment skips.
+    prefixes/tools: as shape()'s (None reads the seams)."""
+    s = shape(command, prefixes, tools)
+    hits = [r["id"] for r in hook.evaluate(command, rules, honor_bypass=False)]
+    allowed = set(hook.BYPASS.findall(command)) if hits else set()
+    return {"shape": s[:MAX_SHAPE] if s else None, "rules": [i for i in hits if i not in allowed],
+            "bypassed": [i for i in hits if i in allowed]}
 
 
 def _short(v):

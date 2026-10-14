@@ -1,9 +1,10 @@
 """Shared helpers for agent-cli and the project CLIs that import it (Python 3.9+, stdlib only).
 
-Stable API: build_parser, Exit, emit, out, die, parse_duration, find_seam (plus duration, git, child_env,
-find_project_file, run_seam, subcommand, group).
+Stable API: build_parser, Exit, emit, out, die, parse_duration, find_seam (plus duration, window, git,
+child_env, find_project_file, run_seam, subcommand, group).
 """
 import argparse
+import datetime
 import enum
 import functools
 import json
@@ -12,6 +13,7 @@ import re
 import subprocess
 import sys
 import tempfile
+import time
 from pathlib import Path
 
 CLAUDE_DIR = Path(__file__).resolve().parents[2]  # the .claude/ this agent-cli is installed in
@@ -89,6 +91,33 @@ def duration(text, example):
         return parse_duration(text)
     except ValueError as e:
         die(Exit.REFUSED, str(e), example)
+
+
+def window(a, default, example):
+    """(lo, hi) epoch bounds, lo <= t < hi, from a's --since or --from/--until (a.since, a.from_, a.until):
+    --since back from now, else local --from (YYYY-MM-DD or YYYY-MM-DDTHH:MM, inclusive) up to --until
+    (a time is exclusive; a bare date includes that whole day). Either end may be open; with neither flag,
+    --since default (None: no window at all). Usage errors exit 2 with example."""
+    if a.since is not None and (a.from_ or a.until):
+        die(Exit.REFUSED, "give --since or --from/--until, not both", example)
+    if not (a.from_ or a.until):
+        since = a.since or default
+        return (time.time() - duration(since, example), float("inf")) if since else (float("-inf"), float("inf"))
+    lo = local_time(a.from_, "--from", example) if a.from_ else float("-inf")
+    hi = local_time(a.until, "--until", example, end=True) if a.until else float("inf")
+    if lo >= hi:
+        die(Exit.REFUSED, f"--until {a.until} is not after --from {a.from_}", example)
+    return lo, hi
+
+
+def local_time(text, flag, example, end=False):
+    """Epoch of a local YYYY-MM-DD (end: the next midnight) or YYYY-MM-DDTHH:MM, or exit 2 naming the flag."""
+    for fmt, days in (("%Y-%m-%d", 1 if end else 0), ("%Y-%m-%dT%H:%M", 0)):
+        try:  # naive local time, so a DST change is handled; year 1 or 9999 overflows: refused, not a traceback
+            return (datetime.datetime.strptime(text, fmt) + datetime.timedelta(days=days)).timestamp()
+        except (ValueError, OverflowError, OSError):
+            continue
+    die(Exit.REFUSED, f"{flag} {text!r} is not a usable time: use YYYY-MM-DD or YYYY-MM-DDTHH:MM", example)
 
 
 def git(*args, cwd=".", check=True, example="agent-cli --help", input=None, strip=True, timeout=600):

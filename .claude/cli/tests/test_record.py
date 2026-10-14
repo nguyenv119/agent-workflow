@@ -4,9 +4,9 @@ import json
 import os
 import sys
 import unittest
-from pathlib import Path
 
-from helpers import CLAUDE, GIT, TmpCase, agent_cli, make_project, run
+from helpers import CLAUDE, GIT, TmpCase, agent_cli, make_project, run, set_env, store_rows
+from helpers import post_event as event
 
 sys.path.insert(0, str(CLAUDE / "cli"))
 from agent_cli import record  # noqa: E402
@@ -19,35 +19,13 @@ SEAMS = {"command-prefixes": "# wrappers\nwrapx\nwrapx raw\n", "subcommand-tools
                                                "message": "use the sql command"}])}
 
 
-def store_rows(store):
-    """Every row in every day file under store."""
-    return [json.loads(ln) for f in sorted(Path(store).glob("*.jsonl")) for ln in f.read_text().splitlines()]
-
-
-def event(command, name="PostToolUse", session="sess-a", cwd=None, **extra):
-    """A PostToolUse (or PostToolUseFailure) payload as Claude Code sends it on stdin."""
-    e = {"session_id": session, "hook_event_name": name, "tool_name": "Bash", "cwd": str(cwd or "/"),
-         "tool_input": {"command": command}, "tool_use_id": "toolu_demo"}
-    if name == "PostToolUse":
-        e["tool_response"] = {"stdout": "", "stderr": "", "interrupted": False}
-    e.update(extra)
-    return e
-
-
 class Recorder(TmpCase):
     """record() in process, with the store pointed at a temp dir."""
 
     def setUp(self):
         super().setUp()
         self.store = self.tmp / "shapes"
-        for k, v in {"AGENT_CLI_SHAPES_DIR": str(self.store), "AGENT_CLI_SHAPES_KEEP_DAYS": None}.items():
-            old = os.environ.get(k)
-            self.addCleanup(lambda k=k, old=old: os.environ.__setitem__(k, old) if old is not None
-                            else os.environ.pop(k, None))
-            if v is None:
-                os.environ.pop(k, None)
-            else:
-                os.environ[k] = v
+        set_env(self, AGENT_CLI_SHAPES_DIR=str(self.store), AGENT_CLI_SHAPES_KEEP_DAYS=None)
 
     def rows(self, day="2026-10-14"):
         f = self.store / f"{day}.jsonl"

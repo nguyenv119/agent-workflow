@@ -165,12 +165,12 @@ def active(rule):
     return not req or bool(shutil.which(req) or shutil.which(req, path=os.pathsep.join(core.path_dirs())))
 
 
-def evaluate(command, rules, bypass=True):
+def evaluate(command, rules, honor_bypass=True):
     """The rules that fire on command, in rule order (none when switched off or over MAX_CMD).
-    bypass=False also returns the rules a `# agent-cli: allow <id>` comment skips."""
+    honor_bypass=False also returns the rules a `# agent-cli: allow <id>` comment skips."""
     if os.environ.get("AGENT_CLI_HOOKS") == "off" or len(command) > MAX_CMD:
         return []
-    bypass, code = set(BYPASS.findall(command)) if bypass else set(), code_view(command)
+    bypass, code = set(BYPASS.findall(command)) if honor_bypass else set(), code_view(command)
     return [r for r in rules if r["id"] not in bypass and match(r, command, code) and active(r)]
 
 

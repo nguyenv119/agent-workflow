@@ -1,13 +1,13 @@
 """Tests for `agent-cli repeats`: shapes typed in 3+ sessions, minus the ones a command or hook rule covers."""
 import datetime as dt
 import json
-import os
 import sys
 import time
 import unittest
 from pathlib import Path
 
-from helpers import CLAUDE, TmpCase, agent_cli, make_project
+from helpers import CLAUDE, TmpCase, agent_cli, make_project, set_env, store_rows
+from helpers import post_event
 
 sys.path.insert(0, str(CLAUDE / "cli"))
 from agent_cli import record  # noqa: E402
@@ -19,14 +19,6 @@ SEAMS = {"command-prefixes": "wrapx\nwrapx raw\n"}  # a made-up wrapper word, ne
 UTC_ENV = {"TZ": "UTC"}  # --from/--until are local times; pin the zone so the bounds are exact
 
 
-def bash_post(command, session, **extra):
-    """A PostToolUse payload as Claude Code sends it (no cwd: the row's repo is null, no git call)."""
-    e = {"session_id": session, "hook_event_name": "PostToolUse", "tool_name": "Bash",
-         "tool_input": {"command": command}}
-    e.update(extra)
-    return e
-
-
 class StoreCase(TmpCase):
     """A temp project with agent-cli installed, and a shape store in a temp dir filled by record.record."""
 
@@ -34,15 +26,13 @@ class StoreCase(TmpCase):
         super().setUp()
         self.p = make_project(self.tmp / "proj", seams=SEAMS)
         self.store = self.tmp / "shapes"
-        old = os.environ.get("AGENT_CLI_SHAPES_DIR")
-        os.environ["AGENT_CLI_SHAPES_DIR"] = str(self.store)
-        self.addCleanup(lambda: os.environ.__setitem__("AGENT_CLI_SHAPES_DIR", old) if old is not None
-                        else os.environ.pop("AGENT_CLI_SHAPES_DIR", None))
+        set_env(self, AGENT_CLI_SHAPES_DIR=str(self.store))
 
     def rec(self, command, sessions, at=DAY, **extra):
         """Record command once per session in sessions (an int n means sessions s0..s<n-1>) at time at."""
         for s in (range(sessions) if isinstance(sessions, int) else sessions):
-            record.record(bash_post(command, f"s{s}" if isinstance(s, int) else s, **extra), now=at)
+            extra.setdefault("cwd", None)  # no cwd: repo null, and record() runs no git
+            record.record(post_event(command, session=f"s{s}" if isinstance(s, int) else s, **extra), now=at)
 
     def repeats(self, *args, env=None):
         """Run `agent-cli repeats ... --json`; returns (CompletedProcess, rows)."""
@@ -108,23 +98,38 @@ class Threshold(StoreCase):
         self.assertEqual(self.shapes("--since", "3650d"), ["ls -la", "git status", "pwd"])
         self.assertEqual(self.shapes("--since", "3650d", "--top", "2"), ["ls -la", "git status"])
 
-    def test_exit_fail_share_and_repo_filter(self):
-        """exit_fail_share is the share of runs that failed; --repo keeps one repo's rows.
+    def test_exit_fail_share_is_the_share_of_failed_runs(self):
+        """exit_fail_share is failed runs over runs with a known exit code.
 
-        A chore that fails half the time is a better command candidate than one that never fails; and
-        one store holds every repo, so a per-repo report must not mix them.
+        A chore that often fails is a better command candidate than one that never does; a wrong share
+        would rank them the other way.
         """
-        # GIVEN a shape run in 3 sessions in repo-a (one run failed) and in 3 sessions of repo-b
+        # GIVEN a shape in 3 sessions, one of its runs failed
+        self.rec("make lint", 2)
+        record.record(post_event("make lint", name="PostToolUseFailure", session="s2", cwd=None,
+                                 error="Exit code 2"), now=DAY)
+        # WHEN the report runs
+        r, rows = self.repeats("--since", "3650d")
+        # THEN a third of the runs failed
+        self.assertEqual([(x["sessions"], x["count"], round(x["exit_fail_share"], 3)) for x in rows], [(3, 3, 0.333)])
+
+    def test_repo_flag_keeps_one_repos_runs(self):
+        """--repo counts only the rows recorded in that repo.
+
+        One store holds every repo; without the filter, 2 sessions in one repo and 2 in another would add
+        up to a 4-session repeat that neither repo has.
+        """
+        # GIVEN a shape in 2 sessions of repo-a and 2 of repo-b
         a = make_project(self.tmp / "repo-a", install=False)
         b = make_project(self.tmp / "repo-b", install=False)
-        self.rec("make lint", 2, cwd=str(a))
-        record.record(bash_post("make lint", "s2", cwd=str(a), hook_event_name="PostToolUseFailure",
-                                error="Exit code 2"), now=DAY)
-        self.rec("make lint", ["x", "y", "z"], cwd=str(b))
-        # WHEN the report runs for repo-a only
-        r, rows = self.repeats("--since", "3650d", "--repo", "repo-a")
-        # THEN one row: 3 sessions, a third of the runs failed
-        self.assertEqual([(x["sessions"], x["count"], round(x["exit_fail_share"], 3)) for x in rows], [(3, 3, 0.333)])
+        self.rec("make lint", ["a1", "a2"], cwd=str(a))
+        self.rec("make lint", ["b1", "b2"], cwd=str(b))
+        # WHEN the report runs for repo-a with --min-sessions 2, and for all repos with the default 3
+        # THEN repo-a alone has 2 sessions, and across repos it is 4
+        _, rows = self.repeats("--since", "3650d", "--repo", "repo-a", "--min-sessions", "2")
+        self.assertEqual([x["sessions"] for x in rows], [2])
+        _, rows = self.repeats("--since", "3650d")
+        self.assertEqual([x["sessions"] for x in rows], [4])
 
 
 class Covered(StoreCase):
@@ -176,6 +181,20 @@ class Covered(StoreCase):
         self.assertEqual(self.shapes("--since", "3650d"), [])
         self.assertEqual(len(self.shapes("--since", "3650d", "--covered", "none")), 1)
 
+    def test_a_bypassed_rule_in_commands_input_counts_as_covered(self):
+        """From --commands, a raw command that bypassed a rule still counts as covered.
+
+        Transcripts hold a deny-rule chore only when it was bypassed or denied; the replay must judge it
+        the way the store does, or the same chore would be covered in one source and not the other.
+        """
+        # GIVEN the PR poll with a bypass comment as raw replay input in 3 sessions
+        cmds = self.write_commands([{"ts": "2026-04-02T12:00:00Z", "session": f"s{i}",
+                                     "cmd": POLL + "  # agent-cli: allow hand-pr-poll"} for i in range(3)])
+        # WHEN the report runs live and with none
+        # THEN dropped live, listed with none
+        self.assertEqual(self.shapes("--commands", str(cmds)), [])
+        self.assertEqual(len(self.shapes("--commands", str(cmds), "--covered", "none")), 1)
+
     def test_agent_cli_behind_a_seam_wrapper_is_covered(self):
         """A shape that starts `<wrapper> agent-cli ...` is covered once the wrapper is in the
         command-prefixes seam, both from the store and from --commands.
@@ -185,9 +204,9 @@ class Covered(StoreCase):
         """
         # GIVEN `wrapx agent-cli wt list` recorded in 3 sessions through this project's hook verb
         for s in range(3):
-            agent_cli(self.p, "hook", "posttooluse", stdin=json.dumps(bash_post("wrapx agent-cli wt list", f"s{s}")),
+            agent_cli(self.p, "hook", "posttooluse", stdin=json.dumps(post_event("wrapx agent-cli wt list", session=f"s{s}", cwd=None)),
                       env={"AGENT_CLI_SHAPES_DIR": str(self.store)})
-        stored = [json.loads(ln)["shape"] for f in self.store.glob("*.jsonl") for ln in f.read_text().splitlines()]
+        stored = [r["shape"] for r in store_rows(self.store)]
         # and the same command as raw --commands input
         cmds = self.write_commands([{"ts": "2026-04-02T12:00:00Z", "session": f"s{i}",
                                      "cmd": "wrapx agent-cli wt new demo-1 fix"} for i in range(3)])
@@ -208,7 +227,7 @@ class Covered(StoreCase):
         # GIVEN rows shaped by a project with no wrapper seam but with wrapx as a multi-command tool
         bare = make_project(self.tmp / "bare", seams={"subcommand-tools": "wrapx\n"})
         for s in range(3):
-            agent_cli(bare, "hook", "posttooluse", stdin=json.dumps(bash_post("wrapx agent-cli wt list", f"s{s}")),
+            agent_cli(bare, "hook", "posttooluse", stdin=json.dumps(post_event("wrapx agent-cli wt list", session=f"s{s}", cwd=None)),
                       env={"AGENT_CLI_SHAPES_DIR": str(self.store)})
         # WHEN this project (whose seam lists wrapx) reports on them, live and with none
         # THEN the stored shape keeps the wrapper, and it is covered live
@@ -257,6 +276,42 @@ class Window(StoreCase):
         # WHEN the window is 10:00 to 11:00
         got = self.shapes("--from", "2026-04-02T10:00", "--until", "2026-04-02T11:00", env=UTC_ENV)
         # THEN the 10:00 and 10:59:59 shapes are in, the 11:00 one is out
+        self.assertEqual(sorted(got), ["echo <arg>", "ls -la"])
+
+    def test_from_and_until_are_local_times(self):
+        """--from/--until are read in the local time zone; rows are stored in UTC.
+
+        At UTC+7, 10:00 local is 03:00Z. Reading the flags as UTC would shift every window by 7 hours, and
+        a pre-CLI window would take in a morning of post-CLI runs.
+        """
+        # GIVEN rows at 03:00Z (10:00 at UTC+7) and at 02:59:59Z, each in 3 sessions
+        self.rec("ls -la", 3, at=dt.datetime(2026, 4, 2, 3, 0, 0, tzinfo=UTC))
+        self.rec("pwd", 3, at=dt.datetime(2026, 4, 2, 2, 59, 59, tzinfo=UTC))
+        # WHEN the window starts, or ends, at 10:00 in a UTC+7 zone (no DST there)
+        zone = {"TZ": "Asia/Ho_Chi_Minh"}
+        after = self.shapes("--from", "2026-04-02T10:00", env=zone)
+        before = self.shapes("--until", "2026-04-02T10:00", env=zone)
+        # THEN 03:00Z is the first second inside --from and outside --until
+        self.assertEqual((after, before), (["ls -la"], ["pwd"]))
+
+    def test_commands_input_uses_the_same_bounds(self):
+        """Over --commands, a row at exactly --until is out and one at exactly --from is in; offsets are
+        converted to UTC first.
+
+        The replay windows of Test A are cut on --commands input, so its bounds must match the store's.
+        """
+        # GIVEN rows at 10:00Z, 10:59:59Z, at 11:00Z written as 13:00+02:00, and at 11:00Z, 3 sessions each
+        rows = []
+        for i in range(3):
+            rows += [{"ts": "2026-04-02T10:00:00Z", "session": f"s{i}", "cmd": "echo start"},
+                     {"ts": "2026-04-02T10:59:59.500Z", "session": f"s{i}", "cmd": "ls -la"},
+                     {"ts": "2026-04-02T13:00:00+02:00", "session": f"s{i}", "cmd": "pwd"},
+                     {"ts": "2026-04-02T11:00:00Z", "session": f"s{i}", "cmd": "date"}]
+        cmds = self.write_commands(rows)
+        # WHEN the window is 10:00 to 11:00 UTC
+        got = self.shapes("--commands", str(cmds), "--from", "2026-04-02T10:00", "--until", "2026-04-02T11:00",
+                          env=UTC_ENV)
+        # THEN 10:00 and 10:59:59.5 are in; both spellings of 11:00 are out
         self.assertEqual(sorted(got), ["echo <arg>", "ls -la"])
 
     def test_until_with_a_bare_date_includes_that_whole_day(self):
@@ -383,6 +438,22 @@ class Usage(StoreCase):
         self.assertIn("hook posttooluse", r.stderr)
         self.assertIn("example:", r.stderr)
 
+    def test_a_cut_short_store_line_is_skipped_and_counted(self):
+        """A store line that is not a whole JSON row (a crash mid-write) is skipped, counted on stderr, and
+        the report still runs.
+
+        The store is appended by many sessions; one broken line must not stop every report after it.
+        """
+        # GIVEN a shape in 3 sessions and a half-written line in the same day file
+        self.rec("ls -la", 3)
+        with next(self.store.glob("*.jsonl")).open("a") as f:
+            f.write('{"ts": "2026-04-02T12:00:00Z", "sess\n')
+        # WHEN the report runs
+        r, rows = self.repeats("--since", "3650d")
+        # THEN exit 0, the shape listed, the skip counted
+        self.assertEqual((r.returncode, [x["shape"] for x in rows]), (0, ["ls -la"]), r.stderr)
+        self.assertIn("1 unreadable store lines skipped", r.stderr)
+
     def test_unreadable_or_bad_commands_input_exits_3(self):
         """A missing --commands file, or a line that is not a {ts, session, cmd} object, exits 3 and
         names the line.
@@ -400,8 +471,8 @@ class Usage(StoreCase):
         self.assertIn("line 2", broken.stderr)
 
     def test_usage_errors_exit_2_with_an_example(self):
-        """--since with --from, a bad date, --from after --until, --write-cache with --commands and a
-        zero --min-sessions each exit 2 with an example.
+        """--since with --from, a bad date, --from after --until, --write-cache with --commands, --covered
+        none or --repo, and a zero --min-sessions or --top each exit 2 with an example.
 
         Each is a caller mistake that a correct invocation fixes; exit 2 tells the agent to fix the call.
         """
@@ -409,6 +480,7 @@ class Usage(StoreCase):
         cmds = self.write_commands([])
         for args in (("--since", "7d", "--from", "2026-04-01"), ("--from", "April"), ("--until", "2026-04-02T25:00"),
                      ("--from", "2026-04-03", "--until", "2026-04-02"), ("--commands", str(cmds), "--write-cache"),
+                     ("--write-cache", "--covered", "none"), ("--write-cache", "--repo", "x"),
                      ("--min-sessions", "0"), ("--top", "0"), ("--covered", "some")):
             with self.subTest(args=args):
                 # GIVEN a bad combination
@@ -475,11 +547,11 @@ class Speed(StoreCase):
         """
         # GIVEN 400 rows made by record.record, copied into 110,000 rows over the last 14 days
         seed = self.tmp / "seed"
-        os.environ["AGENT_CLI_SHAPES_DIR"] = str(seed)
+        set_env(self, AGENT_CLI_SHAPES_DIR=str(seed))
         now = dt.datetime.now(UTC)
         for i in range(400):
-            record.record(bash_post(f"tool{i % 80} run --flag {i}", f"s{i}"), now=now)
-        template = [json.loads(ln) for f in seed.glob("*.jsonl") for ln in f.read_text().splitlines()]
+            record.record(post_event(f"tool{i % 80} run --flag {i}", session=f"s{i}", cwd=None), now=now)
+        template = store_rows(seed)
         self.store.mkdir()
         files = {}
         for i in range(110000):

@@ -10,7 +10,6 @@ import json
 import os
 import re
 import sys
-import time
 from bisect import bisect_right
 from pathlib import Path
 
@@ -48,10 +47,10 @@ def register(hs):
     p.add_argument("paths", nargs="*", help="files or dirs to scan (default: scan-dirs from project-rules.md)")
     p.add_argument("--since", help="only files modified within this long (default 7d; not with --from/--until)")
     p.add_argument("--from", dest="from_", metavar="DATE",
-                   help="only files modified on or after this local date (YYYY-MM-DD)")
+                   help="only files modified on or after this local date (YYYY-MM-DD, or YYYY-MM-DDTHH:MM)")
     p.add_argument("--until", metavar="DATE",
                    help="only files modified on or before this local date (YYYY-MM-DD, the whole day counts; "
-                        "alone, the window has no start)")
+                        "a YYYY-MM-DDTHH:MM time is exclusive; alone, the window has no start)")
     p.add_argument("--glob", default=GLOB, help=f"comma-separated file-name patterns (default {GLOB})")
     p.add_argument("--stdin", action="store_true", help="scan stdin instead, one command per line")
     p.add_argument("--json", action="store_true", help="one JSON object per hit, then a summary object")
@@ -67,7 +66,7 @@ def scan(a):
         hits = [dict(h, file="-", line=n) for n, cmd in enumerate(lines, 1) if cmd.strip()
                 for h in file_hits(cmd, rules)]
         return report(a, hits, {"commands_scanned": sum(1 for c in lines if c.strip())})
-    lo, hi = window(a)
+    lo, hi = core.window(a, "7d", WINDOW_EXAMPLE)
     files = list(walk(roots(a.paths), [g.strip() for g in a.glob.split(",") if g.strip()], lo, hi))
     hits, scanned, unreadable = [], 0, 0
     for f in files:
@@ -85,28 +84,6 @@ def scan(a):
         mtime = datetime.datetime.fromtimestamp(st.st_mtime, datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
         hits += [dict(h, file=str(f), mtime=mtime) for h in file_hits(data.decode(errors="replace"), rules)]
     return report(a, hits, {"files_scanned": scanned, "unreadable": unreadable})
-
-
-def window(a):
-    """(lo, hi) epoch bounds for a file's mtime, lo <= mtime < hi: --since back from now, else local
-    midnight of --from up to the midnight after --until (either may be left open)."""
-    if a.since is not None and (a.from_ or a.until):
-        core.die(Exit.REFUSED, "give --since or --from/--until, not both", WINDOW_EXAMPLE)
-    if not (a.from_ or a.until):
-        return time.time() - core.duration(a.since or "7d", EXAMPLES[0]), float("inf")
-    lo = day(a.from_, "--from") if a.from_ else float("-inf")
-    hi = day(a.until, "--until", 1) if a.until else float("inf")
-    if lo >= hi:
-        core.die(Exit.REFUSED, f"--from {a.from_} is after --until {a.until}", WINDOW_EXAMPLE)
-    return lo, hi
-
-
-def day(text, flag, after=0):
-    """Epoch of local midnight starting the date text (YYYY-MM-DD) plus `after` days, or exit 2 naming the flag."""
-    try:  # naive local time, so a DST change is handled; year 1 or 9999 overflows: refused, not a traceback
-        return (datetime.datetime.strptime(text, "%Y-%m-%d") + datetime.timedelta(days=after)).timestamp()
-    except (ValueError, OverflowError):
-        core.die(Exit.REFUSED, f"{flag} {text!r} is not a usable date: use YYYY-MM-DD", WINDOW_EXAMPLE)
 
 
 def roots(paths):
