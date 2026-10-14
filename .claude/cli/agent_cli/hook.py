@@ -231,8 +231,10 @@ def pretooluse(repeats_only=False):
 REPEAT_ID = "repeated-shape"
 # Generic reads: shapes made only of these top the repeats list (an agent reading files), but there is no
 # chore in them for a command to wrap, so they never warn. The report keeps them: it is a measurement.
-QUIET_WORDS = frozenset("""cat head tail less more sed awk grep egrep rg ls tree find wc sort uniq cut tr diff
-stat file du df echo printf pwd cd read which type true sleep date basename dirname realpath readlink jq""".split())
+# Transforms (sort, uniq, cut, tr, awk, jq) are left out on purpose: `git log ... | sort | uniq -c` is a
+# recipe a command can wrap, not a look at a file.
+QUIET_WORDS = frozenset("""cat head tail less more sed grep egrep rg ls tree find wc diff stat file du df echo
+printf pwd cd read which type true sleep date basename dirname realpath readlink""".split())
 QUIET_GIT = frozenset("status diff log show".split())
 INLINE_CODE = frozenset(("-", "-c", "-e", "<heredoc>"))  # `python3 - <heredoc>`: the code is the value
 SEGMENT_SEP = re.compile(r" (?:&&|\|\||\||&) |; ")

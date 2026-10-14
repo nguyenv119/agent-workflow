@@ -688,13 +688,15 @@ class QuietShapes(RepeatCase):
                     self.assertIn("hand-written 40 times", out["additionalContext"])
 
     def test_quiet_reads_whole_segments(self):
-        """quiet() is true only when every segment is a generic read; one real tool makes it loud."""
+        """quiet() is true only when every segment is a generic read; one real tool, or a transform such as
+        sort | uniq -c or jq (a recipe a command can wrap), makes it loud."""
         # GIVEN shapes, WHEN each is checked, THEN only all-read ones are quiet
         for s, want in (("cat <path>", True), ("read <path>", True), ("ls -la <path> && wc -l <path>", True),
                         ("node -e <str>", True), ("python3 <heredoc>", True), ("git log --oneline -<n>", True),
                         ("git push origin <arg>", False), ("python3 <path>/loop.py", False),
                         ("grep <str> <path> | psql <arg>", False), ("for f in <arg>; do cat <path>; done", False),
-                        ("<path>/deploy.sh", False)):
+                        ("<path>/deploy.sh", False), ("git log --format=<v> | sort | uniq -c | sort -rn", False),
+                        ("cat <path> | jq <str>", False)):
             with self.subTest(shape=s):
                 self.assertIs(hook.quiet(s), want)
 
