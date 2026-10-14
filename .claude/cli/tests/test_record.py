@@ -14,7 +14,7 @@ from agent_cli import record  # noqa: E402
 SECRET = "sk-live-PLANTED0123456789"
 WORD = "correcthorsebatterystaple"  # a secret with no digits and no capitals
 NOW = dt.datetime(2026, 10, 14, 5, 6, 7, tzinfo=dt.timezone.utc)
-SEAMS = {"command-prefixes": "# wrappers\nwrapx\nwrapx raw\n",
+SEAMS = {"command-prefixes": "# wrappers\nwrapx\nwrapx raw\n", "subcommand-tools": "tasker\n",
          "pretooluse-rules.json": json.dumps([{"id": "raw-sql-demo", "mode": "warn", "match": "{CMD}psql\\b",
                                                "message": "use the sql command"}])}
 
@@ -234,6 +234,20 @@ class Recorder(TmpCase):
         self.assertEqual((r.returncode, r.stdout, r.stderr), (0, "", ""))
         (row,) = store_rows(self.store)
         self.assertEqual((row["shape"], row["rules"], row["repo"]), ("psql -c <str>", ["raw-sql-demo"], "proj"))
+
+    def test_seam_subcommand_tool_keeps_its_subcommand_on_disk(self):
+        """A tool listed in the project's subcommand-tools seam keeps its second word in the stored row.
+
+        The seam is read by the installed CLI from the project's .claude/; if the hook verb ignored it,
+        a project could list its tools and still see them collapse in the store.
+        """
+        # GIVEN a project whose seam lists the made-up tool `tasker`
+        p = make_project(self.tmp / "proj", seams=SEAMS)
+        # WHEN a tasker call is recorded through the hook verb
+        agent_cli(p, "hook", "posttooluse", stdin=json.dumps(event("tasker run build", cwd=p)),
+                  env={"AGENT_CLI_SHAPES_DIR": str(self.store)})
+        # THEN its subcommand is kept
+        self.assertEqual([r["shape"] for r in store_rows(self.store)], ["tasker run <arg>"])
 
 
 class HookVerbs(TmpCase):

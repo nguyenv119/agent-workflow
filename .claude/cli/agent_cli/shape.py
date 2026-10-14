@@ -4,7 +4,8 @@
 <str>, heredoc bodies -> <heredoc>, numbers -> <n>, hex ids and UUIDs -> <id>, anything with / -> <path>,
 URLs -> <url:host> (<url> when the host looks like a value), X=value -> X=<v>, a flag's value -> <v>,
 other bare words -> <arg>. A command run by path keeps its name (`<path>/deploy.sh`). The second word is
-kept only after a tool known to take subcommands (SUBCOMMAND_TOOLS, or a name ending in -cli); a short
+kept only after a tool known to take subcommands (SUBCOMMAND_TOOLS, the subcommand-tools seam's
+lines, or a name ending in -cli); a short
 flag with a value glued on keeps its letter only (`-p<v>`). Leading `cd <x> &&` chains and the prefixes
 hook_rules.cmd_re knows (env, timeout N, VAR=x and the project's command-prefixes seam words) are
 stripped. The shape never holds a value from the command, so it is safe to store.
@@ -33,12 +34,15 @@ URL = re.compile(r"[A-Za-z][\w+.-]*://([^/?#\s]*)")
 HOST = re.compile(r"[a-z0-9][a-z0-9.-]{0,252}")
 
 
-def shape(command, prefixes=None):
+def shape(command, prefixes=None, subcommands=None):
     """The command's shape, or None for empty or unparseable input (unbalanced quotes or substitutions).
 
-    prefixes: wrapper words to strip at command position; None reads the command-prefixes seam."""
+    prefixes: wrapper words to strip at command position; None reads the command-prefixes seam.
+    subcommands: tool names (beyond SUBCOMMAND_TOOLS) whose second word is kept; None reads the
+    subcommand-tools seam."""
     if prefixes is None:
         prefixes = core.seam_lines("command-prefixes")
+    tools = SUBCOMMAND_TOOLS.union(core.seam_lines("subcommand-tools") if subcommands is None else subcommands)
     items = _tokens(command)
     if items is None:
         return None
@@ -58,7 +62,7 @@ def shape(command, prefixes=None):
         return None
     out = []
     for i, (seg, sep) in enumerate(pairs):
-        out.append(_segment(seg))
+        out.append(_segment(seg, tools))
         if i < len(pairs) - 1:
             out.append("; " if sep == ";" else f" {sep} ")
     return "".join(out)
@@ -88,7 +92,7 @@ def _strip(seg, cmd):
     return rest or seg
 
 
-def _segment(seg):
+def _segment(seg, tools):
     """One simple command's shape: command word, up to one subcommand word, then placeholders."""
     out, after_flag, tool = [], False, None
     for i, it in enumerate(seg):
@@ -100,7 +104,7 @@ def _segment(seg):
         elif i == 0 and kind == "word" and _name(text.rsplit("/", 1)[-1]):
             tool = text.rsplit("/", 1)[-1]
             piece = tool if "/" not in text else f"<path>/{tool}"
-        elif i == 1 and tool and (tool in SUBCOMMAND_TOOLS or tool.endswith("-cli")) and _name(text) \
+        elif i == 1 and tool and (tool in tools or tool.endswith("-cli")) and _name(text) \
                 and SUB.fullmatch(text):
             piece = text
         else:
@@ -112,8 +116,9 @@ def _segment(seg):
 
 
 def _name(t):
-    """A word that can be kept as a command or subcommand name: not a number, id or digit-laden value."""
-    return bool(NAME.fullmatch(t)) and not DIGITS4.search(t) and not ID.fullmatch(t) and not NUMBER.fullmatch(t)
+    """A word that can be kept as a command or subcommand name: not an id or a digit-laden value
+    (NAME starts with a letter, so numbers never match)."""
+    return bool(NAME.fullmatch(t)) and not DIGITS4.search(t) and not ID.fullmatch(t)
 
 
 def _value(t, after_flag):

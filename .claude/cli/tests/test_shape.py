@@ -74,6 +74,8 @@ CASES = [
     ("/opt/x/.claude/bin/agent-cli wt list --json", "<path>/agent-cli wt <arg> --json"),
     ("./scripts/deploy.sh --dry-run", "<path>/deploy.sh --dry-run"),
     ("demo-cli run job", "demo-cli run <arg>"),
+    # single-dash long flags lose their names (privacy first: -pS3cret looks the same)
+    ("find . -maxdepth 2 -name x -print", "find <path> -m<v> <n> -name <v> -p<v>"),
 ]
 
 UNPARSEABLE = ["cat <<$D\nsecret line\n$D", 'echo "abc', "echo 'abc", "echo $(date", "echo `date", "", "   ", "# only a comment"]
@@ -135,6 +137,18 @@ class Shape(unittest.TestCase):
         # WHEN a wrapped command is shaped
         # THEN the wrapper stays as the command word
         self.assertEqual(shape("wrapx git status", ()), "wrapx <arg>")
+
+    def test_subcommand_tools_seam_adds_tools(self):
+        """A tool named in the subcommand-tools seam keeps its second word; an unnamed one does not.
+
+        A project's own multi-command tools (a package runner, a deploy CLI) would otherwise collapse
+        every subcommand into one shape, so their chores could never be told apart.
+        """
+        # GIVEN a made-up tool, once named in the seam list and once not
+        # WHEN shaped
+        # THEN only the named one keeps its subcommand
+        self.assertEqual(shape("tasker run build", WRAP, ["tasker"]), "tasker run <arg>")
+        self.assertEqual(shape("tasker run build", WRAP, []), "tasker <arg>")
 
     def test_shape_never_contains_a_value_typed_in_any_position(self):
         """A planted value in every value position never appears in the shape.
