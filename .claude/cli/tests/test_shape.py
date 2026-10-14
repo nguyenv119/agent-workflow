@@ -23,7 +23,7 @@ CASES = [
     ("cd /x", "cd <path>"),
     ("FOO=bar BAZ=1 make build", "make <arg>"),
     ("timeout 30 pytest -x", "pytest -x"),
-    ("nohup python3 server.py &", "python3 <arg>"),
+    ("nohup python3 server.py &", "python3 server.py"),
     ("wrapx raw DATABASE_URL=postgres://u:pw@h/db psql -c 'select 1' --csv", "psql -c <str> --csv"),
     ("X=$(git rev-parse HEAD) make", "make"),
     # quoted strings, backticks and heredocs
@@ -74,6 +74,14 @@ CASES = [
     ("/opt/x/.claude/bin/agent-cli wt list --json", "<path>/agent-cli wt <arg> --json"),
     ("./scripts/deploy.sh --dry-run", "<path>/deploy.sh --dry-run"),
     ("demo-cli run job", "demo-cli run <arg>"),
+    # an interpreter keeps its script's name, so `python3 a.py` and `python3 b.py` are two chores
+    ("python3 /x/harness-loop/loop.py leak --diff origin/main", "python3 <path>/loop.py <arg> --diff <path>"),
+    ("python3 -u tools/check.py 3", "python3 -u <path>/check.py <n>"),
+    ("bash ./run_eval.sh && node build.mjs", "bash <path>/run_eval.sh && node build.mjs"),
+    ("python3 -c 'print(1)' x.py", "python3 -c <str> <arg>"),
+    ("cat notes.py", "cat <arg>"),
+    ("python3 /x/a.py /y/b.py", "python3 <path>/a.py <path>"),
+    ("python3 /x/c324f28ab.py", "python3 <path>"),
     # single-dash long flags lose their names (privacy first: -pS3cret looks the same)
     ("find . -maxdepth 2 -name x -print", "find <path> -m<v> <n> -name <v> -p<v>"),
 ]

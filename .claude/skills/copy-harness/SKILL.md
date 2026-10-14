@@ -34,3 +34,10 @@ The weekly gardener's Pass 3 (`agent-cli hook scan`) reads one more optional lin
 ## gardener
 scan-dirs: <dir with eval or helper scripts>, <another dir>
 ```
+
+`agent-cli repeats` (command shapes typed by hand in 3+ sessions) drops shapes that already start with a command. It knows `agent-cli`; the target can name its own CLIs on an optional line under `## repeats`, so their calls are not reported as uncovered chores:
+
+```
+## repeats
+commands: <project cli>, <another cli>
+```

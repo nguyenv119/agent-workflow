@@ -142,7 +142,8 @@ class Files(ScanCase):
         self.assertEqual(names(txt), ["notes.txt"])
 
     def test_from_until_scans_only_files_dated_inside_the_window(self):
-        """--from/--until keep files whose mtime falls on a local date from FROM through UNTIL inclusive.
+        """--from/--until keep files whose mtime falls on a local date from FROM through UNTIL inclusive; an
+        --until with a time (YYYY-MM-DDTHH:MM) is exclusive.
 
         The gardener replays a chosen past week, so the scan must be able to end before today; the last
         day counts until midnight, and a file one minute past it is out.
@@ -156,6 +157,8 @@ class Files(ScanCase):
         r, both, summary = self.scan(str(self.tree), "--from", "2026-04-01", "--until", "2026-04-07")
         _, from_only, _ = self.scan(str(self.tree), "--from", "2026-04-01")
         _, until_only, _ = self.scan(str(self.tree), "--until", "2026-04-07")
+        _, at_23, _ = self.scan(str(self.tree), "--from", "2026-04-01", "--until", "2026-04-07T23:00")
+        _, at_2301, _ = self.scan(str(self.tree), "--from", "2026-04-01", "--until", "2026-04-07T23:01")
         # THEN the window holds first and last; --from alone runs to now, --until alone from the start
         names = lambda hits: sorted(Path(h["file"]).name for h in hits)  # noqa: E731
         self.assertEqual(r.returncode, 0, r.stderr)
@@ -163,6 +166,8 @@ class Files(ScanCase):
         self.assertEqual(summary["files_scanned"], 2)
         self.assertEqual(names(from_only), ["after.sh", "first.sh", "last.sh"])
         self.assertEqual(names(until_only), ["before.sh", "first.sh", "last.sh"])
+        # AND an --until with a time is exclusive: last.sh at 23:00 is out at T23:00 and in at T23:01
+        self.assertEqual((names(at_23), names(at_2301)), (["first.sh"], ["first.sh", "last.sh"]))
 
     def test_from_until_refuse_since_a_bad_date_and_a_reversed_window(self):
         """--since with --from or --until, a date not YYYY-MM-DD, and FROM after UNTIL each exit 2 naming the fix.

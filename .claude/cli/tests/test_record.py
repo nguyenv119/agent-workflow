@@ -4,9 +4,9 @@ import json
 import os
 import sys
 import unittest
-from pathlib import Path
 
-from helpers import CLAUDE, GIT, TmpCase, agent_cli, make_project, run
+from helpers import CLAUDE, GIT, TmpCase, agent_cli, make_project, run, set_env, store_rows
+from helpers import post_event as event
 
 sys.path.insert(0, str(CLAUDE / "cli"))
 from agent_cli import record  # noqa: E402
@@ -19,35 +19,13 @@ SEAMS = {"command-prefixes": "# wrappers\nwrapx\nwrapx raw\n", "subcommand-tools
                                                "message": "use the sql command"}])}
 
 
-def store_rows(store):
-    """Every row in every day file under store."""
-    return [json.loads(ln) for f in sorted(Path(store).glob("*.jsonl")) for ln in f.read_text().splitlines()]
-
-
-def event(command, name="PostToolUse", session="sess-a", cwd=None, **extra):
-    """A PostToolUse (or PostToolUseFailure) payload as Claude Code sends it on stdin."""
-    e = {"session_id": session, "hook_event_name": name, "tool_name": "Bash", "cwd": str(cwd or "/"),
-         "tool_input": {"command": command}, "tool_use_id": "toolu_demo"}
-    if name == "PostToolUse":
-        e["tool_response"] = {"stdout": "", "stderr": "", "interrupted": False}
-    e.update(extra)
-    return e
-
-
 class Recorder(TmpCase):
     """record() in process, with the store pointed at a temp dir."""
 
     def setUp(self):
         super().setUp()
         self.store = self.tmp / "shapes"
-        for k, v in {"AGENT_CLI_SHAPES_DIR": str(self.store), "AGENT_CLI_SHAPES_KEEP_DAYS": None}.items():
-            old = os.environ.get(k)
-            self.addCleanup(lambda k=k, old=old: os.environ.__setitem__(k, old) if old is not None
-                            else os.environ.pop(k, None))
-            if v is None:
-                os.environ.pop(k, None)
-            else:
-                os.environ[k] = v
+        set_env(self, AGENT_CLI_SHAPES_DIR=str(self.store), AGENT_CLI_SHAPES_KEEP_DAYS=None)
 
     def rows(self, day="2026-10-14"):
         f = self.store / f"{day}.jsonl"
@@ -66,7 +44,7 @@ class Recorder(TmpCase):
         row = record.record(json.dumps(event("git status", cwd=repo / "sub", agent_id="ag-1")), now=NOW)
         # THEN the row is returned and is the only line in the day file
         want = {"ts": "2026-10-14T05:06:07Z", "session": "sess-a", "agent": "ag-1", "repo": "myrepo",
-                "shape": "git status", "exit": 0, "rules": []}
+                "shape": "git status", "exit": 0, "rules": [], "bypassed": []}
         self.assertEqual(row, want)
         self.assertEqual(self.rows(), [want])
 
@@ -234,6 +212,23 @@ class Recorder(TmpCase):
         self.assertEqual((r.returncode, r.stdout, r.stderr), (0, "", ""))
         (row,) = store_rows(self.store)
         self.assertEqual((row["shape"], row["rules"], row["repo"]), ("psql -c <str>", ["raw-sql-demo"], "proj"))
+
+    def test_a_bypassed_rule_is_listed_under_bypassed_not_rules(self):
+        """A rule skipped by `# agent-cli: allow <id>` goes in bypassed; rules keeps only the rules that fired.
+
+        A deny rule blocks its command, so the recorder only sees a denied chore when an agent bypassed it.
+        The report counts such a shape as covered (a command for it exists), which it can only do if the
+        row says which rule was bypassed; the raw comment is never stored.
+        """
+        # GIVEN a project with a warn rule on psql, and a psql call that bypasses it
+        p = make_project(self.tmp / "proj", seams=SEAMS)
+        # WHEN recorded through the hook verb, with and without the bypass comment
+        for cmd in ("psql -c 'select 1'  # agent-cli: allow raw-sql-demo", "psql -c 'select 1'"):
+            agent_cli(p, "hook", "posttooluse", stdin=json.dumps(event(cmd, cwd=p)),
+                      env={"AGENT_CLI_SHAPES_DIR": str(self.store)})
+        # THEN the bypassed row names the rule under bypassed only; the other under rules only
+        self.assertEqual([(r["shape"], r["rules"], r["bypassed"]) for r in store_rows(self.store)],
+                         [("psql -c <str>", [], ["raw-sql-demo"]), ("psql -c <str>", ["raw-sql-demo"], [])])
 
     def test_seam_subcommand_tool_keeps_its_subcommand_on_disk(self):
         """A tool listed in the project's subcommand-tools seam keeps its second word in the stored row.

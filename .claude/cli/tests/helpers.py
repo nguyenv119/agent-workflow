@@ -107,3 +107,34 @@ def corpus_entries(path=CORPUS):
         warn = cmd.rsplit("  # expect-warn: ", 1)
         res.append((cmd, warn[1].strip() if len(warn) == 2 else None))
     return res
+
+
+def post_event(command, name="PostToolUse", session="sess-a", cwd="/", **extra):
+    """A PostToolUse (or PostToolUseFailure) payload as Claude Code sends it on stdin.
+
+    cwd=None leaves cwd out, so the recorded row's repo is null and record() runs no git."""
+    e = {"session_id": session, "hook_event_name": name, "tool_name": "Bash",
+         "tool_input": {"command": command}, "tool_use_id": "toolu_demo"}
+    if cwd is not None:
+        e["cwd"] = str(cwd)
+    if name == "PostToolUse":
+        e["tool_response"] = {"stdout": "", "stderr": "", "interrupted": False}
+    e.update(extra)
+    return e
+
+
+def store_rows(store):
+    """Every row in every day file of a shape store dir."""
+    return [json.loads(ln) for f in sorted(Path(store).glob("*.jsonl")) for ln in f.read_text().splitlines()]
+
+
+def set_env(case, **values):
+    """Set (or, for None, remove) env vars for one test; case's cleanup restores them."""
+    for k, v in values.items():
+        old = os.environ.get(k)
+        case.addCleanup(lambda k=k, old=old: os.environ.__setitem__(k, old) if old is not None
+                        else os.environ.pop(k, None))
+        if v is None:
+            os.environ.pop(k, None)
+        else:
+            os.environ[k] = v
