@@ -27,6 +27,8 @@ STUB = FIXTURES / "one_line_change.sh"
 sys.path.insert(0, str(LOOP_DIR))
 import loop  # noqa: E402
 
+CAP = loop.WEEKLY_BUDGET_USD  # budget scenarios sit just under or over the real weekly cap
+
 COORDINATOR = textwrap.dedent("""\
     ---
     name: coordinator
@@ -393,7 +395,7 @@ class RoundSideCheck(LoopTestCase):
     def side_round(self, spec, *extra, env=None, improver=STUB):
         """
         A stub round with a $30 side check on a private set named `secretset`. It reuses a booked main screen
-        run and screens with --budget-usd 20, since 30 + 30 would pass the $50 weekly cap.
+        run and screens with --budget-usd 20, so the round reserves 20 + 30 = $50.
         """
         self.r.base_run(env={"FAKE_EXAM_SPEC": json.dumps(spec)})
         self.addon = self.r.tmp / "addon"
@@ -558,9 +560,9 @@ class RoundSideCheck(LoopTestCase):
 
     def test_side_budget_counts_toward_the_weekly_cap(self):
         """The round's budget check includes the side check, so it cannot take the week past the cap."""
-        # GIVEN $15 spent this week: 15 + 30 (exam) fits the $50 cap, 15 + 30 + 10 (side check) does not
-        self.r.ledger((1, 15.0))
-        # WHEN a round with a $10 side check starts
+        # GIVEN the cap less $35 spent this week: + 20 (screen) fits the cap, + 20 + 30 (side check) does not
+        self.r.ledger((1, CAP - 35))
+        # WHEN a round with a $30 side check starts
         p = self.side_round(SPEC_SIDE_PASS)
         # THEN refused before anything runs
         self.assertNotEqual(p.returncode, 0)
@@ -576,7 +578,7 @@ class RoundSideCheck(LoopTestCase):
         addon = self.r.tmp / "addon2"
         (addon / "private").mkdir(parents=True)
         (addon / "private/side.json").write_text('{"set": "secretset"}\n')
-        self.r.base_run()  # reused, so screen 20 + side 30 fits the $50 weekly cap
+        self.r.base_run()  # reused, so screen 20 + side 30 fits the weekly cap
         args = ("--sidecheck", str(addon / "private/side.json"), "--sidecheck-addon", str(addon),
                 "--budget-usd", "20", "--sidecheck-budget-usd", "30")
         spec = {"FAKE_EXAM_SPEC": json.dumps(SPEC_SIDE_PASS)}
@@ -1221,11 +1223,11 @@ class RoundModes(LoopTestCase):
 class Budget(LoopTestCase):
     def test_round_over_weekly_cap_is_refused_before_improver(self):
         """
-        With $45 spent this week, a screened round with a $30 exam budget would
-        pass the $50 weekly cap, so it is refused before the improver runs.
+        With the cap less $15 spent this week, a screened round with a $30 exam budget would
+        pass the weekly cap, so it is refused before the improver runs.
         """
-        # GIVEN $45 in the ledger from 2 days ago, and an improver that leaves a marker
-        self.r.ledger((2, 45.0))
+        # GIVEN the cap less $15 in the ledger from 2 days ago, and an improver that leaves a marker
+        self.r.ledger((2, CAP - 15))
         marker = self.r.tmp / "improver-ran"
         imp = self.r.script("imp.sh", f"touch {marker}\n")
         # WHEN a round with --budget-usd 30 starts
@@ -1239,10 +1241,11 @@ class Budget(LoopTestCase):
     def test_default_round_budget_includes_the_project_check_cap(self):
         """
         A default (Bedrock) round reserves the project check's $1 cap on top of the improver's budget:
-        $48.50 spent + $1 improver fits $50 alone, but not with the cap, so it is refused before anything runs.
+        the cap less $1.50 spent + $1 improver fits alone, but not with the $1 check cap, so it is refused
+        before anything runs.
         """
-        # GIVEN $48.50 spent, a Bedrock-looking env, and a `claude` on PATH that leaves a marker if ever run
-        self.r.ledger((1, 48.5))
+        # GIVEN the cap less $1.50 spent, a Bedrock-looking env, and a `claude` on PATH that leaves a marker if ever run
+        self.r.ledger((1, CAP - 1.5))
         marker = self.r.tmp / "claude-ran"
         fake = self.r.tmp / "fakebin"
         fake.mkdir()
@@ -1272,7 +1275,7 @@ class Budget(LoopTestCase):
     def test_no_screen_stub_round_needs_no_budget(self):
         """A stub round with --no-screen spends nothing, so it runs at the cap."""
         # GIVEN the week's cap already spent
-        self.r.ledger((1, 50.0))
+        self.r.ledger((1, CAP))
         # WHEN a stub --no-screen round starts
         p = self.r.round("--no-screen")
         # THEN it runs
@@ -1858,8 +1861,8 @@ class ExamPR(LoopTestCase):
 
     def test_exam_over_the_weekly_cap_is_refused(self):
         """The exam shares the loop's weekly cap: past it, nothing runs."""
-        # GIVEN $45 spent this week and a PR changing a reviewer skill
-        self.r.ledger((0, 45.0))
+        # GIVEN the cap less $15 spent this week and a PR changing a reviewer skill
+        self.r.ledger((0, CAP - 15))
         head = self.pr_head({self.REVIEWER: BASE_FILES[self.REVIEWER] + "x\n"})
         # WHEN a $30 exam is asked for
         p = self.exam(head)
