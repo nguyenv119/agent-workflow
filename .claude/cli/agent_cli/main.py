@@ -1,13 +1,13 @@
-"""agent-cli entry: argparse root with hook, eval, self, lib, wt, wait, lock, pr and log."""
+"""agent-cli entry: argparse root with hook, eval, self, lib, wt, wait, lock, pr, log, page and card."""
 import os
 import subprocess
 from pathlib import Path
 
-from . import core, eval_cmd, hook, lib_cmd, lock, log, pr, self_cmd, wait, wt
+from . import card, core, eval_cmd, hook, lib_cmd, lock, log, page, pr, self_cmd, wait, wt
 from .core import Exit
 
 # Top-level commands in help order; each module's register(sub) adds its own. A new command is one entry.
-COMMANDS = (hook, eval_cmd, self_cmd, lib_cmd, wt, wait, lock, pr, log)
+COMMANDS = (hook, eval_cmd, self_cmd, lib_cmd, wt, wait, lock, pr, log, page, card)
 
 
 class Root(core.Parser):
@@ -33,7 +33,7 @@ def project_clis():
 
 def build():
     root = Root(prog="agent-cli",
-                summary="shared chores for agent sessions (worktrees, PR checks, waits, locks, eval verdicts)",
+                summary="shared chores for agent sessions (worktrees, PR checks, waits, locks, eval verdicts, page and card checks)",
                 examples=["agent-cli hook test --cmd 'echo \"<promise>WIN</promise>\"'",
                           'source "$(agent-cli eval lib --sh)"', "agent-cli self env"])
     sub = root.add_subparsers(title="Commands", metavar="<command>", parser_class=core.Parser)

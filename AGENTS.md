@@ -41,6 +41,7 @@ A PreToolUse hook (`agent-cli hook pretooluse`) checks each Bash command against
 | `hand-loop-log` | `echo`/`printf >>` into a hand-rolled `loop-*.log` or `.txt` | `agent-cli log append .claude/loop-<epic-id>.tsv --phase ... --action ... --result ...` | warn |
 | `blast-radius-proof` | A risky bead (schema, shared infra, cross-service contract, prod-affecting) shipped on an asserted safety claim | `.claude/skills/blast-radius/SKILL.md`: one "Safe because / Proved by" paragraph with a command that ran, in the BEAD COMPLETE block | skill text only |
 | `measured-number-checklist` | A cost ratio, speedup or pass rate reported without vetting | `.claude/skills/win-condition/SKILL.md` § Before reporting a measured number: answer all 7, `not checked` where skipped | skill text only |
+| `page-card-format` | A document page or to-do card that breaks the format rules (layer parts, one legend line, closed For agents, needs-you fields, no ids or tokens in prose) | `agent-cli page check <page>`, `agent-cli card check <dir>`; edits by `agent-cli page mark-update\|new-layer\|new` and `agent-cli card write`; per-project rules in `page-rules.json` / `card-rules.json` seams | skill text only |
 
 ## Issue Tracking with bd (beads)
 
