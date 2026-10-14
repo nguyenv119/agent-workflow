@@ -1,4 +1,5 @@
-"""PreToolUse hook framework: the command's code view, rule loading and evaluation, the `hook` verbs.
+"""PreToolUse hook framework: the command's code view, rule loading and evaluation, the `hook` verbs
+(posttooluse/posttoolusefailure, the shape recorder, live in record.py).
 
 Safety: fails open (any error prints nothing, exit 0); AGENT_CLI_HOOKS=off disables every rule;
 `# agent-cli: allow <id>` skips one rule; only Bash is inspected; commands over 20 KB are not matched.
@@ -237,7 +238,7 @@ def list_rules(json_mode):
 
 
 def register(sub):
-    _, hs = core.group(sub, "hook", "PreToolUse rules that point hand-rolled chores at the right command",
+    _, hs = core.group(sub, "hook", "PreToolUse rules that point hand-rolled chores at the right command, and the shape recorder",
                        ["agent-cli hook test --cmd 'echo \"<promise>WIN</promise>\"'", "agent-cli hook rules --json",
                         "agent-cli hook scan .claude/loop-evals --since 7d --json"])
     p = core.subcommand(hs, "pretooluse",
@@ -255,5 +256,11 @@ def register(sub):
                         ["agent-cli hook rules", "agent-cli hook rules --json"])
     p.add_argument("--json", action="store_true", help="one JSON object per rule")
     p.set_defaults(func=lambda a: list_rules(a.json))
-    from . import hook_scan  # imports this module, so registered here rather than at the top
+    from . import hook_scan, record  # both import this module, so registered here rather than at the top
     hook_scan.register(hs)
+    for name, event in (("posttooluse", "PostToolUse"), ("posttoolusefailure", "PostToolUseFailure")):
+        p = core.subcommand(hs, name, f"read a {event} event on stdin; record the command's shape (never the "
+                            "command); prints nothing, always exits 0",
+                            ["echo '{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"ls\"}}' "
+                             f"| agent-cli hook {name}"])
+        p.set_defaults(func=lambda a, event=event: record.hook_verb(event))
