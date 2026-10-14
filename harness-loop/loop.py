@@ -101,15 +101,15 @@ HOME = Path(os.environ.get("HARNESS_LOOP_HOME") or Path.home() / ".harness-loop"
 TRIES = Path.home() / ".claude/tries"  # every repo's /work tries: <repo>/<bead>/try-<n>
 GH_REPO = "nguyenv119/agent-workflow"
 
-WEEKLY_BUDGET_USD = 50.0  # Long, 12 Oct 2026
+WEEKLY_BUDGET_USD = 75.0  # fits one default round with a side check ($71)
 IMPROVER_MAX_USD = 10.0
 IMPROVER_TIMEOUT_S = 3600
 PROJECT_CHECK_MAX_USD = 1.0  # project_check.py's --max-budget-usd; booked when a call's cost is unknown
 DEFAULT_EXAM_BUDGET_USD = 30.0
 FIRST_ESTIMATE_USD = 15.0  # exam/run_exam.py FIRST_ESTIMATE_USD (a test pins they match)
 # Two side runs at FIRST_ESTIMATE_USD each. A default round with --sidecheck books improver 10 +
-# project check 1 + exam 30 + side 30 = 71 > the weekly 50, so check_budget refuses it until the
-# weekly cap is raised (even at the minimum --budget-usd 15 with main's run reused: 10 + 1 + 15 + 30 = 56).
+# project check 1 + exam 30 + side 30 = 71, which fits the weekly 75 only in a week with $4 or less
+# already spent; otherwise check_budget refuses it before anything starts.
 DEFAULT_SIDECHECK_BUDGET_USD = 30.0
 SIDE_HOME = "loop-home"  # side runs live next to the private manifest: <manifest dir>/loop-home/runs
 
