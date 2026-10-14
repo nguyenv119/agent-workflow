@@ -9,6 +9,8 @@
     loop.py sync
     loop.py guard <commit> [--base <ref>]
     loop.py leak [--diff <ref>] [--body <file>]
+    loop.py budget --est X --what S
+    loop.py book --kind K --usd X [--note S]
 
 round: make worktree $HARNESS_LOOP_HOME/wt/<n> on branch harness-loop/<n> off origin/main;
 write rounds/<n>/message.txt (paths only; a `proposals:` line when --proposals names a file that
@@ -59,7 +61,12 @@ checked (--no-screen, all checks pass), error, merged, closed.
 Budget: WEEKLY_BUDGET_USD over a rolling 7 days of $HARNESS_LOOP_HOME/spend.jsonl, which only
 this script writes (improver cost from claude's result line, exam cost from each run's
 summary.json). A round that could take the week past the cap (improver + exam + side check budgets)
-is refused before anything starts; so is a monthly or an exam.
+is refused before anything starts; so is a monthly or an exam. A run outside the loop (the weekly
+gardener) is booked here too: `budget --est X --what S` asks first (exit 0 fits the cap, 1 refused with
+the reason), and `book --kind K --usd X [--note S]` writes its cost as one row with round "gardener",
+so spend.jsonl still has one writer. Kinds the loop books itself (improver, project-check, exam-*,
+sidecheck-*) are refused: an exam-baseline row is the proof a main run is reusable. Run book when no
+round is running: a round restores spend.jsonl from its snapshot and drops itself on any change.
 
 leak: the same leak scan, free and on its own, over the lines added in <ref>...HEAD and a PR body
 file; prints each hit, exits 1 on any, 3 when leak-patterns.txt is missing, 0 clean. Run it before a push.
@@ -222,11 +229,11 @@ def week_spent(rows, at):
     return sum(max(0.0, float(r["usd"])) for r in rows if at - datetime.datetime.fromisoformat(r["ts"]) < week)
 
 
-def check_budget(est, what):
+def check_budget(est, what, code=2):
     spent = week_spent(read_jsonl(HOME / "spend.jsonl"), now())
     if spent + est > WEEKLY_BUDGET_USD + 1e-9:
         die(f"refusing {what}: ${spent:.2f} spent in the last 7 days + up to ${est:.2f} "
-            f"> ${WEEKLY_BUDGET_USD:.2f} weekly cap")
+            f"> ${WEEKLY_BUDGET_USD:.2f} weekly cap", code=code)
     return spent
 
 
@@ -1272,6 +1279,32 @@ def cmd_leak(args):
     print(f"leak: clean ({len(lines)} lines)")
 
 
+def usd(text):
+    """argparse type: a finite dollar amount >= 0 (a negative row would hand the week money back)."""
+    try:
+        v = float(text)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"not a dollar amount: {text!r}") from None
+    if not 0 <= v < float("inf"):
+        raise argparse.ArgumentTypeError(f"must be a finite amount >= 0: {text!r}")
+    return v
+
+
+def cmd_budget(args):
+    spent = check_budget(args.est, args.what, code=1)
+    print(f"budget: ok, ${spent:.2f} spent in the last 7 days + ${args.est:.2f} <= ${WEEKLY_BUDGET_USD:.2f} weekly cap")
+
+
+LOOP_KINDS = re.compile(r"^(improver|project-check|exam-.*|sidecheck-.*)$")
+
+
+def cmd_book(args):
+    if LOOP_KINDS.match(args.kind):
+        die(f"book: kind {args.kind!r} is one the loop books itself; use another, e.g. --kind gardener")
+    book(args.kind, args.usd, "gardener", args.note)
+    print(f"book: {args.kind} ${args.usd:.4f}")
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -1301,9 +1334,16 @@ def main(argv=None):
     lk = sub.add_parser("leak", help="free leak scan of a branch's added lines and a PR body (exit 1 = hits)")
     lk.add_argument("--diff", metavar="REF", help="scan lines added in REF...HEAD")
     lk.add_argument("--body", help="PR body file to scan")
+    bu = sub.add_parser("budget", help="exit 0 if a run of --est USD fits the weekly cap, 1 (with the reason) if not")
+    bu.add_argument("--est", type=usd, required=True, help="most the run may spend, in USD")
+    bu.add_argument("--what", required=True, help="what is asking, named in the refusal (e.g. gardener)")
+    bk = sub.add_parser("book", help="append one spend row for a run outside the loop (round \"gardener\")")
+    bk.add_argument("--kind", required=True, help="the row's kind, e.g. gardener")
+    bk.add_argument("--usd", type=usd, required=True, help="what the run cost, in USD")
+    bk.add_argument("--note", default="", help="free text kept on the row (e.g. the report dir)")
     args = ap.parse_args(argv)
     {"round": cmd_round, "monthly": cmd_monthly, "sync": cmd_sync, "exam": cmd_exam, "guard": cmd_guard,
-     "leak": cmd_leak}[args.cmd](args)
+     "leak": cmd_leak, "budget": cmd_budget, "book": cmd_book}[args.cmd](args)
 
 
 if __name__ == "__main__":

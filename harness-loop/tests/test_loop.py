@@ -1338,6 +1338,79 @@ class Budget(LoopTestCase):
         self.assertEqual(loop.FIRST_ESTIMATE_USD, run_exam.FIRST_ESTIMATE_USD)
 
 
+class BookAndBudgetCLI(LoopTestCase):
+    """`loop.py book` and `loop.py budget`: a run outside the loop (the weekly gardener) asks the weekly cap
+    first and books its cost after, so the cap counts every dollar the week spent."""
+
+    def spend_rows(self):
+        f = self.r.home / "spend.jsonl"
+        return [json.loads(line) for line in f.read_text().splitlines()] if f.is_file() else []
+
+    def test_budget_over_the_cap_exits_1_naming_it_and_under_exits_0(self):
+        """--est 999 exits 1 with the refusal naming the weekly cap; --est 0.01 on an empty ledger exits 0."""
+        # GIVEN an empty ledger
+        # WHEN asked for $999, then for $0.01
+        over = self.r.loop("budget", "--est", "999", "--what", "gardener")
+        under = self.r.loop("budget", "--est", "0.01", "--what", "gardener")
+        # THEN the first is refused naming what and the cap, the second allowed, and nothing is booked
+        self.assertEqual(over.returncode, 1, over.stdout + over.stderr)
+        self.assertIn("refusing gardener", over.stderr)
+        self.assertIn(f"${CAP:.2f} weekly cap", over.stderr)
+        self.assertEqual(under.returncode, 0, under.stdout + under.stderr)
+        self.assertEqual(self.spend_rows(), [])
+
+    def test_budget_counts_this_weeks_spend_against_the_estimate(self):
+        """With the cap less $5 spent this week, --est 6 is refused and --est 5 fits exactly."""
+        # GIVEN the cap less $5 booked 2 days ago
+        self.r.ledger((2, CAP - 5))
+        # WHEN asked for $6, then $5
+        six = self.r.loop("budget", "--est", "6", "--what", "gardener")
+        five = self.r.loop("budget", "--est", "5", "--what", "gardener")
+        # THEN 6 is over the cap and 5 is not
+        self.assertEqual(six.returncode, 1, six.stderr)
+        self.assertEqual(five.returncode, 0, five.stderr)
+
+    def test_book_appends_one_gardener_row_that_later_budgets_count(self):
+        """book --kind gardener-replay --usd 6 --note d writes one row whose round is always "gardener" (not the
+        kind); a budget after it sees the $6."""
+        # GIVEN the cap less $10 booked yesterday
+        self.r.ledger((1, CAP - 10))
+        # WHEN a gardener run books $6, then asks for $5 more
+        b = self.r.loop("book", "--kind", "gardener-replay", "--usd", "6", "--note", "reports/2026-04-07")
+        after = self.r.loop("budget", "--est", "5", "--what", "gardener")
+        # THEN one new row with the fields, and the second ask is refused because the $6 now counts
+        self.assertEqual(b.returncode, 0, b.stdout + b.stderr)
+        row = self.spend_rows()[-1]
+        self.assertEqual({k: row[k] for k in ("kind", "round", "usd", "note")},
+                         {"kind": "gardener-replay", "round": "gardener", "usd": 6.0, "note": "reports/2026-04-07"})
+        self.assertEqual(len(self.spend_rows()), 2)
+        datetime.datetime.fromisoformat(row["ts"])
+        self.assertEqual(after.returncode, 1, after.stderr)
+
+    def test_book_refuses_a_negative_or_non_numeric_cost(self):
+        """--usd -1, abc, nan or inf exits 2 and books nothing: a negative row would hand the week money back,
+        and nan or inf would break every later sum."""
+        for usd in ("-1", "abc", "nan", "inf"):
+            # GIVEN an empty ledger / WHEN booking the bad cost
+            p = self.r.loop("book", "--kind", "gardener", "--usd", usd)
+            # THEN exit 2 and the ledger stays empty
+            self.assertEqual(p.returncode, 2, (usd, p.stdout, p.stderr))
+            self.assertEqual(self.spend_rows(), [])
+
+    def test_book_refuses_the_kinds_the_loop_books_itself(self):
+        """--kind exam-baseline (or improver, project-check, sidecheck-*) exits 2 and books nothing.
+
+        An exam-baseline row is what makes a main run reusable; a hand-booked one would forge that proof.
+        """
+        for kind in ("exam-baseline", "improver", "project-check", "sidecheck-baseline"):
+            # GIVEN an empty ledger / WHEN booking that kind
+            p = self.r.loop("book", "--kind", kind, "--usd", "0", "--note", "runs/x")
+            # THEN exit 2 naming the kind, and the ledger stays empty
+            self.assertEqual(p.returncode, 2, (kind, p.stdout, p.stderr))
+            self.assertIn(kind, p.stderr)
+            self.assertEqual(self.spend_rows(), [])
+
+
 class SyncAndMonthly(LoopTestCase):
     def test_sync_marks_merged_pr(self):
         """sync reads each open PR's state with gh and records merged in history and the queue."""

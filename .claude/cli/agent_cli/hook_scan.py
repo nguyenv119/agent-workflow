@@ -26,8 +26,11 @@ DONE = re.compile(r"(?:^|[;&|(\n])\s*done\b")
 EXAMPLES = ["agent-cli hook scan .claude/loop-evals --since 7d --json",
             "agent-cli hook scan scripts tools --glob '*.sh' --since 30d",
             "cat commands.txt | agent-cli hook scan --stdin --json",
-            "agent-cli hook scan --since 7d --json   # the scan-dirs: line under ## gardener"]
-DESCRIPTION = ("Scans each file under the paths (mtime within --since; skips node_modules, .venv, venv, .git,\n"
+            "agent-cli hook scan --since 7d --json   # the scan-dirs: line under ## gardener",
+            "agent-cli hook scan .claude/loop-evals --from 2026-04-01 --until 2026-04-07 --json"]
+WINDOW_EXAMPLE = EXAMPLES[4]
+DESCRIPTION = ("Scans each file under the paths (mtime within --since, default 7d, or on a local date from --from\n"
+               "through --until, both inclusive; skips node_modules, .venv, venv, .git,\n"
                "evidence/, binaries and files over 1 MB). With no paths it scans the comma-separated scan-dirs:\n"
                "line under `## gardener` in .claude/project-rules.md (relative to the project root).\n"
                "Prints one hit per file and rule {file, rule, mode, line, mtime, bypassed}, then a summary\n"
@@ -43,7 +46,12 @@ def register(hs):
     p = core.subcommand(hs, "scan", "run every rule over script files or piped commands (read-only)", EXAMPLES)
     p.description = DESCRIPTION
     p.add_argument("paths", nargs="*", help="files or dirs to scan (default: scan-dirs from project-rules.md)")
-    p.add_argument("--since", default="7d", help="only files modified within this long (default 7d)")
+    p.add_argument("--since", help="only files modified within this long (default 7d; not with --from/--until)")
+    p.add_argument("--from", dest="from_", metavar="DATE",
+                   help="only files modified on or after this local date (YYYY-MM-DD)")
+    p.add_argument("--until", metavar="DATE",
+                   help="only files modified on or before this local date (YYYY-MM-DD, the whole day counts; "
+                        "alone, the window has no start)")
     p.add_argument("--glob", default=GLOB, help=f"comma-separated file-name patterns (default {GLOB})")
     p.add_argument("--stdin", action="store_true", help="scan stdin instead, one command per line")
     p.add_argument("--json", action="store_true", help="one JSON object per hit, then a summary object")
@@ -59,8 +67,8 @@ def scan(a):
         hits = [dict(h, file="-", line=n) for n, cmd in enumerate(lines, 1) if cmd.strip()
                 for h in file_hits(cmd, rules)]
         return report(a, hits, {"commands_scanned": sum(1 for c in lines if c.strip())})
-    since = core.duration(a.since, EXAMPLES[0])
-    files = list(walk(roots(a.paths), [g.strip() for g in a.glob.split(",") if g.strip()], time.time() - since))
+    lo, hi = window(a)
+    files = list(walk(roots(a.paths), [g.strip() for g in a.glob.split(",") if g.strip()], lo, hi))
     hits, scanned, unreadable = [], 0, 0
     for f in files:
         try:
@@ -79,6 +87,28 @@ def scan(a):
     return report(a, hits, {"files_scanned": scanned, "unreadable": unreadable})
 
 
+def window(a):
+    """(lo, hi) epoch bounds for a file's mtime, lo <= mtime < hi: --since back from now, else local
+    midnight of --from up to the midnight after --until (either may be left open)."""
+    if a.since is not None and (a.from_ or a.until):
+        core.die(Exit.REFUSED, "give --since or --from/--until, not both", WINDOW_EXAMPLE)
+    if not (a.from_ or a.until):
+        return time.time() - core.duration(a.since or "7d", EXAMPLES[0]), float("inf")
+    lo = day(a.from_, "--from") if a.from_ else float("-inf")
+    hi = day(a.until, "--until", 1) if a.until else float("inf")
+    if lo >= hi:
+        core.die(Exit.REFUSED, f"--from {a.from_} is after --until {a.until}", WINDOW_EXAMPLE)
+    return lo, hi
+
+
+def day(text, flag, after=0):
+    """Epoch of local midnight starting the date text (YYYY-MM-DD) plus `after` days, or exit 2 naming the flag."""
+    try:  # naive local time, so a DST change is handled; year 1 or 9999 overflows: refused, not a traceback
+        return (datetime.datetime.strptime(text, "%Y-%m-%d") + datetime.timedelta(days=after)).timestamp()
+    except (ValueError, OverflowError):
+        core.die(Exit.REFUSED, f"{flag} {text!r} is not a usable date: use YYYY-MM-DD", WINDOW_EXAMPLE)
+
+
 def roots(paths):
     """The paths to walk: the arguments, else the scan-dirs: line under ## gardener (relative = project root)."""
     if not paths:
@@ -94,13 +124,13 @@ def roots(paths):
     return paths
 
 
-def walk(paths, globs, cutoff):
-    """Files under paths whose name matches a glob and whose mtime is at or after cutoff (sorted per dir)."""
+def walk(paths, globs, lo, hi):
+    """Files under paths whose name matches a glob and whose mtime is in [lo, hi) (sorted per dir)."""
     def keep(f):
         if not any(fnmatch.fnmatch(f.name, g) for g in globs):
             return False
         try:
-            return f.stat().st_mtime >= cutoff
+            return lo <= f.stat().st_mtime < hi
         except OSError:
             return True  # vanished: the read below counts it as unreadable
     for p in map(Path, paths):

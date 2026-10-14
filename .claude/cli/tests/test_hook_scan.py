@@ -1,4 +1,5 @@
 """Tests for `agent-cli hook scan`: every hook rule run over script files or piped commands."""
+import datetime
 import json
 import os
 import time
@@ -39,6 +40,13 @@ class ScanCase(TmpCase):
         if age_days:
             t = time.time() - age_days * 86400
             os.utime(f, (t, t))
+        return f
+
+    def at(self, rel, day, hour=12):
+        """Write a worktree-add hit to rel with its mtime set to local `day` (YYYY-MM-DD) at `hour`:00."""
+        f = self.write(rel, "git worktree add -b x ../x\n")
+        t = datetime.datetime.strptime(f"{day} {hour}", "%Y-%m-%d %H").timestamp()
+        os.utime(f, (t, t))
         return f
 
     def scan(self, *args, stdin=None):
@@ -120,16 +128,71 @@ class Files(ScanCase):
             self.write(f"{d}/x.sh", wt)
         self.write("bin.sh", b"\0\x01" + wt.encode())
         self.write("big.sh", wt + "#" * (1024 * 1024))
-        # WHEN scanned with --since 7d, then 3650d, then with a .txt glob
+        # WHEN scanned with no window flag, with --since 7d, then 3650d, then with a .txt glob
+        _, default, _ = self.scan(str(self.tree))
         _, week, s1 = self.scan(str(self.tree), "--since", "7d")
         _, all_time, _ = self.scan(str(self.tree), "--since", "3650d")
         _, txt, _ = self.scan(str(self.tree), "--glob", "*.txt")
-        # THEN only new.sh in the week, old.sh too over ten years, and notes.txt only under its glob
+        # THEN only new.sh by default and in the week, old.sh too over ten years, and notes.txt only under its glob
         names = lambda hits: sorted(Path(h["file"]).name for h in hits)  # noqa: E731
+        self.assertEqual(names(default), ["new.sh"])
         self.assertEqual(names(week), ["new.sh"])
         self.assertEqual(s1["files_scanned"], 1)
         self.assertEqual(names(all_time), ["new.sh", "old.sh"])
         self.assertEqual(names(txt), ["notes.txt"])
+
+    def test_from_until_scans_only_files_dated_inside_the_window(self):
+        """--from/--until keep files whose mtime falls on a local date from FROM through UNTIL inclusive.
+
+        The gardener replays a chosen past week, so the scan must be able to end before today; the last
+        day counts until midnight, and a file one minute past it is out.
+        """
+        # GIVEN files dated the day before, the first minute of, the last minute of, and the day after the window
+        self.at("before.sh", "2026-03-31", 23)
+        self.at("first.sh", "2026-04-01", 0)
+        self.at("last.sh", "2026-04-07", 23)
+        self.at("after.sh", "2026-04-08", 0)
+        # WHEN scanned with --from 2026-04-01 --until 2026-04-07, then with --from alone and --until alone
+        r, both, summary = self.scan(str(self.tree), "--from", "2026-04-01", "--until", "2026-04-07")
+        _, from_only, _ = self.scan(str(self.tree), "--from", "2026-04-01")
+        _, until_only, _ = self.scan(str(self.tree), "--until", "2026-04-07")
+        # THEN the window holds first and last; --from alone runs to now, --until alone from the start
+        names = lambda hits: sorted(Path(h["file"]).name for h in hits)  # noqa: E731
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(names(both), ["first.sh", "last.sh"])
+        self.assertEqual(summary["files_scanned"], 2)
+        self.assertEqual(names(from_only), ["after.sh", "first.sh", "last.sh"])
+        self.assertEqual(names(until_only), ["before.sh", "first.sh", "last.sh"])
+
+    def test_from_until_refuse_since_a_bad_date_and_a_reversed_window(self):
+        """--since with --from or --until, a date not YYYY-MM-DD, and FROM after UNTIL each exit 2 naming the fix.
+
+        Two ways to say the window at once would make the scan guess which one the caller meant.
+        """
+        # GIVEN one file in the tree
+        self.at("x.sh", "2026-04-02")
+        cases = {("--since", "7d", "--from", "2026-04-01"): "--since",
+                 ("--since", "7d", "--until", "2026-04-07"): "--since",
+                 ("--from", "4/1/2026"): "YYYY-MM-DD",
+                 ("--until", "9999-12-31"): "YYYY-MM-DD",
+                 ("--from", "0001-01-01"): "YYYY-MM-DD",
+                 ("--from", "2026-04-08", "--until", "2026-04-07"): "after"}
+        for args, word in cases.items():
+            # WHEN scan runs with the bad window
+            r = agent_cli(self.p, "hook", "scan", str(self.tree), *args)
+            # THEN exit 2, an error naming the problem, and an example using --from/--until
+            self.assertEqual(r.returncode, 2, (args, r.stdout, r.stderr))
+            self.assertIn(word, r.stderr)
+            self.assertRegex(r.stderr, r"example: .*agent-cli hook scan .*--from")
+
+    def test_help_lists_a_from_until_example(self):
+        """`hook scan --help` shows a --from/--until example, so a caller finds the past-window form
+        (cli-for-agents "`--help` that works")."""
+        # GIVEN the installed CLI / WHEN asked for help
+        r = agent_cli(self.p, "hook", "scan", "--help")
+        # THEN the examples carry a dated window
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertRegex(r.stdout, r"agent-cli hook scan .*--from \d{4}-\d\d-\d\d --until \d{4}-\d\d-\d\d")
 
     def test_requires_is_ignored_and_project_rules_are_scanned(self):
         """A project rule from the seam is scanned too, even when its required command is not installed.

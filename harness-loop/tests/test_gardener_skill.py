@@ -31,6 +31,46 @@ class GardenerSkill(unittest.TestCase):
         # THEN nothing hits
         self.assertEqual(loop.leak_hits(lines, None), [])
 
+    def test_window_is_a_caller_parameter_dated_by_record_or_birth_time(self):
+        """Pass 2 gathers a caller-chosen window (default the 7 days ending now), dates inputs by record
+        timestamp or birth date, never mtime alone, and ignores anything after the window end."""
+        # GIVEN the skill text
+        text = SKILL.read_text()
+        # WHEN checked / THEN the window clause, its dating rule and the end-date report dir are there
+        for phrase in ("### 1. Gather the window", "window: YYYY-MM-DD..YYYY-MM-DD", "7 days ending now",
+                       "st_birthtime", "never mtime alone", "after the window end is ignored",
+                       "named after the window end date", "transcripts: <dir>", "user turns only"):
+            self.assertIn(phrase, text)
+        self.assertNotIn("Gather the week", text)
+
+    def test_proof_contract_and_report_root_let_a_caller_score_a_run(self):
+        """A proof is a report-dir file run as `<proof> <input path>` (non-zero on the mistake), listed per
+        class with the input it fired on; report-root moves replays away from the weekly reports."""
+        # GIVEN the skill text
+        text = SKILL.read_text()
+        # WHEN checked / THEN the contract and the report-root parameter are there
+        for phrase in ("`<proof> <input path>`", "non-zero", "the input it fired on", "report-root: <dir>"):
+            self.assertIn(phrase, text)
+
+    def test_pass_3_scans_the_window_not_the_last_7_days(self):
+        """Pass 3 hands the window to `hook scan --from <start> --until <end>`, so a past week scans that week."""
+        # GIVEN Pass 3
+        pass3 = loop.section(SKILL.read_text(), "## Pass 3: chores still hand-rolled")
+        # WHEN checked / THEN it uses the window form and no longer the fixed duration
+        self.assertIn("agent-cli hook scan --from <start> --until <end> --json", pass3)
+        self.assertNotIn("--since 7d", pass3)
+
+    def test_filing_is_only_what_the_caller_names(self):
+        """Proposals only, except beads.md proposals filed into a bead db the caller's prompt names, ids in filed.txt."""
+        # GIVEN the Output and limits section
+        limits = loop.section(SKILL.read_text(), "## Output and limits")
+        # WHEN checked / THEN proposals-only stays and the one filing exception is spelled out
+        self.assertIn("files nothing itself", limits)
+        for phrase in ("explicitly names a bead db", "filed.txt", "nothing else is ever filed"):
+            self.assertIn(phrase, limits)
+        # AND Pass 2's Route step points at that exception instead of a flat "do not file"
+        self.assertIn("Do not file it, unless the caller names a bead db", SKILL.read_text())
+
     def test_prune_points_at_gardener_as_weekly_driver(self):
         """prune's Phase 5 names the gardener skill, so the weekly rescan has one driver."""
         # GIVEN prune's Phase 5 section
