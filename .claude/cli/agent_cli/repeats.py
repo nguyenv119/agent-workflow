@@ -3,11 +3,13 @@
 Reads the shape recorder's store (record.py), or with --commands a JSONL of raw {ts, session, cmd} rows
 that it shapes and rule-matches in memory; the raw text is never written anywhere.
 
-Covered (--covered live): a shape is covered when (a) a hook rule matched any of its runs, including a
-rule the run skipped with `# agent-cli: allow <id>`: a deny rule blocks its command, so the recorder only
-sees a denied chore when an agent bypassed it on purpose, and the rule's command already exists for it;
-or (b) its first command word, after today's command-prefixes seam words are stripped, is agent-cli or a
-name on the `commands:` line under `## repeats` in .claude/project-rules.md.
+Covered (--covered live): a shape is covered when (a) a hook rule matched at least half of its runs,
+counting a rule a run skipped with `# agent-cli: allow <id>` (a deny rule blocks its command, so the
+recorder only sees a denied chore when an agent bypassed it on purpose, and the rule's command already
+exists for it). Half, not any: a generic shape (`python3 - <heredoc>`) holds many chores, and one run
+that matched a rule must not hide the rest (a 2-day replay had 1 such run in 60). Or (b) its first
+command word, after today's command-prefixes seam words are stripped, is agent-cli or a name on the
+`commands:` line under `## repeats` in .claude/project-rules.md.
 """
 import datetime as dt
 import json
@@ -37,10 +39,10 @@ unless a window is given), or --from/--until in local time, YYYY-MM-DD or YYYY-M
 inclusive; --until with a time is exclusive (a run at exactly that minute is out); a bare --until date
 includes that whole day.
 
-Covered (--covered live, the default): a hook rule matched one of the shape's runs (a run that skipped
-the rule with `# agent-cli: allow <id>` counts: the rule's command exists), or its command word, after
-the command-prefixes seam words, is agent-cli or a name on the `commands:` line under `## repeats` in
-.claude/project-rules.md. --covered none lists them too (a window from before the commands existed).
+Covered (--covered live, the default): a hook rule matched at least half of the shape's runs (a run
+that skipped the rule with `# agent-cli: allow <id>` counts: the rule's command exists), or its
+command word, after the command-prefixes seam words, is agent-cli or a name on the `commands:` line
+under `## repeats` in .claude/project-rules.md. --covered none lists them too (a window from before the commands existed).
 
 Per shape: sessions, count (runs), exit_fail_share (failed runs / runs with a known exit; null when
 none is known), first and last (UTC). --write-cache also writes <store>/repeats-cache.json
@@ -81,7 +83,8 @@ def run(a):
     words = set(core.names(core.rules_line("repeats", "commands") or "")) | {"agent-cli"}
     lead = prefix_re(tuple(core.seam_lines("command-prefixes")))
     repeated = [(s, g) for s, g in groups.items() if len(g["sessions"]) >= a.min_sessions]
-    listed = [(s, g) for s, g in repeated if not (live and (g["ruled"] or command_word(s, lead) in words))]
+    listed = [(s, g) for s, g in repeated
+              if not (live and (2 * g["ruled"] >= g["count"] or command_word(s, lead) in words))]
     listed.sort(key=lambda sg: (-len(sg[1]["sessions"]), -sg[1]["count"], sg[0]))
     if a.write_cache:
         cache = {s: {"sessions": len(g["sessions"]), "count": g["count"]} for s, g in listed}
@@ -204,14 +207,14 @@ def group(rows, repo):
         g = groups.get(s)
         if g is None:
             g = groups[s] = {"sessions": set(), "count": 0, "first": r["ts"], "last": r["ts"], "failed": 0,
-                             "known": 0, "ruled": False}
+                             "known": 0, "ruled": 0}
         g["sessions"].add(r.get("session"))
         g["count"] += 1
         g["first"], g["last"] = min(g["first"], r["ts"]), max(g["last"], r["ts"])
         if "exit" in r:
             g["known"] += 1
             g["failed"] += r["exit"] != 0
-        g["ruled"] = g["ruled"] or bool(r.get("rules") or r.get("bypassed"))
+        g["ruled"] += bool(r.get("rules") or r.get("bypassed"))
     return groups
 
 

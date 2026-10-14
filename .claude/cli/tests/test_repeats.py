@@ -145,6 +145,23 @@ class Covered(StoreCase):
         self.assertEqual(len(none), 1)
         self.assertIn("gh pr <arg> <n>", none[0])
 
+    def test_a_shape_is_covered_only_when_half_its_runs_matched_a_rule(self):
+        """A rule match on 1 of 4 runs leaves the shape listed; on 2 of 4 runs it is covered.
+
+        A generic shape (`python3 - <heredoc>`) masks the body, so it holds many different chores. One run
+        whose body a rule caught must not hide the other runs, which no rule or command covers.
+        """
+        # GIVEN two `<tool> -c <str>` shapes in 4 sessions: one rule-matched run in the first, two in the second
+        rules = json.dumps([{"id": "demo-rule", "mode": "warn", "on": "raw", "match": "DEMO_TOKEN",
+                             "message": "use the demo command"}])
+        (self.p / ".claude/agent-cli-hooks/pretooluse-rules.json").write_text(rules)
+        rows = [("sh -c 'echo DEMO_TOKEN'" if i < 1 else "sh -c 'echo hi'", i) for i in range(4)]
+        rows += [("bash -c 'echo DEMO_TOKEN'" if i < 2 else "bash -c 'echo hi'", i) for i in range(4)]
+        cmds = self.write_commands([{"ts": "2026-04-02T12:00:00Z", "session": f"s{i}", "cmd": c} for c, i in rows])
+        # WHEN the report runs live
+        # THEN the 1-in-4 shape is listed and the 2-in-4 shape is covered
+        self.assertEqual(self.shapes("--commands", str(cmds)), ["sh -c <str>"])
+
     def test_a_bypassed_rule_still_counts_as_covered(self):
         """A shape whose only rows bypassed a rule (`# agent-cli: allow <id>`) is covered.
 
