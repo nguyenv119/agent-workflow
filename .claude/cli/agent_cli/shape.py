@@ -3,7 +3,8 @@
 `gh pr view 12 --repo a/b --json state` -> `gh pr <arg> <n> --repo <path> --json <v>`: quoted text ->
 <str>, heredoc bodies -> <heredoc>, numbers -> <n>, hex ids and UUIDs -> <id>, anything with / -> <path>,
 URLs -> <url:host> (<url> when the host looks like a value), X=value -> X=<v>, a flag's value -> <v>,
-other bare words -> <arg>. A command run by path keeps its name (`<path>/deploy.sh`). The second word is
+other bare words -> <arg>. A command run by path keeps its name (`<path>/deploy.sh`), and so does the
+script an interpreter runs (`python3 <path>/loop.py`). The second word is
 kept only after a tool known to take subcommands (SUBCOMMAND_TOOLS, the subcommand-tools seam's
 lines, or a name ending in -cli); a short
 flag with a value glued on keeps its letter only (`-p<v>`). Leading `cd <x> &&` chains and the prefixes
@@ -24,6 +25,9 @@ SUB = re.compile(r"[a-z][a-z0-9-]{0,23}")
 SUBCOMMAND_TOOLS = frozenset("""git gh bd agent-cli docker kubectl helm npm npx yarn cargo go pip pip3 uv poetry
 brew apt apt-get aws gcloud az terraform systemctl launchctl claude conda dolt hg svn rustup nix deno bun gem
 bundle dotnet swift xcrun tmux openssl""".split())
+# Interpreters whose script is the chore: `python3 <path>/loop.py`, not one shape for every script.
+INTERPRETER = re.compile(r"(?:python[23]?(?:\.\d+)?|node|bash|sh|zsh|ruby|perl|tsx|ts-node)")
+SCRIPT = re.compile(r"([A-Za-z_][\w.+-]{0,39})\.(?:py|sh|bash|zsh|js|mjs|cjs|ts|mts|rb|pl)")
 SHORT_FLAGS = re.compile(r"-[A-Za-z]|-[a-z]{2,4}")  # -x, or a run like -la / -xvf; -pS3cret is not one
 DIGITS4 = re.compile(r"\d{4}")
 NUMBER = re.compile(r"-?\d+(?:[.,]\d+)?[A-Za-z%]{0,2}")
@@ -53,7 +57,7 @@ def shape(command, prefixes=None, subcommands=None):
             seps.append(it[1])
         else:
             segs[-1].append(it)
-    cmd = _prefix_re(tuple(prefixes))
+    cmd = prefix_re(tuple(prefixes))
     pairs = [(_strip(s, cmd), seps[i] if i < len(seps) else None) for i, s in enumerate(segs)]
     pairs = [(s, sep) for s, sep in pairs if s]
     while len(pairs) > 1 and _word(pairs[0][0][0]) == "cd" and pairs[0][1] in ("&&", ";"):
@@ -69,7 +73,7 @@ def shape(command, prefixes=None, subcommands=None):
 
 
 @functools.lru_cache(maxsize=None)
-def _prefix_re(prefixes):
+def prefix_re(prefixes):
     """cmd_re with the longest wrapper first, so `wrapx raw` is taken whole, not as `wrapx`."""
     return re.compile(hook_rules.cmd_re(sorted(prefixes, key=lambda p: -len(p.split()))))
 
@@ -94,7 +98,7 @@ def _strip(seg, cmd):
 
 def _segment(seg, tools):
     """One simple command's shape: command word, up to one subcommand word, then placeholders."""
-    out, after_flag, tool = [], False, None
+    out, after_flag, tool, script_slot = [], False, None, False
     for i, it in enumerate(seg):
         kind, text = it
         if kind == "heredoc":
@@ -107,12 +111,27 @@ def _segment(seg, tools):
         elif i == 1 and tool and (tool in tools or tool.endswith("-cli")) and _name(text) \
                 and SUB.fullmatch(text):
             piece = text
+        elif script_slot and kind == "word" and not text.startswith("-"):
+            script_slot = False
+            piece = _script(text) or _value(text, after_flag)
         else:
             piece = _value(text, after_flag)
+        if i == 0 and tool and INTERPRETER.fullmatch(tool):
+            script_slot = True  # the first word that is not a flag names the script (or is -c's code)
         after_flag = kind == "word" and piece.startswith("-") and piece not in ("-", "--") and "=" not in piece
         if not (out and piece == out[-1] and piece.startswith("<") and piece != "<heredoc>"):
             out.append(piece)
     return " ".join(out)
+
+
+def _script(t):
+    """`<path>/name.py` or `name.py` for an interpreter's script argument, else None (an id-like or
+    digit-laden name is a value, so it is masked as one)."""
+    name = t.rsplit("/", 1)[-1]
+    m = SCRIPT.fullmatch(name)
+    if not m or not _name(m[1]) or Q in t:
+        return None
+    return f"<path>/{name}" if "/" in t else name
 
 
 def _name(t):

@@ -1,10 +1,12 @@
 """The shape recorder: one JSON line per Bash call, holding the command's shape and never the command.
 
-Row: {ts, session, agent, repo, shape, exit, rules} appended to
+Row: {ts, session, agent, repo, shape, exit, rules, bypassed} appended to
 ${AGENT_CLI_SHAPES_DIR:-~/.claude/agent-cli/shapes}/<UTC YYYY-MM-DD>.jsonl with one os.write on an
 O_APPEND fd (atomic for a line this short). `rules` = ids of the active hook rules that match the raw
 command, computed in memory, so a report can tell covered shapes from uncovered ones without the raw
-text. Day files older than AGENT_CLI_SHAPES_KEEP_DAYS (default 45) are deleted, at most once a day.
+text; `bypassed` = the ids of rules that match but were skipped by `# agent-cli: allow <id>` (a deny
+rule's chore is only ever recorded when bypassed). Day files older than AGENT_CLI_SHAPES_KEEP_DAYS
+(default 45) are deleted, at most once a day.
 """
 import datetime as dt
 import json
@@ -36,6 +38,8 @@ def record(event, now=None):
     command = data["tool_input"]["command"]
     now = now or dt.datetime.now(dt.timezone.utc)
     s = shape(command)
+    hits = [r["id"] for r in hook.evaluate(command, hook.load_rules(), bypass=False)]
+    allowed = set(hook.BYPASS.findall(command))
     exit_code = 0
     if data.get("hook_event_name") == "PostToolUseFailure":
         m = EXIT_CODE.search(str(data.get("error") or ""))
@@ -43,7 +47,7 @@ def record(event, now=None):
     row = {"ts": now.strftime("%Y-%m-%dT%H:%M:%SZ"), "session": _short(data.get("session_id")),
            "agent": _short(data.get("agent_id")), "repo": _repo(data.get("cwd")),
            "shape": s[:MAX_SHAPE] if s else None, "exit": exit_code,
-           "rules": [r["id"] for r in hook.evaluate(command, hook.load_rules())]}
+           "rules": [i for i in hits if i not in allowed], "bypassed": [i for i in hits if i in allowed]}
     d = store_dir()
     d.mkdir(parents=True, exist_ok=True, mode=0o700)
     fd = os.open(str(d / f"{now:%Y-%m-%d}.jsonl"), os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600)

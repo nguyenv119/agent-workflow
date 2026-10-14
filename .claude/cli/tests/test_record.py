@@ -66,7 +66,7 @@ class Recorder(TmpCase):
         row = record.record(json.dumps(event("git status", cwd=repo / "sub", agent_id="ag-1")), now=NOW)
         # THEN the row is returned and is the only line in the day file
         want = {"ts": "2026-10-14T05:06:07Z", "session": "sess-a", "agent": "ag-1", "repo": "myrepo",
-                "shape": "git status", "exit": 0, "rules": []}
+                "shape": "git status", "exit": 0, "rules": [], "bypassed": []}
         self.assertEqual(row, want)
         self.assertEqual(self.rows(), [want])
 
@@ -234,6 +234,23 @@ class Recorder(TmpCase):
         self.assertEqual((r.returncode, r.stdout, r.stderr), (0, "", ""))
         (row,) = store_rows(self.store)
         self.assertEqual((row["shape"], row["rules"], row["repo"]), ("psql -c <str>", ["raw-sql-demo"], "proj"))
+
+    def test_a_bypassed_rule_is_listed_under_bypassed_not_rules(self):
+        """A rule skipped by `# agent-cli: allow <id>` goes in bypassed; rules keeps only the rules that fired.
+
+        A deny rule blocks its command, so the recorder only sees a denied chore when an agent bypassed it.
+        The report counts such a shape as covered (a command for it exists), which it can only do if the
+        row says which rule was bypassed; the raw comment is never stored.
+        """
+        # GIVEN a project with a warn rule on psql, and a psql call that bypasses it
+        p = make_project(self.tmp / "proj", seams=SEAMS)
+        # WHEN recorded through the hook verb, with and without the bypass comment
+        for cmd in ("psql -c 'select 1'  # agent-cli: allow raw-sql-demo", "psql -c 'select 1'"):
+            agent_cli(p, "hook", "posttooluse", stdin=json.dumps(event(cmd, cwd=p)),
+                      env={"AGENT_CLI_SHAPES_DIR": str(self.store)})
+        # THEN the bypassed row names the rule under bypassed only; the other under rules only
+        self.assertEqual([(r["shape"], r["rules"], r["bypassed"]) for r in store_rows(self.store)],
+                         [("psql -c <str>", [], ["raw-sql-demo"]), ("psql -c <str>", ["raw-sql-demo"], [])])
 
     def test_seam_subcommand_tool_keeps_its_subcommand_on_disk(self):
         """A tool listed in the project's subcommand-tools seam keeps its second word in the stored row.
