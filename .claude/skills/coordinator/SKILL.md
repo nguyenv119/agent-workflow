@@ -296,10 +296,10 @@ Format each extracted section as a numbered checklist item, e.g.:
 
 Inject the constructed checklist as `<checklist>` in each reviewer prompt below.
 
-**CLI beads.** A bead is a CLI bead when any file in its "Files to modify" is under the dir `agent-cli lib path` prints (agent-cli's own code and tests), or under a prefix on the `cli-paths:` line (comma-separated) under `## coordinator` in `.claude/project-rules.md`. For a CLI bead:
+**CLI beads.** A bead is a CLI bead when any file in its "Files to modify" is agent-cli's own code: `cli/` or `bin/agent-cli` under the repo's `.claude` dir, where copy-harness installs it in every repo (repo-relative, like "Files to modify"), or under a prefix on the `cli-paths:` line (comma-separated) under `## coordinator` in `.claude/project-rules.md`. For a CLI bead:
 - The implementer prompt gets one more line: `SKILL: also read .claude/skills/cli-for-agents/SKILL.md and house-rules.md`.
-- Read both files fresh from the worktree (same rule as the standards files: never from memory) and add to the Correctness and Architecture checklists one item per `##` section of `SKILL.md` (title it with the section heading, e.g. **Fail fast with actionable errors**) plus one item per house rule in `house-rules.md` (title it with the rule's heading, e.g. **One exit-code table per CLI**). Each item asks whether the changed CLI meets that rule, citing it as cli-for-agents "<section>" or house-rules "<rule>".
-- Put a `CLI BEAD: yes` line in those two reviewer prompts, after the checklist. The reviewer-standards hook then blocks the spawn unless the prompt carries the house-rules heading and at least one skill section heading.
+- Read both files fresh from the worktree (same rule as the standards files: never from memory) and add to the Correctness and Architecture checklists one item per `##` section of `SKILL.md` (title it in bold with exactly the section heading, e.g. **Fail fast with actionable errors**) plus one item per house rule in `house-rules.md` (title it with the rule's name without the number or the "(extends ...)" part, e.g. **One exit-code table per CLI**). Each item asks whether the changed CLI meets that rule, citing it as cli-for-agents "<section>" or house-rules "<rule>".
+- Put a `CLI BEAD: yes` line in those two reviewer prompts, after the checklist. The reviewer-standards hook then blocks the spawn unless the prompt carries the house-rules phrase and at least one skill section heading in bold (`**<heading>**`), so a house-rules heading that quotes a skill section does not count.
 
 Run all 3 reviewers in parallel. Reviews operate on the **worktree** (the branch is not pushed yet at this point):
 

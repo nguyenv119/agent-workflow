@@ -45,7 +45,7 @@ class CliBeadReviewers(unittest.TestCase):
         (one exit-code table, --json, never prompt) go unchecked.
         """
         # GIVEN a correctness spawn marked as a CLI bead that carries a skill heading but no house rules
-        payload = spawn(cli=True, extra="Fail fast with actionable errors")
+        payload = spawn(cli=True, extra="**Fail fast with actionable errors**")
         # WHEN the hook runs
         r = run_hook(payload)
         # THEN it blocks and names the house-rules signature
@@ -53,7 +53,10 @@ class CliBeadReviewers(unittest.TestCase):
         self.assertIn(hook_var("HOUSE_RULES_SIG"), r.stdout)
 
     def test_cli_bead_prompt_without_a_skill_heading_is_blocked(self):
-        """House rules alone are not enough: a CLI-bead prompt must also carry a cli-for-agents section."""
+        """House rules alone are not enough: a CLI-bead prompt must also carry a cli-for-agents section.
+
+        Otherwise the upstream skill's rules (help examples, fail fast, idempotency) silently drop out.
+        """
         # GIVEN a CLI-bead spawn with the house-rules phrase but no upstream skill section
         payload = spawn(cli=True, extra=hook_var("HOUSE_RULES_SIG"))
         # WHEN the hook runs
@@ -62,11 +65,25 @@ class CliBeadReviewers(unittest.TestCase):
         self.assertEqual(r.returncode, 2, r.stdout)
         self.assertIn("cli-for-agents", r.stdout)
 
+    def test_house_rules_heading_quoting_a_skill_section_does_not_count_as_that_section(self):
+        """Each house-rules heading quotes a skill heading ("extends ..."), so only a bold `**<heading>**` counts.
+
+        Otherwise pasting one house rule satisfies both halves of the check and the skill's own rules drop out.
+        """
+        # GIVEN a CLI-bead spawn carrying only house rule 1's full heading, which quotes a skill section
+        house = (CLI_SKILL / "house-rules.md").read_text()
+        heading = re.search(r"^## 1\. (.+)$", house, re.M)[1]
+        # WHEN the hook runs
+        r = run_hook(spawn(cli=True, extra=heading))
+        # THEN blocked, naming the missing skill heading
+        self.assertEqual(r.returncode, 2, r.stdout)
+        self.assertIn("cli-for-agents/SKILL.md", r.stdout)
+
     def test_cli_bead_prompt_with_signature_and_heading_passes(self):
         """A CLI-bead spawn carrying the house-rules phrase and a skill section passes, for either reviewer."""
         for role in ("Correctness", "Architecture"):
             # GIVEN a full CLI-bead prompt
-            payload = spawn(role, cli=True, extra=f"{hook_var('HOUSE_RULES_SIG')}\n`--help` that works")
+            payload = spawn(role, cli=True, extra=f"{hook_var('HOUSE_RULES_SIG')}\n**`--help` that works**")
             # WHEN the hook runs
             r = run_hook(payload)
             # THEN allowed
@@ -82,6 +99,19 @@ class CliBeadReviewers(unittest.TestCase):
             # THEN allowed, as before this check existed
             with self.subTest(cli=cli):
                 self.assertEqual(r.returncode, 0, r.stdout)
+
+    def test_cli_bead_marker_mid_line_does_not_trigger_the_cli_check(self):
+        """Only a line that starts with `CLI BEAD: yes` marks a CLI bead; quoting the phrase mid-sentence does not.
+
+        Reviewer prompts often quote the bead goal ("keyed on a `CLI BEAD: yes` line"); if the marker matched
+        anywhere, every such non-CLI review would be blocked.
+        """
+        # GIVEN a non-CLI reviewer spawn whose summary quotes the marker mid-line
+        payload = spawn(extra="SUMMARY: the hook is keyed on a `CLI BEAD: yes` line")
+        # WHEN the hook runs
+        r = run_hook(payload)
+        # THEN allowed: the CLI check did not fire
+        self.assertEqual(r.returncode, 0, r.stdout)
 
     def test_hook_signatures_exist_in_the_skill_files(self):
         """The phrase and headings the hook demands are really in house-rules.md and the skill's SKILL.md.

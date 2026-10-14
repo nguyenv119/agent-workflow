@@ -18,7 +18,8 @@ set -euo pipefail
 
 # CLI beads: a reviewer prompt with a `CLI BEAD: yes` line must also carry the CLI rules the coordinator
 # extracted from .claude/skills/cli-for-agents/: this fixed phrase from house-rules.md, and at least one
-# of the skill's section headings ('|'-separated; single quotes keep the backticks literal).
+# of the skill's section headings in bold, as the coordinator titles checklist items ('|'-separated; single
+# quotes keep the backticks literal). Bold only: each house-rules heading quotes a skill heading in plain text.
 HOUSE_RULES_SIG="One exit-code table per CLI"
 CLI_SKILL_HEADINGS='Non-interactive first|Discoverability without dumping context|`--help` that works|stdin, flags, and pipelines|Fail fast with actionable errors|Idempotency|Destructive actions|Predictable structure|Success output'
 
@@ -156,13 +157,13 @@ if printf '%s' "$PROMPT" | grep -qiE '^CLI BEAD:[[:space:]]*yes'; then
   HEADING_FOUND=false
   IFS='|' read -r -a HEADINGS <<<"$CLI_SKILL_HEADINGS"
   for h in "${HEADINGS[@]}"; do
-    if printf '%s' "$PROMPT" | grep -qiF "$h"; then
+    if printf '%s' "$PROMPT" | grep -qiF "**$h**"; then
       HEADING_FOUND=true
       break
     fi
   done
   if [[ "$HEADING_FOUND" != "true" ]]; then
-    CLI_MISSING="${CLI_MISSING:+$CLI_MISSING; }a section heading from .claude/skills/cli-for-agents/SKILL.md (e.g. \"Fail fast with actionable errors\")"
+    CLI_MISSING="${CLI_MISSING:+$CLI_MISSING; }a section heading from .claude/skills/cli-for-agents/SKILL.md in bold (e.g. \"**Fail fast with actionable errors**\")"
   fi
   if [[ -n "$CLI_MISSING" ]]; then
     MISSING="${MISSING:+$MISSING; }CLI BEAD: yes but no cli-for-agents rules: $CLI_MISSING"
