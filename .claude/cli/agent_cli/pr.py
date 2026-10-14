@@ -10,6 +10,7 @@ Check names come from optional lines under `## coordinator` in .claude/project-r
 import json
 import re
 import subprocess
+import sys
 import time
 
 from . import core, wait
@@ -97,8 +98,11 @@ def verdict(n, view, checks, cfg):
     return out
 
 
-def emit_line(obj):
-    print(json.dumps(obj), flush=True)  # flushed: a background log shows each poll as it happens
+def emit_line(obj, json_mode=True):
+    """house-rules "--json": obj as one JSON line, else `key: value` lines; flushed, so a background log
+    shows each poll as it happens."""
+    core.emit(obj, json_mode)
+    sys.stdout.flush()
 
 
 def wait_loop(n, poll, cap, every, grace, clock=time.monotonic, sleep=time.sleep, out=emit_line):
@@ -142,7 +146,7 @@ def status_or_die(a, example):
 
 def pr_status(a):
     s = status_or_die(a, EX_STATUS)[1]
-    emit_line(s)
+    emit_line(s, a.json)
     return EXIT[s["verdict"]]
 
 
@@ -162,7 +166,7 @@ def pr_wait(a):
     cfg = config()
     try:
         code = wait_loop(a.pr, lambda left: verdict(a.pr, *fetch(a.pr, a.repo, max(1, left)), cfg),
-                         cap, every, grace)
+                         cap, every, grace, out=lambda o: emit_line(o, a.json))
     except GhError as e:
         core.die(Exit.BLOCKED, str(e), EX_WAIT)
     if code == Exit.BLOCKED:
@@ -236,17 +240,19 @@ def register(sub):
                         "(exit 0 READY/MERGED, 1 FAILED/CONFLICT/CLOSED, 5 WAITING/NO_CHECKS). READY = every "
                         "required check passes (a skipped one counts) and mergeStateStatus is CLEAN, HAS_HOOKS or "
                         "UNSTABLE; a WAITING PR with all required checks passed names the merge state in blocked_on",
-                        [EX_STATUS, "agent-cli pr status 42"])
+                        [EX_STATUS, "agent-cli pr status 42 --json"])
     p.set_defaults(func=pr_status)
     pw = core.subcommand(ps, "wait", "poll status until green (0: READY or MERGED), red (1: FAILED, CONFLICT "
-                         "or CLOSED), no checks past the grace (3) or the cap (4); one JSON line per poll; a new "
-                         "head restarts the cap. Run it with Bash run_in_background",
+                         "or CLOSED), no checks past the grace (3) or the cap (4); one status per poll (--json: one JSON "
+                         "line); a new head restarts the cap. Run it with Bash run_in_background",
                          [EX_WAIT, "agent-cli pr wait 42 --cap 40m --every 60 --repo <owner>/<repo>",
-                          "agent-cli pr wait 42 --cap 0s"])
+                          "agent-cli pr wait 42 --cap 0s --json"])
     pw.add_argument("--cap", default="40m", help="give up after this long, exit 4 (default 40m)")
     pw.add_argument("--every", default="60", help=f"seconds between polls, at least {MIN_EVERY} (default 60)")
     pw.add_argument("--appear-grace", default="5m", help="no checks after this long: exit 3 (default 5m)")
     pw.set_defaults(func=pr_wait)
+    for q in (p, pw):
+        q.add_argument("--json", action="store_true", help="one JSON object per status (else key: value lines)")
     pl = core.subcommand(ps, "land", "merge a READY PR pinned to its checked head (dry run unless --yes); "
                          "refuses (2) anything else", ["agent-cli pr land 42 --dry-run", EX_LAND,
                                                         "agent-cli pr land 42 --verified-head <sha> --yes"])

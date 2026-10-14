@@ -451,20 +451,35 @@ class CliCase(unittest.TestCase):
 
 
 class StatusCli(CliCase):
-    def test_status_prints_one_json_line_and_exits_by_verdict(self):
-        """`pr status` prints one JSON object and exits 0 READY, 1 FAILED, 5 WAITING, read via project-rules.md."""
+    def test_status_json_prints_one_json_line_and_exits_by_verdict(self):
+        """`pr status --json` prints one JSON object and exits 0 READY, 1 FAILED, read via project-rules.md
+        (house-rules "--json")."""
         # GIVEN the project's required checks
         self.rules("## coordinator\nrequired-checks: lint, govulncheck\n")
         cases = [("14580", Exit.OK, "READY"), ("14665", Exit.FAIL, "FAILED")]
         for n, code, verdict in cases:
             # WHEN status runs on each recorded PR
             self.set_pr(load(f"view_{n}.json"), load(f"checks_{n}.json"))
-            r = self.cli("status", n)
+            r = self.cli("status", n, "--json")
             # THEN one line, the verdict and its exit code
             with self.subTest(pr=n):
                 self.assertEqual(r.returncode, code, r.stderr)
                 self.assertEqual(len(r.stdout.splitlines()), 1)
                 self.assertEqual(json.loads(r.stdout)["verdict"], verdict)
+
+    def test_status_without_json_prints_key_value_lines_with_the_same_fields(self):
+        """Bare `pr status` prints `key: value` lines carrying the --json object's fields (house-rules "--json")."""
+        # GIVEN a READY PR
+        self.rules("## coordinator\nrequired-checks: lint\n")
+        self.set_pr(view(), [check("lint", "pass")])
+        # WHEN status runs with and without --json
+        obj = json.loads(self.cli("status", "42", "--json").stdout)
+        r = self.cli("status", "42")
+        # THEN one `key: value` line per field, same keys in the same order, and no JSON object
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual([ln.split(": ", 1)[0] for ln in r.stdout.splitlines()], list(obj))
+        self.assertIn("verdict: READY\n", r.stdout)
+        self.assertFalse(r.stdout.startswith("{"))
 
     def test_status_waiting_exits_5(self):
         """WAITING is partial (exit 5): the PR is neither green nor red yet."""
@@ -481,7 +496,7 @@ class StatusCli(CliCase):
         # GIVEN a merged PR and gh reporting no checks
         self.set_pr(view(state="MERGED", merge="UNKNOWN"))
         # WHEN status runs
-        r = self.cli("status", "42")
+        r = self.cli("status", "42", "--json")
         out = json.loads(r.stdout)
         # THEN MERGED with empty lists
         self.assertEqual(r.returncode, 0, r.stderr)
@@ -492,7 +507,7 @@ class StatusCli(CliCase):
         # GIVEN a closed PR with passing checks
         self.set_pr(view(state="CLOSED", merge="UNKNOWN"), [check("lint", "pass")])
         # WHEN status runs
-        r = self.cli("status", "42")
+        r = self.cli("status", "42", "--json")
         # THEN 1, verdict CLOSED
         self.assertEqual(r.returncode, Exit.FAIL, r.stderr)
         self.assertEqual(json.loads(r.stdout)["verdict"], "CLOSED")
@@ -543,17 +558,28 @@ class WaitCli(CliCase):
         # GIVEN a READY PR
         self.set_pr(view(), [check("lint", "pass")])
         # WHEN waited
-        r = self.cli("wait", "42", "--cap", "2m")
+        r = self.cli("wait", "42", "--cap", "2m", "--json")
         # THEN 0
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertEqual(json.loads(r.stdout)["verdict"], "READY")
+
+    def test_wait_without_json_prints_key_value_lines_per_poll(self):
+        """Bare `pr wait` prints each poll as `key: value` lines; --json keeps one JSON line per poll."""
+        # GIVEN a READY PR
+        self.set_pr(view(), [check("lint", "pass")])
+        # WHEN waited without --json
+        r = self.cli("wait", "42", "--cap", "2m")
+        # THEN exit 0 and the verdict as a key: value line, not JSON
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("verdict: READY\n", r.stdout)
+        self.assertTrue(r.stdout.startswith("pr: 42\n"), r.stdout)
 
     def test_wait_with_zero_cap_on_a_waiting_pr_exits_4(self):
         """`--cap 0s` on a pending PR exits 4 after printing one line."""
         # GIVEN a pending PR
         self.set_pr(view(), [check("lint", "pending")])
         # WHEN waited with cap 0
-        r = self.cli("wait", "42", "--cap", "0s")
+        r = self.cli("wait", "42", "--cap", "0s", "--json")
         # THEN 4
         self.assertEqual(r.returncode, Exit.TIMEOUT, r.stderr)
         self.assertEqual(len(r.stdout.splitlines()), 1)
@@ -563,7 +589,7 @@ class WaitCli(CliCase):
         # GIVEN an open PR and no checks.json (gh's "no checks reported")
         self.set_pr(view())
         # WHEN waited with no grace
-        r = self.cli("wait", "42", "--appear-grace", "0s")
+        r = self.cli("wait", "42", "--appear-grace", "0s", "--json")
         # THEN blocked with the message and an example
         self.assertEqual(r.returncode, Exit.BLOCKED, r.stderr)
         self.assertIn("no checks appeared", r.stderr)
