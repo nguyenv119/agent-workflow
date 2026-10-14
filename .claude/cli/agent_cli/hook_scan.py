@@ -28,8 +28,9 @@ EXAMPLES = ["agent-cli hook scan .claude/loop-evals --since 7d --json",
             "agent-cli hook scan --since 7d --json   # the scan-dirs: line under ## gardener",
             "agent-cli hook scan .claude/loop-evals --from 2026-04-01 --until 2026-04-07 --json"]
 WINDOW_EXAMPLE = EXAMPLES[4]
-DESCRIPTION = ("Scans each file under the paths (mtime within --since, default 7d, or on a local date from --from\n"
-               "through --until, both inclusive; skips node_modules, .venv, venv, .git,\n"
+DESCRIPTION = ("Scans each file under the paths (mtime within --since, default 7d, or local time from --from\n"
+               "(inclusive) up to --until; a bare date includes that whole day, a time is exclusive; skips\n"
+               "node_modules, .venv, venv, .git, "
                "evidence/, binaries and files over 1 MB). With no paths it scans the comma-separated scan-dirs:\n"
                "line under `## gardener` in .claude/project-rules.md (relative to the project root).\n"
                "Prints one hit per file and rule {file, rule, mode, line, mtime, bypassed}, then a summary\n"
@@ -46,9 +47,9 @@ def register(hs):
     p.description = DESCRIPTION
     p.add_argument("paths", nargs="*", help="files or dirs to scan (default: scan-dirs from project-rules.md)")
     p.add_argument("--since", help="only files modified within this long (default 7d; not with --from/--until)")
-    p.add_argument("--from", dest="from_", metavar="DATE",
+    p.add_argument("--from", dest="from_", metavar="WHEN",
                    help="only files modified on or after this local date (YYYY-MM-DD, or YYYY-MM-DDTHH:MM)")
-    p.add_argument("--until", metavar="DATE",
+    p.add_argument("--until", metavar="WHEN",
                    help="only files modified on or before this local date (YYYY-MM-DD, the whole day counts; "
                         "a YYYY-MM-DDTHH:MM time is exclusive; alone, the window has no start)")
     p.add_argument("--glob", default=GLOB, help=f"comma-separated file-name patterns (default {GLOB})")
