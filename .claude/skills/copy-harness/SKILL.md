@@ -21,6 +21,13 @@ advisory-checks: <bot reviewer check>
 preview-check: <preview deploy check>
 ```
 
+One more optional line under `## coordinator` widens what counts as a CLI bead (the coordinator then loads the cli-for-agents skill and gives reviewers its checklist). Without it, only beads touching agent-cli's own code (`cli/` or `bin/agent-cli` under `.claude`) count:
+
+```
+## coordinator
+cli-paths: <dir of the project's own CLI>/, <another CLI dir>/
+```
+
 The weekly gardener's Pass 3 (`agent-cli hook scan`) reads one more optional line, under `## gardener`: the dirs whose scripts it counts for chores still done by hand (comma-separated, relative to the repo root). Without it, Pass 3 is skipped:
 
 ```

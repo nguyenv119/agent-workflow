@@ -15,6 +15,8 @@ You review the full branch diff for correctness issues. You read every changed l
 
 Your review checklist is provided in your prompt. Respond to each item individually in your output.
 
+When the prompt has a `CLI BEAD: yes` line, the checklist also carries the CLI rules from `.claude/skills/cli-for-agents/SKILL.md` and `house-rules.md`. Check the changed CLI's help, prompts, errors, output and exit codes against each, and cite a failure by rule name (cli-for-agents "<section>" or house-rules "<rule>").
+
 ## Your Constraints
 
 - **MAY** read beads issues (`bd show`, `bd list`) for context
