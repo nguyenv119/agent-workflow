@@ -43,6 +43,8 @@ A PreToolUse hook (`agent-cli hook pretooluse`) checks each Bash command against
 | `measured-number-checklist` | A cost ratio, speedup or pass rate reported without vetting | `.claude/skills/win-condition/SKILL.md` § Before reporting a measured number: answer all 7, `not checked` where skipped | skill text only |
 | `page-card-format` | A document page or to-do card that breaks the format rules (layer parts, one legend line, closed For agents, needs-you fields, no ids or tokens in prose) | `agent-cli page check <page>`, `agent-cli card check <dir>`; edits by `agent-cli page mark-update\|new-layer\|new` and `agent-cli card write`; per-project rules in `page-rules.json` / `card-rules.json` seams | skill text only |
 
+A background hook (`agent-cli hook posttooluse` and `posttoolusefailure`, async, never blocks) records each Bash command's shape: command and subcommand names and flag names, with every value masked (`<str>`, `<path>`, `<n>`, ...). It never stores the command or its output. Rows go to `~/.claude/agent-cli/shapes/<day>.jsonl` (`AGENT_CLI_SHAPES_DIR` moves it; files older than `AGENT_CLI_SHAPES_KEEP_DAYS`, default 45, are deleted).
+
 ## Issue Tracking with bd (beads)
 
 **IMPORTANT**: This project uses **bd (beads)** for ALL issue tracking. Do NOT use markdown TODOs, task lists, or other tracking methods.

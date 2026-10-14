@@ -80,6 +80,30 @@
             "timeout": 30
           }
         ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "async": true,
+            "timeout": 5,
+            "command": "[ -x \"$CLAUDE_PROJECT_DIR/.claude/bin/agent-cli\" ] && \"$CLAUDE_PROJECT_DIR/.claude/bin/agent-cli\" hook posttooluse 2>/dev/null; exit 0"
+          }
+        ]
+      }
+    ],
+    "PostToolUseFailure": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "async": true,
+            "timeout": 5,
+            "command": "[ -x \"$CLAUDE_PROJECT_DIR/.claude/bin/agent-cli\" ] && \"$CLAUDE_PROJECT_DIR/.claude/bin/agent-cli\" hook posttoolusefailure 2>/dev/null; exit 0"
+          }
+        ]
       }
     ],
     "PostCompact": [
