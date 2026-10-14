@@ -9,10 +9,18 @@
 #      - A SKILL.md reference (so the reviewer reads its canonical process)
 #      - Content signatures matching the reviewer type (verifies the coordinator
 #        actually injected checklist content, not just mentioned file paths)
-#   4. Exits non-zero with a message if either is missing — blocking the call.
+#      - For a prompt with a `CLI BEAD: yes` line, the cli-for-agents rules too
+#        (HOUSE_RULES_SIG and one of CLI_SKILL_HEADINGS, below)
+#   4. Exits non-zero with a message if any is missing — blocking the call.
 #   5. Exits 0 for non-reviewer Agent calls (no interference).
 
 set -euo pipefail
+
+# CLI beads: a reviewer prompt with a `CLI BEAD: yes` line must also carry the CLI rules the coordinator
+# extracted from .claude/skills/cli-for-agents/: this fixed phrase from house-rules.md, and at least one
+# of the skill's section headings ('|'-separated; single quotes keep the backticks literal).
+HOUSE_RULES_SIG="One exit-code table per CLI"
+CLI_SKILL_HEADINGS='Non-interactive first|Discoverability without dumping context|`--help` that works|stdin, flags, and pipelines|Fail fast with actionable errors|Idempotency|Destructive actions|Predictable structure|Success output'
 
 INPUT="$(cat)"
 
@@ -139,6 +147,28 @@ if [[ $FOUND -lt $THRESHOLD ]]; then
   fi
 fi
 
+# Check 3: CLI beads also carry the cli-for-agents rules.
+if printf '%s' "$PROMPT" | grep -qiE '^CLI BEAD:[[:space:]]*yes'; then
+  CLI_MISSING=""
+  if ! printf '%s' "$PROMPT" | grep -qiF "$HOUSE_RULES_SIG"; then
+    CLI_MISSING="house-rules signature \"$HOUSE_RULES_SIG\" (.claude/skills/cli-for-agents/house-rules.md)"
+  fi
+  HEADING_FOUND=false
+  IFS='|' read -r -a HEADINGS <<<"$CLI_SKILL_HEADINGS"
+  for h in "${HEADINGS[@]}"; do
+    if printf '%s' "$PROMPT" | grep -qiF "$h"; then
+      HEADING_FOUND=true
+      break
+    fi
+  done
+  if [[ "$HEADING_FOUND" != "true" ]]; then
+    CLI_MISSING="${CLI_MISSING:+$CLI_MISSING; }a section heading from .claude/skills/cli-for-agents/SKILL.md (e.g. \"Fail fast with actionable errors\")"
+  fi
+  if [[ -n "$CLI_MISSING" ]]; then
+    MISSING="${MISSING:+$MISSING; }CLI BEAD: yes but no cli-for-agents rules: $CLI_MISSING"
+  fi
+fi
+
 if [[ -n "$MISSING" ]]; then
   cat <<EOF
 BLOCKED: Reviewer subagent spawned without loading canonical standards.
@@ -149,6 +179,8 @@ Reviewer subagents MUST be spawned with:
 1. SKILL: Read and follow .claude/skills/reviewer-<type>/SKILL.md
 2. Injected checklist content — the coordinator must read the standards files
    and inject relevant sections directly into the reviewer prompt.
+3. For a prompt marked CLI BEAD: yes, the cli-for-agents checklist items: one per
+   section of .claude/skills/cli-for-agents/SKILL.md plus the three house rules.
 
 The hook verifies content signatures (section headers) are present in the prompt,
 not just file path references. See .claude/skills/coordinator/SKILL.md § 4a
