@@ -11,6 +11,7 @@ import os
 import re
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 CLAUDE_DIR = Path(__file__).resolve().parents[2]  # the .claude/ this agent-cli is installed in
@@ -48,6 +49,22 @@ def out(a, row, text):
         emit(row, True)
     else:
         print(text)
+
+
+def write_atomic(path, text):
+    """Replace path's content in one rename; an existing file keeps its mode, a new one gets 0666 minus umask."""
+    path = Path(path)
+    fd, tmp = tempfile.mkstemp(dir=str(path.parent), prefix=f".{path.name}.")
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
+        f.write(text)
+    if path.exists():
+        mode = path.stat().st_mode & 0o7777
+    else:
+        mask = os.umask(0)
+        os.umask(mask)
+        mode = 0o666 & ~mask
+    os.chmod(tmp, mode)
+    os.replace(tmp, str(path))
 
 
 def parse_duration(text):

@@ -10,7 +10,6 @@ import datetime
 import html as htmllib
 import os
 import re
-import tempfile
 from collections import Counter
 from html.parser import HTMLParser
 from pathlib import Path
@@ -30,7 +29,7 @@ DEFAULTS = {
         "heading": r"Layer\s+\d",      # a title-tag heading starting like this must sit inside a wrapper
         "parts": ["h3", "p.pain", "figure.dia", "p.done"],  # parts[0] is the layer's title tag
         "ordered": False,
-        "lead": {},                    # {part selector: text the part must start with}
+        "lead": {},                    # {part selector: regex the part's text must match at its start}
         "skeleton": None,              # new-layer HTML; {title} and {update_class} are filled in
     },
     "legend": {
@@ -307,8 +306,8 @@ def check_page(src, rules=None):
                 out.append(f"'{layer['name']}': parts out of order ({', '.join(layer['seen'])}); "
                            f"want {', '.join(L['parts'])}")
         for sel, lead in L["lead"].items():
-            if sel in layer["lead"] and not layer["lead"][sel].startswith(lead):
-                out.append(f"'{layer['name']}': {sel} must start with '{lead}'")
+            if sel in layer["lead"] and not re.match(lead, layer["lead"][sel]):
+                out.append(f"'{layer['name']}': {sel} must start with /{lead}/")
     if p.swatches > lg["max_swatches"]:
         out.append(f"legend: {p.swatches} update swatches, keep only the latest one")
     if p.swatches and lg["line"] and not re.search(lg["line"], p.legend_text):
@@ -367,19 +366,10 @@ def read(path, example):
         core.die(Exit.REFUSED, f"cannot read {path}: {e}", example)
 
 
-def write_atomic(path, text):
-    path = Path(path)
-    fd, tmp = tempfile.mkstemp(dir=str(path.parent), prefix=f".{path.name}.")
-    with os.fdopen(fd, "w", encoding="utf-8") as f:
-        f.write(text)
-    if path.exists():
-        os.chmod(tmp, path.stat().st_mode & 0o7777)
-    os.replace(tmp, str(path))
-
-
 def strip_classes(src, drop):
-    """Remove class names for which drop(name) is true from every class="..." attribute; an emptied
-    attribute is removed. Returns (new src, how many names were removed)."""
+    """Remove class names for which drop(name) is true from every class="..." attribute outside scripts, styles
+    and comments; an emptied attribute is removed, and a span left with no attributes is unwrapped.
+    Returns (new src, how many names were removed)."""
     n = 0
 
     def fix(m):
@@ -389,11 +379,13 @@ def strip_classes(src, drop):
         n += len(names) - len(keep)
         if len(keep) == len(names):
             return m.group(0)
-        if not keep and re.fullmatch(r"<span", m.group(1), re.I):
-            return UNWRAP  # a span that only carried the mark: unwrapped below
-        return m.group(1) + (f' class="{" ".join(keep)}"' if keep else "")
-    src = re.sub(r'(<[a-zA-Z][a-zA-Z0-9]*\b[^>]*?)\s+class="([^"]*)"', fix, src)
-    return unwrap(src), n
+        if not keep and re.fullmatch(r"<span", m.group(1), re.I) and m.group(3).strip() == ">":
+            return UNWRAP + ">"  # a span that only carried the mark: unwrapped below
+        return m.group(1) + (f' class="{" ".join(keep)}"' if keep else "") + m.group(3)
+    parts = re.split(r"(<!--.*?-->|<script\b.*?</script\s*>|<style\b.*?</style\s*>)", src, flags=re.S | re.I)
+    for i in range(0, len(parts), 2):
+        parts[i] = re.sub(r'(<[a-zA-Z][a-zA-Z0-9]*\b[^>]*?)\s+class="([^"]*)"([^>]*>)', fix, parts[i])
+    return unwrap("".join(parts)), n
 
 
 UNWRAP = "<span data-agent-cli-unwrap"
@@ -430,11 +422,10 @@ def mark_update(src, note, date_label, r):
     m = element_re(lg["wrap"]).search(src)
     if not m:
         raise ValueError(f"no {lg['wrap']} legend on the page to write the update line into")
-    sw = re.escape(lg["swatch"])
-    item = re.compile(rf'<span\b[^>]*>\s*<span\b[^>]*class="[^"]*\b{sw}\b[^"]*"[^>]*>\s*</span>.*?</span>', re.S)
-    nums = [int(n) for it in item.findall(m.group(2)) for n in re.findall(lg["number"], text_of(it))]
+    kept, items = legend_items(m.group(2), lg["swatch"])
+    nums = [int(n) for it in items for n in re.findall(lg["number"], text_of(it))]
     info = {"marks_removed": 0, "draft": None, "update": max(nums, default=0) + 1}
-    src = src[:m.start(2)] + item.sub("", m.group(2)).rstrip() + "\n    " + src[m.end(2):]
+    src = src[:m.start(2)] + kept.rstrip() + "\n    " + src[m.end(2):]
     src, info["marks_removed"] = strip_classes(src, lambda c: c == uc or bool(legacy and re.fullmatch(legacy, c)))
     if k["selector"]:
         m = element_re(k["selector"]).search(src)
@@ -454,7 +445,37 @@ def mark_update(src, note, date_label, r):
             raise ValueError("no </style> to add the update css to")
         src = src[:i] + css["css"].rstrip() + "\n" + src[i:]
         info["css_added"] = True
+    left = parse(src, r).swatches
+    if left > lg["max_swatches"]:
+        raise ValueError(f"the legend still has {left} swatches after the edit; its old lines have a shape "
+                         "mark-update does not know, remove them by hand")
     return src, info
+
+
+def legend_items(inner, swatch):
+    """(inner without its update lines, [removed lines]): an update line is a top-level element of the legend
+    that holds an element of class `swatch` or has that class itself; tags are matched with nesting."""
+    has = re.compile(rf'class="[^"]*(?<![\w-]){re.escape(swatch)}(?![\w-])')
+    kept, items, depth, start, pos = [], [], 0, 0, 0
+    for t in re.finditer(r"<(/?)([a-zA-Z][a-zA-Z0-9]*)\b[^>]*?(/?)>", inner):
+        if t.group(2).lower() in _Page.VOID or t.group(3):
+            if depth == 0 and has.search(t.group()):
+                kept.append(inner[pos:t.start()])
+                items.append(t.group())
+                pos = t.end()
+            continue
+        if not t.group(1):
+            if depth == 0:
+                start = t.start()
+            depth += 1
+        elif depth:
+            depth -= 1
+            if depth == 0 and has.search(inner[start:t.end()]):
+                kept.append(inner[pos:start])
+                items.append(inner[start:t.end()])
+                pos = t.end()
+    kept.append(inner[pos:])
+    return "".join(kept), items
 
 
 def mark_update_cmd(a):
@@ -469,7 +490,7 @@ def mark_update_cmd(a):
         new, info = mark_update(src, a.note.strip(), a.date or today_label(), r)
     except ValueError as e:
         core.die(Exit.REFUSED, str(e), MARK)
-    write_atomic(a.page, new)
+    core.write_atomic(a.page, new)
     info["page"] = a.page
     info["next"] = (f"wrap this update's new or changed text in class \"{r['update_class']}\", "
                     f"then: agent-cli page check {a.page}")
@@ -487,9 +508,6 @@ def skeleton(title, r):
         tag, cls = parse_sel(sel)
         attr = f' class="{" ".join(sorted(cls))}"' if cls else ""
         body = htmllib.escape(title, quote=False) if i == 0 else f"{FILL} {sel}"
-        lead = L["lead"].get(sel)
-        if lead and i:
-            body = f"<b>{htmllib.escape(lead)}</b> {body}"
         parts.append(f"  <{tag or 'div'}{attr}>{body}</{tag or 'div'}>")
     cls = " ".join(sorted(wcls | {uc}))
     return f'<{wtag or "div"} class="{cls}">\n' + "\n".join(parts) + f"\n</{wtag or 'div'}>"
@@ -516,7 +534,7 @@ def new_layer_cmd(a):
         new = new_layer(src, a.title.strip(), a.after, r)
     except ValueError as e:
         core.die(Exit.REFUSED, str(e), LAYER)
-    write_atomic(a.page, new)
+    core.write_atomic(a.page, new)
     core.out(a, {"page": a.page, "layer": a.title, "status": "inserted"},
              f"inserted: {a.title}\nnext: replace every {FILL} line, then agent-cli page check {a.page}")
     return Exit.OK
@@ -542,7 +560,7 @@ def new_cmd(a):
     if existing:
         core.die(Exit.REFUSED, f"a page for {a.slug!r} exists: {folder / existing[0]}; update it instead", NEW)
     dest = folder / f"{a.slug}-{date.isoformat()}.html"
-    write_atomic(dest, read(template, NEW))
+    core.write_atomic(dest, read(template, NEW))
     core.out(a, {"page": str(dest), "status": "created"}, f"created: {dest}")
     return Exit.OK
 

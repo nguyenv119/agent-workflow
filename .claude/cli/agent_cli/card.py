@@ -15,7 +15,6 @@ from pathlib import Path
 
 from . import core, rules as rulesmod
 from .core import Exit
-from .page import write_atomic
 from .textrules import EM_DASH, EMAIL, PR, bead_ids, forbidden, token
 
 DEFAULTS = {
@@ -25,7 +24,7 @@ DEFAULTS = {
     "required": [],
     "required_when": {"field": "status", "equals": "needs-you",
                       "fields": ["title", "background", "why", "choice", "recommendation", "detail"]},
-    "fields": {},          # {name: {type, enum, pattern, words: [min, max], date, path, ext, base, refs, palette}}
+    "fields": {},          # {name: {type, enum, pattern, words: [min, max], date, path: file|dir|any, ext, base, refs, palette}}
     "prose": ["title", "background", "why", "choice", "recommendation"],
     "prefixes": [],
     "no_tracker_ids": True,
@@ -118,9 +117,9 @@ def check_field(name, v, spec, card, others, base):
             p = rulesmod.resolve(raw, rulesmod.resolve(spec["base"], base) if spec.get("base") else None)
             if p is None:
                 out.append(f"{name}: {raw!r} must be an absolute path")
-            elif spec["path"] == "file" and not os.path.isfile(p) or spec["path"] == "dir" and not os.path.isdir(p) \
-                    or spec["path"] == "any" and not os.path.exists(p):
-                out.append(f"{name}: {raw!r} does not exist (want a {spec['path']})")
+            elif not {"file": os.path.isfile, "dir": os.path.isdir}.get(spec["path"], os.path.exists)(p):
+                kind = spec["path"] if spec["path"] in ("file", "dir") else "path"
+                out.append(f"{name}: {raw!r} is not an existing {kind}")
             elif spec.get("ext") and not any(p.endswith(e) for e in spec["ext"]):
                 out.append(f"{name}: {raw!r} must end in {' or '.join(spec['ext'])}")
             elif spec.get("palette") and os.path.isfile(p):
@@ -156,9 +155,11 @@ def check_card(fname, card, r, others, cleared, base, prefixes=()):
         need += [f for f in rw["fields"] if f not in need]
     for field in need:
         v = card.get(field)
+        decision = rw and field in rw["fields"]
         if v is None or (isinstance(v, str) and not v.strip()) or (isinstance(v, (list, dict)) and not v):
-            why = f"{rw['equals']} card is missing this field" if rw and field in rw["fields"] else "missing"
-            out.append(f"{fname}: {field}: {why}")
+            out.append(f"{fname}: {field}: " + (f"{rw['equals']} card is missing this field" if decision else "missing"))
+        elif decision and not isinstance(v, str) and "type" not in r["fields"].get(field, {}):
+            out.append(f"{fname}: {field}: must be text")
     for field, spec in r["fields"].items():
         if field in card and card[field] not in (None, ""):
             out += [f"{fname}: {x}" for x in check_field(field, card[field], spec, card, others, base)]
@@ -258,6 +259,6 @@ def write_cmd(a):
             print("\n".join(out))
         return Exit.FAIL
     dest = folder / name
-    write_atomic(dest, json.dumps(card, indent=2, ensure_ascii=False) + "\n")
+    core.write_atomic(dest, json.dumps(card, indent=2, ensure_ascii=False) + "\n")
     core.out(a, {"written": True, "path": str(dest)}, f"written: {dest}")
     return Exit.OK

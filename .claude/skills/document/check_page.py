@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """Check a document page or a folder of to-do cards: a shim over `agent-cli page check` and `agent-cli card check`.
 
-    check_page.py <page.html>                      same as: agent-cli page check <page.html>
-    check_page.py cards <dir> [--prefix NAME]...   same as: agent-cli card check <dir> [--prefix NAME]...
+    check_page.py <page.html>                      agent-cli page check <page.html>, built-in defaults only
+    check_page.py cards <dir> [--prefix NAME]...   agent-cli card check <dir> [--prefix NAME]..., defaults only
 
-The rules live in agent-cli (.claude/cli/agent_cli/page.py and card.py); a project changes them with a
-page-rules.json or card-rules.json seam. Prints one line per violation and exits 1, or prints PASS and exits 0.
+The rules live in agent-cli (.claude/cli/agent_cli/page.py and card.py). This shim always uses the built-in
+defaults; a project's page-rules.json or card-rules.json seam applies only through agent-cli itself. Prints one line per violation and exits 1, or prints PASS and exits 0.
 Exit 2 on bad usage or a card folder with no *.json cards. Stdlib only.
 """
 import sys
