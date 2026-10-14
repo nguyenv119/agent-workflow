@@ -95,7 +95,7 @@ class Run(EvalCase):
         self.assertEqual((r.returncode, out["verdict"]), (1, "FAIL"))
 
     def test_refused_and_blocked_pass_through(self):
-        """Script exits 2 / 3 (refused / blocked in the house-rules exit-code table) come out as the CLI's own exit code."""
+        """Script exits 2 / 3 (refused / blocked, house-rules "exit-code table") come out as the CLI's own exit code."""
         for code, verdict in ((2, "REFUSED"), (3, "BLOCKED")):
             # GIVEN an eval exiting with that code
             d = self.eval_dir(f"exit {code}\n", where=f"ev{code}")

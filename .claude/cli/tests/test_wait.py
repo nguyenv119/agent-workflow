@@ -66,7 +66,7 @@ class Wait(unittest.TestCase):
         self.assertEqual(clock.sleeps, [5, 5])
 
     def test_refused_and_blocked_pass_through_at_once(self):
-        """Exit 2 or 3 (refused / blocked in the house-rules exit-code table) stops on the first attempt with that
+        """Exit 2 or 3 (refused / blocked, house-rules "exit-code table") stops on the first attempt with that
         same code."""
         for status, result in ((2, "refused"), (3, "blocked")):
             # GIVEN a command that refuses or blocks

@@ -98,7 +98,7 @@ class Help(TmpCase):
         self.assertEqual(leaf, "leaf")
 
     def test_bad_usage_exits_2_with_an_example(self):
-        """cli-for-agents "Fail fast with actionable errors" + house-rules exit codes: a bad invocation fails fast on
+        """cli-for-agents "Fail fast with actionable errors" + house-rules "exit-code table": a bad invocation fails fast on
         stderr with `error:` and a correct example, exit 2."""
         # GIVEN an installed project
         p = make_project(self.tmp / "proj")
@@ -287,9 +287,9 @@ class LibAndEvalPaths(TmpCase):
 
 class Core(unittest.TestCase):
     def test_exit_codes(self):
-        """house-rules exit codes are fixed numbers every caller and eval relies on."""
+        """house-rules "exit-code table": exit codes are fixed numbers every caller and eval relies on."""
         # GIVEN / WHEN the enum
-        # THEN values match the house-rules exit-code table
+        # THEN values match house-rules "exit-code table"
         self.assertEqual([int(c) for c in core.Exit], [0, 1, 2, 3, 4, 5])
         self.assertEqual(core.Exit.TIMEOUT, 4)
 

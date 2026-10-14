@@ -12,6 +12,7 @@ import loop  # noqa: E402
 
 SKILL_DIR = ROOT / ".claude/skills/cli-for-agents"
 FIXTURE = Path(__file__).resolve().parent / "fixtures/cli_for_agents/upstream.sha256"
+WIN_CONDITION_R1 = "(R1: rows landed, a file has content)"  # eval_cmd.py's template TODO: a win-condition rule
 
 
 def fixture():
@@ -37,7 +38,11 @@ def sha256(path):
 
 class CliForAgentsSkill(unittest.TestCase):
     def test_skill_is_upstream_byte_for_byte_at_the_pinned_commit(self):
-        """SKILL.md's sha256 equals the fixture's hash of upstream SKILL.md, captured at the commit UPSTREAM pins."""
+        """SKILL.md's sha256 equals the fixture's hash of upstream SKILL.md, captured at the commit UPSTREAM pins.
+
+        The skill is only worth pointing at if it is upstream's text: a local edit would make it our rules under
+        cursor's name, and the next upstream refresh would silently drop the edit.
+        """
         # GIVEN the pinned commit and path in UPSTREAM and the hashes captured at fetch time
         pin, (commit, hashes) = upstream(), fixture()
         # WHEN the installed file is hashed
@@ -49,7 +54,10 @@ class CliForAgentsSkill(unittest.TestCase):
         self.assertEqual(got, hashes[pin["path"]])
 
     def test_license_is_upstream_mit_unedited(self):
-        """LICENSE says MIT and Cursor's copyright, and is byte-identical to upstream's LICENSE at the pin."""
+        """LICENSE says MIT and Cursor's copyright, and is byte-identical to upstream's LICENSE at the pin.
+
+        MIT lets us ship the file only with its notice intact; without it every installed copy breaks the license.
+        """
         # GIVEN the installed LICENSE and the fixture hashes
         text = (SKILL_DIR / "LICENSE").read_text()
         _, hashes = fixture()
@@ -60,11 +68,15 @@ class CliForAgentsSkill(unittest.TestCase):
         self.assertEqual(sha256(SKILL_DIR / "LICENSE"), hashes[upstream()["license"]])
 
     def test_frontmatter_loads_and_dir_matches_its_name(self):
-        """SKILL.md has name and description, and its dir is named after the frontmatter name (so it never needs an edit)."""
+        """SKILL.md has name and description, and its dir is named after the frontmatter name.
+
+        A skill without both keys does not load, and a dir named apart from `name:` would force an edit to
+        upstream's file to make them agree.
+        """
         # GIVEN the skill text
         text = (SKILL_DIR / "SKILL.md").read_text()
         # WHEN its frontmatter is read
-        name = re.search(r"^name:\s*(\S+)", text, re.M)[1]
+        name = re.search(r"^name:\s*(\S+)", loop.frontmatter(text), re.M)[1]
         # THEN it loads as a skill and the dir name matches
         self.assertEqual(loop.frontmatter_ok(text), set())
         self.assertEqual(name, SKILL_DIR.name)
@@ -94,12 +106,17 @@ class CliForAgentsSkill(unittest.TestCase):
         self.assertEqual(loop.leak_hits(lines, None), [])
 
     def test_cli_code_cites_rules_by_skill_section_not_by_number(self):
-        """No .claude/cli file cites an R1-R8 rule number; eval_cmd.py's R1 is the win-condition rule and stays."""
-        # GIVEN every Python file under .claude/cli but eval_cmd.py
-        files = [p for p in (ROOT / ".claude/cli").rglob("*.py") if p.name != "eval_cmd.py"]
-        # WHEN grepped for a bare rule number
+        """No .claude/cli file cites an R1-R8 rule number; only the eval template's win-condition R1 lines stay.
+
+        A bare number points at a hand-copied list that no longer exists, so the reader cannot find the rule
+        and the copies drift apart again.
+        """
+        # GIVEN every Python file under .claude/cli
+        files = list((ROOT / ".claude/cli").rglob("*.py"))
+        # WHEN grepped for a bare rule number, skipping the win-condition rule the eval template cites
         hits = [f"{p.relative_to(ROOT)}:{i}" for p in files
-                for i, line in enumerate(p.read_text().splitlines(), 1) if re.search(r"\bR[1-8]\b", line)]
+                for i, line in enumerate(p.read_text().splitlines(), 1)
+                if re.search(r"\bR[1-8]\b", line) and WIN_CONDITION_R1 not in line]
         # THEN there are none, and the code points at the skill instead
         self.assertTrue(files)
         self.assertEqual(hits, [])
