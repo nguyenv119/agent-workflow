@@ -228,6 +228,26 @@ class Write(TmpCase):
         # THEN group and others may read it (umask permitting)
         self.assertTrue((self.cards / "cache-size.json").stat().st_mode & 0o044)
 
+    def test_check_json_prints_one_object_with_pass_and_violations(self):
+        """`card check --json` prints one JSON object, pass true with no violations or pass false listing them
+        (house-rules "--json"), and keeps the 0/1 exit codes."""
+        # GIVEN a folder holding one good card written by `card write`
+        self.write(self.card())
+        for extra, code in ((None, 0), ({**GOOD, "id": "bad", "title": "No question mark"}, 1)):
+            if extra:  # then a second, bad card planted beside it
+                (self.cards / "bad.json").write_text(json.dumps(extra))
+            # WHEN the folder is checked with --json
+            r = agent_cli(self.p, "card", "check", str(self.cards), "--rules", str(self.rules), "--json")
+            obj = json.loads(r.stdout)
+            # THEN exactly one line, and pass/violations match the exit code
+            with self.subTest(code=code):
+                self.assertEqual(r.returncode, code, r.stderr)
+                self.assertEqual(len(r.stdout.splitlines()), 1)
+                self.assertEqual(obj["pass"], code == 0)
+                self.assertEqual(bool(obj["violations"]), code == 1)
+                if code:
+                    self.assertTrue(any(v.startswith("bad.json: title") for v in obj["violations"]), obj)
+
     def test_empty_folder_check_is_a_usage_error(self):
         """Checking a folder with no cards is almost always a wrong path, so it exits 2, not PASS."""
         # GIVEN an empty folder; WHEN checked; THEN exit 2

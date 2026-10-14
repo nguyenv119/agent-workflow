@@ -81,16 +81,22 @@ been tested.
 """
 
 
+def eval_lib(a):
+    path = str(EVAL_LIB / ("verdict.sh" if a.sh else "verdict.py"))
+    core.out(a, {"path": path}, path)
+
+
 def register(sub):
     _, es = core.group(sub, "eval", "scaffold, run and control-test loop evals; the verdict library",
                        [f"agent-cli eval run {DIR}", f"agent-cli eval controls {DIR}",
                         'source "$(agent-cli eval lib --sh)"'])
     p = core.subcommand(es, "lib", "print the verdict library path (ok, fail, refuse, blocked, win)",
-                        ["agent-cli eval lib --sh", "agent-cli eval lib --py"])
+                        ["agent-cli eval lib --sh", "agent-cli eval lib --py", "agent-cli eval lib --sh --json"])
     g = p.add_mutually_exclusive_group(required=True)
     g.add_argument("--sh", action="store_true", help="bash library, to source")
     g.add_argument("--py", action="store_true", help="python module, to import")
-    p.set_defaults(func=lambda a: print(EVAL_LIB / ("verdict.sh" if a.sh else "verdict.py")))
+    p.add_argument("--json", action="store_true", help="one JSON object")
+    p.set_defaults(func=eval_lib)
 
     p = core.subcommand(es, "init", "scaffold win.sh (or win.py) and controls/README.md; never overwrites",
                         [f"agent-cli eval init {DIR}", f"agent-cli eval init {DIR} --lang py --dry-run"])

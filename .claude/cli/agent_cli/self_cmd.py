@@ -11,8 +11,9 @@ def register(sub):
                        ["agent-cli self env", "agent-cli self install --bin-dir ~/.local/bin"])
     p = core.subcommand(ss, "env",
                         "print the PATH export (.claude/bin and project CLI dirs); empty if AGENT_CLI_PATH_OFF=1",
-                        ["agent-cli self env", 'eval "$(agent-cli self env)"'])
-    p.set_defaults(func=lambda a: self_env())
+                        ["agent-cli self env", 'eval "$(agent-cli self env)"', "agent-cli self env --json"])
+    p.add_argument("--json", action="store_true", help="one JSON object: the dirs and the export line")
+    p.set_defaults(func=self_env)
     p = core.subcommand(ss, "install", "symlink agent-cli into a bin dir, for shells outside Claude Code",
                         ["agent-cli self install --bin-dir ~/.local/bin",
                          "agent-cli self install --bin-dir ~/.local/bin --dry-run --json"])
@@ -22,12 +23,14 @@ def register(sub):
     p.set_defaults(func=self_install)
 
 
-def self_env():
-    if os.environ.get("AGENT_CLI_PATH_OFF") == "1":
-        return
-    esc = [d.replace("\\", "\\\\").replace('"', '\\"').replace("$", "\\$").replace("`", "\\`")
-           for d in core.path_dirs()]
-    print(f'export PATH="{":".join(esc)}:$PATH"')
+def self_env(a):
+    dirs = [] if os.environ.get("AGENT_CLI_PATH_OFF") == "1" else core.path_dirs()
+    esc = [d.replace("\\", "\\\\").replace('"', '\\"').replace("$", "\\$").replace("`", "\\`") for d in dirs]
+    line = f'export PATH="{":".join(esc)}:$PATH"' if dirs else ""
+    if a.json:
+        core.emit({"dirs": dirs, "export": line}, True)
+    elif line:
+        print(line)
 
 
 def self_install(a):

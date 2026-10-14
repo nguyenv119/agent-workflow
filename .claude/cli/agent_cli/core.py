@@ -28,6 +28,13 @@ class Exit(enum.IntEnum):
     PARTIAL = 5
 
 
+# What each code means for every command (house-rules "exit-code table"); the root --help prints it.
+EXIT_MEANING = {Exit.OK: "done, or the check passed", Exit.FAIL: "checked and failed",
+                Exit.REFUSED: "usage error or refused; the error names a correct invocation",
+                Exit.BLOCKED: "blocked by something outside the command (a lock holder, gh, a setup hook)",
+                Exit.TIMEOUT: "the --cap ran out first", Exit.PARTIAL: "not finished: still waiting, or partly done"}
+
+
 def die(code, msg, example):
     """cli-for-agents "Fail fast with actionable errors": `error: <msg>` and a correct invocation on stderr, then
     exit with code."""

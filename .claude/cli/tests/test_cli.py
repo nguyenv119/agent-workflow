@@ -3,6 +3,7 @@ import argparse
 import io
 import json
 import os
+import re
 import shutil
 import sys
 import tempfile
@@ -21,6 +22,20 @@ LEAVES = [[], ["hook"], ["hook", "pretooluse"], ["hook", "test"], ["hook", "rule
           ["wt"], ["wt", "new"], ["wt", "list"], ["wt", "audit"], ["wt", "rm"],
           ["wait"], ["lock"], ["lock", "acquire"], ["lock", "release"], ["lock", "status"],
           ["pr"], ["pr", "status"], ["pr", "wait"], ["pr", "land"]]
+EXIT_HEADER = "Exit codes (every agent-cli command):"
+# Leaf commands that are not read commands, so house-rules "--json" does not ask them for --json.
+NOT_READ = {"hook pretooluse": "a hook: stdout is Claude Code's hook protocol, not ours",
+            "hook posttooluse": "a hook: records a command shape, prints nothing",
+            "hook posttoolusefailure": "a hook: records a command shape, prints nothing",
+            "eval init": "writes a scaffold", "pr land": "merges a PR"}
+
+
+def leaves(parser, path=()):
+    """("verb path", parser) for every leaf command under parser."""
+    subs = [a for a in parser._actions if isinstance(a, argparse._SubParsersAction)]
+    if not subs:
+        return [(" ".join(path), parser)]
+    return [x for name, child in subs[0].choices.items() for x in leaves(child, (*path, name))]
 
 
 class Help(TmpCase):
@@ -36,13 +51,16 @@ class Help(TmpCase):
             # WHEN each layer's help is printed
             r = agent_cli(p, *path, "--help")
             lines = r.stdout.rstrip("\n").splitlines()
-            # THEN line 1 is the summary and the last block is Examples with real invocations
+            # THEN line 1 is the summary and the last block is Examples with real invocations (the root's
+            # exit-code table follows its Examples)
             with self.subTest(path=path):
                 self.assertEqual(r.returncode, 0, r.stderr)
                 self.assertTrue(lines[0].startswith(" ".join(["agent-cli", *path]) + ": "), lines[0])
                 ex = lines.index("Examples:")
-                self.assertTrue(all(ln.startswith("  ") and "agent-cli" in ln for ln in lines[ex + 1:]), lines[ex:])
-                self.assertGreater(len(lines), ex + 1)
+                end = lines.index(EXIT_HEADER) - 1 if not path else len(lines)
+                self.assertTrue(all(ln.startswith("  ") and "agent-cli" in ln for ln in lines[ex + 1:end]),
+                                lines[ex:end])
+                self.assertGreater(end, ex + 1)
 
     def test_bare_command_prints_root_help(self):
         """`agent-cli` alone prints the command list (exit 0), never prompts (house-rules "Never prompt")."""
@@ -107,6 +125,63 @@ class Help(TmpCase):
         # THEN exit 2, error line and an example line
         self.assertEqual(r.returncode, 2)
         self.assertRegex(r.stderr, r"^error: .+\n  example: agent-cli eval lib --sh\n$")
+
+
+class HouseRules(TmpCase):
+    def test_root_help_ends_with_the_exit_code_table(self):
+        """house-rules "exit-code table": `agent-cli --help` ends with one table naming every core.Exit code.
+
+        Callers and evals branch on these numbers; the table is where an agent learns them without reading code.
+        """
+        # GIVEN an installed project
+        p = make_project(self.tmp / "proj")
+        # WHEN the root help is printed
+        lines = agent_cli(p, "--help").stdout.rstrip("\n").splitlines()
+        # THEN its last block is the header plus one `  <n>  <name>  <meaning>` row per Exit member, in order
+        rows = lines[lines.index(EXIT_HEADER) + 1:]
+        got = [re.fullmatch(r"  (\d)  ([a-z]+) +\S.*", ln) for ln in rows]
+        self.assertTrue(all(got), rows)
+        self.assertEqual([(int(m[1]), m[2]) for m in got], [(int(e), e.name.lower()) for e in core.Exit])
+
+    def test_every_read_verb_takes_json(self):
+        """house-rules "--json": every leaf command except the named non-read ones accepts --json.
+
+        A new read verb without --json fails here, so the rule cannot drift again.
+        """
+        # GIVEN the built command tree
+        tree = dict(leaves(main.build()))
+        # WHEN each leaf's options are read
+        missing = [v for v, p in tree.items() if v not in NOT_READ and "--json" not in p._option_string_actions]
+        # THEN only the exempt ones lack --json, and every exempt name is still a real command
+        self.assertEqual(missing, [])
+        self.assertLessEqual(set(NOT_READ), set(tree))
+
+    def test_path_printers_emit_one_json_object(self):
+        """`lib path`, `eval lib` and `self env` with --json print one JSON object naming what they print bare."""
+        # GIVEN a project with a path seam
+        p = make_project(self.tmp / "proj", {"path": "tools\n"})
+        cases = [(["lib", "path"], {"path": str(p / ".claude/cli")}),
+                 (["eval", "lib", "--sh"], {"path": str(p / ".claude/cli/agent_cli/eval_lib/verdict.sh")}),
+                 (["eval", "lib", "--py"], {"path": str(p / ".claude/cli/agent_cli/eval_lib/verdict.py")}),
+                 (["self", "env"], {"dirs": [f"{p}/.claude/bin", f"{p}/tools"],
+                                    "export": f'export PATH="{p}/.claude/bin:{p}/tools:$PATH"'})]
+        for args, want in cases:
+            # WHEN each runs with --json
+            r = agent_cli(p, *args, "--json")
+            # THEN stdout is exactly one JSON object with those fields
+            with self.subTest(args=args):
+                self.assertEqual(r.returncode, 0, r.stderr)
+                self.assertEqual(len(r.stdout.splitlines()), 1, r.stdout)
+                self.assertEqual(json.loads(r.stdout), want)
+
+    def test_self_env_json_when_switched_off_is_empty(self):
+        """AGENT_CLI_PATH_OFF=1 with --json still prints one object, with no dirs and no export line."""
+        # GIVEN the off switch
+        p = make_project(self.tmp / "proj")
+        # WHEN self env --json runs
+        r = agent_cli(p, "self", "env", "--json", env={"AGENT_CLI_PATH_OFF": "1"})
+        # THEN one empty object, exit 0
+        self.assertEqual((r.returncode, json.loads(r.stdout)), (0, {"dirs": [], "export": ""}))
 
 
 class SelfEnv(TmpCase):

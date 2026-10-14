@@ -15,6 +15,11 @@ class Root(core.Parser):
         return "\nProject CLIs:\n" + ("".join(f"  {n}  {s}\n" for n, s in project_clis())
                                        or "  (none: list their dirs in .claude/agent-cli-hooks/path)\n")
 
+    def format_help(self):
+        """The help, ending with the one exit-code table (house-rules "exit-code table")."""
+        rows = "".join(f"  {int(e)}  {e.name.lower():<8} {core.EXIT_MEANING[e]}\n" for e in Exit)
+        return f"{super().format_help()}\nExit codes (every agent-cli command):\n{rows}"
+
 
 def project_clis():
     """(name, first line of `<cli> --help`) for each executable on the path seam's dirs."""
