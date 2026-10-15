@@ -70,8 +70,8 @@ class ConstructionTest(AgentCase):
         else, even with admin keys, an API key and an OAuth token on the host.
         """
         # GIVEN the scrubbed host env this module runs under (admin + api + oauth set)
-        # WHEN the agent resolves its sandbox env
-        env = self.make_agent()._resolve_auth_env()
+        # WHEN an agent on the bedrock route resolves its sandbox env
+        env = self.make_agent(model_access="bedrock")._resolve_auth_env()
         # THEN it is the Bedrock allowlist with the Bedrock-only keys
         self.assertEqual(set(env), {
             "CLAUDE_CODE_USE_BEDROCK", "AWS_REGION", "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY",
@@ -91,10 +91,32 @@ class ConstructionTest(AgentCase):
         # THEN the flag is there
         self.assertIn("--max-budget-usd 12", flags)
 
-    def test_default_model_is_bedrock_opus(self):
-        """`claude` must run the Bedrock global Opus id, not a first-party model name."""
-        # GIVEN no model kwarg / WHEN resolved / THEN the global Opus id
-        self.assertEqual(self.make_agent()._resolved_model_name(), "global.anthropic.claude-opus-5-5")
+    def test_bedrock_model_is_bedrock_opus(self):
+        """On Bedrock `claude` must run the global Opus id, not a first-party model name."""
+        # GIVEN no model kwarg / WHEN resolved on bedrock / THEN the global Opus id
+        self.assertEqual(self.make_agent(model_access="bedrock")._resolved_model_name(),
+                         "global.anthropic.claude-opus-5-5")
+
+    def test_default_route_is_the_subscription_token_only(self):
+        """
+        With no model_access kwarg and no HARNESS_MODEL_ACCESS, the sandbox gets the subscription's OAuth token
+        and a first-party Opus id, nothing from Bedrock or the API key.
+        """
+        # GIVEN the scrubbed host env (no route set) / WHEN an agent resolves its sandbox env
+        agent = self.make_agent()
+        env = agent._resolve_auth_env()
+        # THEN the token and first-party model only
+        self.assertEqual(set(env), {"CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_MODEL",
+                                    "CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS", "IS_SANDBOX", "HARNESS_TRIES_DIR"})
+        self.assertEqual(agent._resolved_model_name(), "claude-opus-5-5")
+
+    def test_route_variable_picks_bedrock_when_no_kwarg_names_one(self):
+        """HARNESS_MODEL_ACCESS=bedrock is the opt-in: an agent built without model_access follows it."""
+        # GIVEN HARNESS_MODEL_ACCESS=bedrock / WHEN an agent without the kwarg resolves its env
+        with mock.patch.dict(os.environ, {"HARNESS_MODEL_ACCESS": "bedrock"}):
+            env = self.make_agent()._resolve_auth_env()
+        # THEN it is on Bedrock
+        self.assertEqual(env["CLAUDE_CODE_USE_BEDROCK"], "1")
 
     def test_secrets_are_registered_for_the_trial_scrubber(self):
         """
@@ -102,9 +124,9 @@ class ConstructionTest(AgentCase):
         (what `--ae` sets). Keys taken from the host env are invisible to it,
         so a transcript that printed env would keep them in clear text.
         """
-        # GIVEN agents in bedrock and api mode
+        # GIVEN agents in bedrock, api and subscription mode
         for mode, keys in (("bedrock", ["AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY"]),
-                           ("api", ["ANTHROPIC_API_KEY"])):
+                           ("api", ["ANTHROPIC_API_KEY"]), ("subscription", ["CLAUDE_CODE_OAUTH_TOKEN"])):
             with self.subTest(mode=mode):
                 agent = self.make_agent(model_access=mode)
                 # WHEN the scrubber's secret set is built the way Trial._scrub_jobs_dir does

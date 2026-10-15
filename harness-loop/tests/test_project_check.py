@@ -45,7 +45,7 @@ class ProjectCheckCase(unittest.TestCase):
         self.repo, self.base = make_repo(self.tmp / "repo", {SKILL: BASE})
         self.log = self.tmp / "claude.jsonl"
         self.env = {**os.environ, "PROJECT_CHECK_CLAUDE": FAKE, "FAKE_CLAUDE_LOG": str(self.log)}
-        for k in ("FAKE_CLAUDE_REPLY", "FAKE_CLAUDE_EXIT"):
+        for k in ("FAKE_CLAUDE_REPLY", "FAKE_CLAUDE_EXIT", "HARNESS_MODEL_ACCESS", "CLAUDE_CODE_OAUTH_TOKEN"):
             self.env.pop(k, None)
 
     def change(self, line, message="implementer: one more rule"):
@@ -114,6 +114,11 @@ class PlantedControls(ProjectCheckCase):
         self.assertRecordedFor("project.json")
 
 
+ALL_CREDENTIALS = {"AWS_ACCESS_KEY_ID": "a", "AWS_SECRET_ACCESS_KEY": "b", "CLAUDE_CODE_USE_BEDROCK": "1",
+                   "ANTHROPIC_API_KEY": "x", "CLAUDE_CODE_OAUTH_TOKEN": "x", "AWS_ADMIN_ACCESS_KEY_ID": "x",
+                   "GH_TOKEN": "x"}
+
+
 class WhatTheModelSees(ProjectCheckCase):
     def test_prompt_has_added_lines_commit_message_and_body_numbered(self):
         """Added lines (with file), the commit message and the body each reach the model as numbered lines."""
@@ -137,14 +142,47 @@ class WhatTheModelSees(ProjectCheckCase):
         """The call's env keeps the Bedrock keys and drops API keys, OAuth tokens and admin keys."""
         # GIVEN an env with Bedrock keys and other credentials
         head = self.change(GENERIC)
-        extra = {"AWS_ACCESS_KEY_ID": "a", "AWS_SECRET_ACCESS_KEY": "b", "CLAUDE_CODE_USE_BEDROCK": "1",
-                 "ANTHROPIC_API_KEY": "x", "CLAUDE_CODE_OAUTH_TOKEN": "x", "AWS_ADMIN_ACCESS_KEY_ID": "x", "GH_TOKEN": "x"}
-        # WHEN checked
+        extra = {**ALL_CREDENTIALS, "HARNESS_MODEL_ACCESS": "bedrock"}
+        # WHEN checked on the bedrock route
         self.check(self.base, head, env=extra)
         # THEN only the Bedrock ones reach the call, with a fresh config dir
         seen = set(json.loads(self.log.read_text().splitlines()[0])["env"])
         self.assertTrue({"AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CONFIG_DIR"} <= seen)
         self.assertFalse({"ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN", "AWS_ADMIN_ACCESS_KEY_ID", "GH_TOKEN"} & seen)
+
+    def test_subscription_with_a_token_gets_only_the_token_and_a_fresh_config_dir(self):
+        """
+        On the subscription (the default route) the call gets CLAUDE_CODE_OAUTH_TOKEN and nothing that would
+        send it to a paid route: no AWS keys, API key, Bedrock switch or Bedrock model ids.
+        """
+        # GIVEN an env holding every credential and Bedrock's model ids, no route set
+        head = self.change(GENERIC)
+        # WHEN checked
+        self.check(self.base, head, env={**ALL_CREDENTIALS, "ANTHROPIC_MODEL": "global.x"})
+        # THEN the token and a fresh config dir reach the call, no paid credential, and no fence flags
+        call = json.loads(self.log.read_text().splitlines()[0])
+        self.assertTrue({"CLAUDE_CODE_OAUTH_TOKEN", "CLAUDE_CONFIG_DIR"} <= set(call["env"]))
+        self.assertFalse({"AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "CLAUDE_CODE_USE_BEDROCK", "ANTHROPIC_MODEL",
+                          "ANTHROPIC_API_KEY", "AWS_ADMIN_ACCESS_KEY_ID", "GH_TOKEN"} & set(call["env"]))
+        self.assertNotIn("--setting-sources", call["argv"])
+
+    def test_subscription_login_keeps_the_config_dir_and_fences_user_settings(self):
+        """
+        Without a token the call must use this machine's stored login, which lives under the default config
+        dir: it gets no CLAUDE_CONFIG_DIR and is fenced from user settings, MCP servers and auto-memory by flags.
+        """
+        # GIVEN Bedrock keys but no OAuth token, no route set
+        head = self.change(GENERIC)
+        env = {k: v for k, v in ALL_CREDENTIALS.items() if k != "CLAUDE_CODE_OAUTH_TOKEN"}
+        # WHEN checked
+        self.check(self.base, head, env=env)
+        # THEN no config dir and no paid credential, and the fence flags with an auto-memory-off settings file
+        call = json.loads(self.log.read_text().splitlines()[0])
+        self.assertFalse({"CLAUDE_CONFIG_DIR", "AWS_ACCESS_KEY_ID", "CLAUDE_CODE_USE_BEDROCK"} & set(call["env"]))
+        argv = call["argv"]
+        self.assertEqual(argv[argv.index("--setting-sources") + 1], "project,local")
+        self.assertIn("--strict-mcp-config", argv)
+        self.assertIn("--settings", argv)
 
 
 class FailsClosed(ProjectCheckCase):
@@ -227,17 +265,40 @@ class FailsClosed(ProjectCheckCase):
         self.assertBlocked(code, v, "claude returned an error")
 
     def test_default_command_without_bedrock_blocks_before_any_call(self):
-        """With no fake command and no Bedrock env, the check refuses to call claude at all."""
-        # GIVEN the default command and an env without CLAUDE_CODE_USE_BEDROCK
+        """On the bedrock route with no fake command and no Bedrock env, the check refuses to call claude at all."""
+        # GIVEN the default command and HARNESS_MODEL_ACCESS=bedrock without CLAUDE_CODE_USE_BEDROCK
         head = self.change(GENERIC)
         env = {k: v for k, v in self.env.items() if k not in ("PROJECT_CHECK_CLAUDE", "CLAUDE_CODE_USE_BEDROCK")}
+        env["HARNESS_MODEL_ACCESS"] = "bedrock"
         # WHEN checked
         p = subprocess.run([sys.executable, str(SCRIPT), self.base, head], cwd=self.repo, env=env,
                            capture_output=True, text=True)
         v = json.loads(p.stdout)
         # THEN blocked, naming Bedrock, and no call was made
-        self.assertBlocked(p.returncode, v, "Bedrock only")
+        self.assertBlocked(p.returncode, v, "needs CLAUDE_CODE_USE_BEDROCK=1")
         self.assertFalse(v["called"])
+
+    def test_usage_limit_blocks_and_says_rate_limited(self):
+        """A session-limit reply blocks (fail closed) and says rate_limited, which loop.py turns into a pause."""
+        # GIVEN a reply that is the subscription's session limit
+        head = self.change(GENERIC)
+        reply = self.write_reply("You've hit your session limit \u00b7 resets 7:40pm", is_error=True, cost=0.02)
+        # WHEN checked
+        code, v, _ = self.check(self.base, head, env={"FAKE_CLAUDE_REPLY": reply})
+        # THEN blocked, with the limit's text, the call counted and its cost kept
+        self.assertBlocked(code, v, "usage limit")
+        self.assertIn("session limit", v["rate_limited"])
+        self.assertEqual((v["called"], v["cost_usd"]), (True, 0.02))
+
+    def test_other_error_is_not_a_rate_limit(self):
+        """An error reply that is not a limit blocks without rate_limited (a real block, not a pause)."""
+        # GIVEN an error envelope about the budget cap
+        head = self.change(GENERIC)
+        # WHEN checked
+        code, v, _ = self.check(self.base, head, env={"FAKE_CLAUDE_REPLY": self.write_reply("cap", is_error=True)})
+        # THEN blocked with no rate_limited
+        self.assertBlocked(code, v, "claude returned an error")
+        self.assertIsNone(v["rate_limited"])
 
     def test_bad_ref_blocks(self):
         """A base that is not a commit blocks (git error), never passes as an empty diff."""

@@ -17,7 +17,7 @@ write rounds/<n>/message.txt (paths only; a `proposals:` line when --proposals n
 exists); hash, in this process's memory only, the main screen run it will reuse, history.jsonl, queue.json, spend.jsonl, and this checkout's state
 (git status, HEAD, every ref but the round's, every file under harness-loop/, the shared
 .git config/hooks/info and the user's git config); run the
-improver (default: `claude -p --model opus` on Bedrock, see IMPROVER_ENV); re-check all of it
+improver (default: `claude -p --model opus` on the model route, see Model route); re-check all of it
 and drop the round on any change; run the checks (one commit; only .claude/** or AGENTS.md;
 no EXAM_MODE; Exam mode section untouched; the gate guard; leak scan; project check; proposal.md
 with an Idea: line and >= 2 try folders on disk; load check); then, unless --no-screen, screen the
@@ -44,11 +44,11 @@ guard on <commit>^..<commit> (exit 1 and "rejected: weakens gates" on rejection)
 
 exam: screens one open PR, hand-made or not. Path gate first (free): a diff (main...head) touching
 nothing /work loads (WORK_LOADED) and no skill's or agent's frontmatter gets "exam: not needed (<reason>)"
-in its score block and spends nothing. Otherwise the free checks, before Bedrock or the budget is asked
-for: the head is restacked on main (a conflict: "stale, rebase the PR onto main"), the load check runs on
+in its score block and spends nothing. Otherwise the free checks, before the model route or the budget is
+asked for: the head is restacked on main (a conflict: "stale, rebase the PR onto main"), the load check runs on
 that restacked commit (fail: "dry run fail"), and either fail is written into the block with no spend;
 the gate guard is advisory (its reasons go in the block). --check-only runs the same checks, prints the
-verdicts and edits nothing. Then, on Bedrock and inside the weekly cap: main's screen run is reused or
+verdicts and edits nothing. Then, on the model route and inside the weekly cap: main's screen run is reused or
 made, and the restacked commit is screened with early stop like a round's; the block is written into the
 PR body. Spend is booked as round pr-<N>. The restack ref is deleted once the exam is done (monthly too).
 The exam never pushes or merges.
@@ -56,7 +56,19 @@ The exam never pushes or merges.
 Outcomes in history.jsonl: queued (screen pass, PR open), screen-fail (draft PR), side-fail
 (screen pass, side check guard fail, draft PR), dropped (a
 check failed), rejected (the gate guard: the change weakens a gate, reviewer or test),
-checked (--no-screen, all checks pass), error, merged, closed.
+checked (--no-screen, all checks pass), paused (a usage limit: see Model route), error, merged, closed.
+
+Model route (owner decision, 15 Oct 2026): HARNESS_MODEL_ACCESS picks how every paid claude call runs,
+the improver, the project check and the exam's /work runs alike. subscription (the default, also when
+unset): the Claude Code subscription. Host calls use this machine's `claude` login, or
+CLAUDE_CODE_OAUTH_TOKEN when set; the exam's sandboxes cannot read the keychain login, so an exam on
+the subscription needs CLAUDE_CODE_OAUTH_TOKEN (from `claude setup-token`) and a round or exam without
+it is refused before anything starts. bedrock: CLAUDE_CODE_USE_BEDROCK=1 and Bedrock keys, opt-in only.
+Nothing switches route on a failure. Every ledger row records its route; a subscription row books usd 0
+and keeps claude's total_cost_usd as notional_usd, so the weekly cap counts only money and `budget`
+shows the subscription use. A usage limit (claude's rate_limit error, a 429, "You've hit your session
+limit") in the improver, the project check or an exam try ends the round "paused": nothing more starts,
+no screen verdict, no PR, exit 4; exam and monthly exit 4 the same way. Run it again once the limit resets.
 
 Budget: WEEKLY_BUDGET_USD over a rolling 7 days of $HARNESS_LOOP_HOME/spend.jsonl, which only
 this script writes (improver cost from claude's result line, exam cost from each run's
@@ -64,7 +76,8 @@ summary.json). A round that could take the week past the cap (improver + exam + 
 is refused before anything starts; so is a monthly or an exam. A run outside the loop (the weekly
 gardener) is booked here too: `budget --est X --what S` asks first (exit 0 fits the cap, 1 refused with
 the reason), and `book --kind K --usd X [--note S]` writes its cost as one row with round "gardener",
-so spend.jsonl still has one writer. Kinds the loop books itself (improver, project-check, exam-*,
+so spend.jsonl still has one writer. Both follow the model route: on the subscription, budget always
+fits (no money moves) and prints the week's notional use, and book writes usd 0 with notional_usd. Kinds the loop books itself (improver, project-check, exam-*,
 sidecheck-*) are refused: an exam-baseline row is the proof a main run is reusable. Run book when no
 round is running: a round restores spend.jsonl from its snapshot and drops itself on any change.
 
@@ -104,6 +117,9 @@ from pathlib import Path
 
 LOOP_DIR = Path(__file__).resolve().parent
 AW_ROOT = LOOP_DIR.parent
+sys.dont_write_bytecode = True  # hash_tree(LOOP_DIR) must not see an exam/__pycache__ this import left
+sys.path.insert(0, str(LOOP_DIR / "exam"))
+from trial_export import OAUTH_TOKEN, json_events, model_route, rate_limit_reason  # noqa: E402
 HOME = Path(os.environ.get("HARNESS_LOOP_HOME") or Path.home() / ".harness-loop")
 TRIES = Path.home() / ".claude/tries"  # every repo's /work tries: <repo>/<bead>/try-<n>
 GH_REPO = "nguyenv119/agent-workflow"
@@ -130,10 +146,14 @@ TRY_PATH = re.compile(r"(?<![\w/.~-])((?:runs/|~/\.claude/tries/)[^\s`'\"<>()\[\
 # A concrete .claude/tries/<repo> outside the masked Evidence list names a (private) repo; <placeholders> and this
 # public repo's own folder pass.
 TRIES_NAME = re.compile(r"\.claude/tries/(?:(?!<|agent-workflow/)[\w.-]|\S*\.\.)")  # no ../ detour either
-# The improver gets Bedrock only: never an Anthropic API key, OAuth token or admin AWS key.
+# Host claude calls get the route's credential only: never an Anthropic API key or admin AWS key.
 SCRUB_ENV = re.compile(r"^(ANTHROPIC_BASE_URL|AWS_ADMIN_.*|AWS_PROFILE"
                        r"|.*(TOKEN(?!S)|SECRET|KEY|PASSWORD|CREDENTIAL).*)$", re.I)
 BEDROCK_ENV = {"AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN", "AWS_BEARER_TOKEN_BEDROCK"}
+# Bedrock's switch and model ids would send a subscription call to Bedrock, or name a model it lacks.
+NOT_SUBSCRIPTION = re.compile(r"^(CLAUDE_CODE_USE_(BEDROCK|VERTEX|FOUNDRY)|ANTHROPIC_(MODEL|SMALL_FAST_MODEL"
+                              r"|DEFAULT_\w+_MODEL))$")
+RATE_LIMITED_EXIT = 4  # a usage limit paused the run: not a failure, run again once it resets
 
 # Gate guard (Long, 12 Oct): a change may add or sharpen checks, never remove or weaken one.
 GATE_WORDS = re.compile(r"\b(tests?|testing|test-runner|test-first|gates?|reviews?|reviewers?|reviewing"
@@ -171,6 +191,15 @@ FRONTMATTER_FILE = re.compile(r"\.claude/(skills/[^/]+/SKILL|agents/[^/]+)\.md")
 def die(msg, code=2):
     print(f"loop: {msg}", file=sys.stderr)
     sys.exit(code)
+
+
+class RateLimited(Exception):
+    """A paid claude call hit a usage limit; the round pauses (RATE_LIMITED_EXIT), never falls back."""
+
+
+def route():
+    """The model route (trial_export.model_route over os.environ); main() rejects a bad value first."""
+    return model_route(os.environ)
 
 
 def git(*args, cwd=AW_ROOT, check=True):
@@ -230,9 +259,16 @@ def week_spent(rows, at):
     return sum(max(0.0, float(r["usd"])) for r in rows if at - datetime.datetime.fromisoformat(r["ts"]) < week)
 
 
+def week_notional(rows, at):
+    """Notional USD of subscription rows from the last 7 days before `at` (usage, not money)."""
+    week = datetime.timedelta(days=7)
+    return sum(float(r.get("notional_usd") or 0) for r in rows if at - datetime.datetime.fromisoformat(r["ts"]) < week)
+
+
 def check_budget(est, what, code=2):
+    """Money spent this week; dies when `est` more would pass the cap. A subscription run moves no money."""
     spent = week_spent(read_jsonl(HOME / "spend.jsonl"), now())
-    if spent + est > WEEKLY_BUDGET_USD + 1e-9:
+    if route() != "subscription" and spent + est > WEEKLY_BUDGET_USD + 1e-9:
         die(f"refusing {what}: ${spent:.2f} spent in the last 7 days + up to ${est:.2f} "
             f"> ${WEEKLY_BUDGET_USD:.2f} weekly cap", code=code)
     return spent
@@ -242,7 +278,10 @@ BOOKED = []  # every ledger row this process wrote; restore_state puts them back
 
 
 def book(kind, usd, round_n, note=""):
-    row = {"ts": now().isoformat(), "kind": kind, "round": round_n, "usd": round(float(usd), 4), "note": note}
+    """One ledger row. On the subscription `usd` is claude's notional cost: booked as notional_usd, usd 0."""
+    cost, paid = round(float(usd), 4), route() != "subscription"
+    row = {"ts": now().isoformat(), "kind": kind, "round": round_n, "usd": cost if paid else 0.0, "note": note,
+           "route": route(), **({} if paid else {"notional_usd": cost})}
     BOOKED.append(row)
     append_jsonl(HOME / "spend.jsonl", row)
 
@@ -585,6 +624,8 @@ def project_check(base, cand, body, round_n):
         book("project-check", v["cost_usd"], round_n)
     elif v.get("called"):
         book("project-check", PROJECT_CHECK_MAX_USD, round_n, "cost unknown: booked at cap")
+    if v.get("rate_limited"):
+        raise RateLimited(f"project check: {v['rate_limited']}")
     if p.returncode == 0 and v.get("clean") is True:
         return True, f"${float(v.get('cost_usd') or 0):.4f}"
     if v.get("error"):
@@ -659,6 +700,9 @@ def run_exam(sha, manifest, kind, budget, round_n, screen=True, tries=1, extra=(
     run = Path(m[1])
     cost = json.loads((run / "summary.json").read_text()).get("total_cost_usd") or 0
     book(label, cost, round_n, "side check" if side_home else run.name)
+    limit = json.loads((run / "run.json").read_text()).get("rate_limited")
+    if limit:  # no name: a side run's carries the private set
+        raise RateLimited(f"{label} run: {limit}")
     return run
 
 
@@ -702,7 +746,7 @@ def find_base_run(base_sha, manifest):
             continue
         if (meta.get("set") == data.get("set") and meta.get("tasks") == want and meta.get("screen")
                 and meta.get("agent") == "workflow" and meta.get("kind") == "baseline"
-                and meta.get("status") == "complete" and (meta_f.parent / "summary.sha256").is_file()
+                and meta.get("status") == "complete" and meta.get("model_access", "bedrock") == route() and (meta_f.parent / "summary.sha256").is_file()
                 and meta_f.parent.name in booked and tree and harness_tree(str(meta.get("harness_commit"))) == tree):
             found.append((meta_f.stat().st_mtime, meta_f.parent))
     return max(found)[1] if found else None
@@ -822,23 +866,56 @@ def improver_settings(round_dir, proposals=None):
         deny += [f"{tool_name}(/{p})" for tool_name in ("Edit", "Write", "NotebookEdit")]
     deny += ["Bash(git push:*)", "Bash(gh:*)"]
     f = round_dir / "improver-settings.json"
-    f.write_text(json.dumps({"permissions": {"deny": deny}}, indent=2) + "\n")
+    f.write_text(json.dumps({"permissions": {"deny": deny}, "autoMemoryEnabled": False}, indent=2) + "\n")
     return f
 
 
-def bedrock_env():
-    """os.environ minus every credential but the Bedrock keys (the improver's and the project check's env)."""
-    return {k: v for k, v in os.environ.items() if k in BEDROCK_ENV or not SCRUB_ENV.match(k)}
+def model_env():
+    """os.environ minus every credential but the route's (the improver's and the project check's env):
+    the Bedrock keys on bedrock; on the subscription CLAUDE_CODE_OAUTH_TOKEN (when set) and no Bedrock
+    switch or model ids."""
+    if route() == "bedrock":
+        return {k: v for k, v in os.environ.items() if k in BEDROCK_ENV or not SCRUB_ENV.match(k)}
+    return {k: v for k, v in os.environ.items()
+            if (k == OAUTH_TOKEN or not SCRUB_ENV.match(k)) and not NOT_SUBSCRIPTION.match(k)}
 
 
 def on_bedrock(env):
     return env.get("CLAUDE_CODE_USE_BEDROCK") == "1" and bool(env.get("AWS_ACCESS_KEY_ID"))
 
 
+def bedrock_problem(env):
+    """Why a call on the bedrock route cannot run, or '' (always '' on the subscription)."""
+    if route() == "bedrock" and not on_bedrock(env):
+        return "Bedrock (HARNESS_MODEL_ACCESS=bedrock) needs CLAUDE_CODE_USE_BEDROCK=1 and AWS_ACCESS_KEY_ID"
+    return ""
+
+
+def sandbox_token_problem():
+    """Why the exam's sandboxed /work runs cannot use the subscription, or '' (always '' on bedrock, where
+    run_exam.py's own preflight checks the keys before any try)."""
+    if route() == "subscription" and not os.environ.get(OAUTH_TOKEN):
+        return (f"the exam on the subscription needs {OAUTH_TOKEN} (its sandboxes cannot read this machine's "
+                "login): run `claude setup-token` once and export the token it prints; "
+                "HARNESS_MODEL_ACCESS=bedrock runs it on paid Bedrock instead")
+    return ""
+
+
+def keychain_login(env):
+    """True when claude must use this machine's stored login: the subscription with no CLAUDE_CODE_OAUTH_TOKEN.
+    That login lives under the default config dir, so such a call cannot get a fresh CLAUDE_CONFIG_DIR."""
+    return route() == "subscription" and not env.get(OAUTH_TOKEN)
+
+
+# What fences a keychain-login call from the user's settings, CLAUDE.md, hooks, plugins and MCP servers
+# (with auto-memory off in its --settings) where a fresh CLAUDE_CONFIG_DIR cannot be used.
+KEYCHAIN_FENCE = ["--setting-sources", "project,local", "--strict-mcp-config"]
+
+
 def improver_env(round_dir, default):
-    env = bedrock_env()
+    env = model_env()
     env.update(HARNESS_LOOP_ROUND_DIR=str(round_dir), HARNESS_LOOP_HOME=str(HOME))
-    if default:
+    if default and not keychain_login(env):
         env["CLAUDE_CONFIG_DIR"] = str(round_dir / "claude-config")  # no user settings, memory or plugins
     return env
 
@@ -851,11 +928,13 @@ def improver_argv(args, msg, round_dir, proposals=None):
         return argv + [msg]
     return ["claude", "-p", "--model", "opus", "--permission-mode", "bypassPermissions",
             "--settings", str(improver_settings(round_dir, proposals)), "--max-budget-usd", f"{args.improver_budget_usd:.2f}",
+            *(KEYCHAIN_FENCE if keychain_login(model_env()) else []),
             "--output-format", "stream-json", "--verbose", msg]
 
 
 def run_improver(argv, wt, round_dir, env):
-    """Run the improver in its own process group; kill whatever it leaves behind. (exit, cost|None)."""
+    """Run the improver in its own process group; kill whatever it leaves behind.
+    (exit, cost|None, usage-limit message|None)."""
     with (round_dir / "improver-transcript.jsonl").open("w") as out, \
             (round_dir / "improver-stderr.txt").open("w") as err:
         proc = subprocess.Popen(argv, cwd=wt, env=env, stdout=out, stderr=err, start_new_session=True)
@@ -870,14 +949,11 @@ def run_improver(argv, wt, round_dir, env):
                 pass
             proc.wait()
     cost = None
-    for line in (round_dir / "improver-transcript.jsonl").read_text(errors="replace").splitlines():
-        try:
-            rec = json.loads(line)
-        except ValueError:
-            continue
+    events = json_events((round_dir / "improver-transcript.jsonl").read_text(errors="replace"))
+    for rec in events:
         if isinstance(rec, dict) and rec.get("type") == "result" and rec.get("total_cost_usd") is not None:
             cost = float(rec["total_cost_usd"])
-    return code, cost
+    return code, cost, rate_limit_reason(events)
 
 
 # ---- commands ----------------------------------------------------------------------------
@@ -913,12 +989,14 @@ def side_home_ok(side_home, addon):
 def cmd_round(args):
     default = not args.improver_cmd
     if default:
-        if not on_bedrock(os.environ):
-            die("the default improver runs on Bedrock only: set CLAUDE_CODE_USE_BEDROCK=1 and AWS_ACCESS_KEY_ID")
+        if bedrock_problem(os.environ):
+            die(f"the default improver: {bedrock_problem(os.environ)}")
         if args.improver_budget_usd > IMPROVER_MAX_USD:
             die(f"--improver-budget-usd is capped at ${IMPROVER_MAX_USD:.2f}")
     if bool(args.sidecheck) != bool(args.sidecheck_addon):
         die("--sidecheck and --sidecheck-addon go together")
+    if not args.no_screen and sandbox_token_problem():
+        die(f"refusing this round: {sandbox_token_problem()}")
     if args.sidecheck:
         side_home_ok(Path(args.sidecheck).resolve().parent / SIDE_HOME, Path(args.sidecheck_addon).resolve())
     private = private_patterns()
@@ -966,7 +1044,7 @@ def cmd_round(args):
             improver_settings(round_dir, prop)
         before, existing = snapshot(branch, base_run), existing_dirs()
         row["improver_cost_usd"] = "running"
-        code, cost = run_improver(argv, wt, round_dir, improver_env(round_dir, default))
+        code, cost, limit = run_improver(argv, wt, round_dir, improver_env(round_dir, default))
         changes = tampered(before, snapshot(branch, base_run))
         restore_state(before["state"])
         row["improver_cost_usd"] = None
@@ -975,6 +1053,8 @@ def cmd_round(args):
             book("improver", row["improver_cost_usd"], n, "" if cost is not None else "cost unknown: booked at cap")
         if changes:
             return finish("dropped", "tamper: " + "; ".join(changes))
+        if limit:
+            raise RateLimited(f"improver: {limit}")
         if code == "timeout":
             return finish("dropped", f"improver timed out after {IMPROVER_TIMEOUT_S}s")
 
@@ -1080,7 +1160,10 @@ def cmd_round(args):
             row["improver_cost_usd"] = args.improver_budget_usd if default else None
             if default:
                 book("improver", args.improver_budget_usd, n, "interrupted: booked at cap")
-        finish("error", f"{e.__class__.__name__}: {e}", keep_branch=row["cand_sha"] is not None)
+        if isinstance(e, RateLimited):  # main() exits RATE_LIMITED_EXIT
+            finish("paused", f"usage limit, run again once it resets: {e}", keep_branch=row["cand_sha"] is not None)
+        else:
+            finish("error", f"{e.__class__.__name__}: {e}", keep_branch=row["cand_sha"] is not None)
         raise
 
 
@@ -1108,6 +1191,8 @@ def cmd_monthly(args):
     if not queue:
         print("monthly: nothing queued")
         return
+    if sandbox_token_problem():
+        die(f"the monthly exam: {sandbox_token_problem()}")
     check_budget(args.budget_usd, "the monthly exam")
     git("fetch", "-q", "origin", "main")
     main_sha = git("rev-parse", "origin/main").strip()
@@ -1217,7 +1302,7 @@ def cmd_exam(args):
 
 def exam_restacked(args, main_sha, head, cand, post):
     """cmd_exam after the path gate: the free checks on cand (head restacked on main, None on a conflict),
-    written to the PR before Bedrock or the budget is asked for, then the paid screen."""
+    written to the PR before the model route or the budget is asked for, then the screen."""
     free = None
     if cand is None:
         free = "exam: stale, rebase the PR onto main"
@@ -1236,8 +1321,8 @@ def exam_restacked(args, main_sha, head, cand, post):
         die(f"PR #{args.pr}: {free.removeprefix('exam: ')} (main {main_sha[:7]})", code=1)
     if args.check_only:
         return
-    if not on_bedrock(os.environ):
-        die("the exam runs on Bedrock only: set CLAUDE_CODE_USE_BEDROCK=1 and AWS_ACCESS_KEY_ID")
+    if bedrock_problem(os.environ) or sandbox_token_problem():
+        die(f"the exam: {bedrock_problem(os.environ) or sandbox_token_problem()}")
     n, manifest = f"pr-{args.pr}", Path(args.tasks).resolve()
     base_run = find_base_run(main_sha, manifest)
     check_screen_budget(args.budget_usd, base_run)
@@ -1293,6 +1378,11 @@ def usd(text):
 
 def cmd_budget(args):
     spent = check_budget(args.est, args.what, code=1)
+    if route() == "subscription":
+        use = week_notional(read_jsonl(HOME / "spend.jsonl"), now())
+        print(f"budget: ok, subscription run (no money; the ${WEEKLY_BUDGET_USD:.2f} cap counts only paid runs, "
+              f"${spent:.2f} of it spent); subscription use in the last 7 days: ${use:.2f} notional")
+        return
     print(f"budget: ok, ${spent:.2f} spent in the last 7 days + ${args.est:.2f} <= ${WEEKLY_BUDGET_USD:.2f} weekly cap")
 
 
@@ -1303,7 +1393,7 @@ def cmd_book(args):
     if LOOP_KINDS.match(args.kind):
         die(f"book: kind {args.kind!r} is one the loop books itself; use another, e.g. --kind gardener")
     book(args.kind, args.usd, "gardener", args.note)
-    print(f"book: {args.kind} ${args.usd:.4f}")
+    print(f"book: {args.kind} ${args.usd:.4f}" + (" notional (subscription: $0 money)" if route() == "subscription" else ""))
 
 
 def main(argv=None):
@@ -1343,8 +1433,15 @@ def main(argv=None):
     bk.add_argument("--usd", type=usd, required=True, help="what the run cost, in USD")
     bk.add_argument("--note", default="", help="free text kept on the row (e.g. the report dir)")
     args = ap.parse_args(argv)
-    {"round": cmd_round, "monthly": cmd_monthly, "sync": cmd_sync, "exam": cmd_exam, "guard": cmd_guard,
-     "leak": cmd_leak, "budget": cmd_budget, "book": cmd_book}[args.cmd](args)
+    try:
+        route()
+    except ValueError as e:
+        die(str(e))
+    try:
+        {"round": cmd_round, "monthly": cmd_monthly, "sync": cmd_sync, "exam": cmd_exam, "guard": cmd_guard,
+         "leak": cmd_leak, "budget": cmd_budget, "book": cmd_book}[args.cmd](args)
+    except RateLimited as e:
+        die(f"paused: {e}; nothing fell back to a paid route, run again once the limit resets", code=RATE_LIMITED_EXIT)
 
 
 if __name__ == "__main__":

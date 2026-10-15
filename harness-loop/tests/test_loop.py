@@ -98,7 +98,7 @@ class LoopRepo:
         self.origin = self.tmp / "origin.git"
         run(GIT + ["init", "-q", "--bare", str(self.origin)], self.tmp)
         files = dict(BASE_FILES)
-        for rel in ("loop.py", "install_harness.py", "project_check.py", "exam/compare.py"):
+        for rel in ("loop.py", "install_harness.py", "project_check.py", "exam/compare.py", "exam/trial_export.py"):
             files[f"harness-loop/{rel}"] = (LOOP_DIR / rel).read_text()
         self.aw, self.base_sha = make_repo(self.tmp / "aw", files)
         run(GIT + ["remote", "add", "origin", str(self.origin)], self.aw)
@@ -124,6 +124,8 @@ class LoopRepo:
         self.env = {
             "PATH": f"{self.bin}{os.pathsep}{os.environ['PATH']}", "HOME": str(self.user),
             "HARNESS_LOOP_HOME": str(self.home), "FAKE_GH_LOG": str(self.gh_log),
+            # The money-cap tests need the paid route; Subscription below covers the default one.
+            "HARNESS_MODEL_ACCESS": "bedrock",
             "FAKE_EXAM_LOG": str(self.exam_log), "FAKE_EXAM_SPEC": json.dumps(SPEC_PASS),
             "LOOP_RUN_EXAM": f"{sys.executable} {FIXTURES / 'fake_run_exam.py'}",
             "PROJECT_CHECK_CLAUDE": f"{sys.executable} {FIXTURES / 'fake_claude.py'}",
@@ -307,6 +309,17 @@ class RoundOpensPR(LoopTestCase):
         """A main run of the same task ids in another set is not reused, whatever its manifest path."""
         # GIVEN a booked main run, WHEN the manifest's set changes and a round runs, THEN main is re-examined
         self.assert_fresh_main_after(manifest={"set": "other", "tasks": [{"id": "t1", "screen": True}]})
+
+    def test_main_run_from_the_other_model_route_is_not_reused(self):
+        """A main run made on the subscription is not reused by a Bedrock round (or the reverse): the model
+        ids differ, so pairing them would spend a whole candidate screen and then drop it for the mismatch."""
+        # GIVEN a booked main run made on the subscription route
+        self.r.base_run(env={"HARNESS_MODEL_ACCESS": "subscription"})
+        # WHEN a round runs on the bedrock route (the LoopRepo default)
+        p = self.r.round()
+        # THEN main is examined afresh on bedrock before the candidate
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertEqual(self.kinds(), ["baseline", "candidate"])
 
     def assert_stale_main_retired(self, env, field):
         """Book a main run made under other exam settings, run two rounds: drop, retire, re-run main."""
@@ -1218,6 +1231,180 @@ class RoundModes(LoopTestCase):
         self.assertEqual(p.returncode, 2)
         self.assertIn("Bedrock", p.stderr)
         self.assertEqual(self.r.history(), [])
+
+
+SUB = {"HARNESS_MODEL_ACCESS": "subscription", "CLAUDE_CODE_OAUTH_TOKEN": "oauth-test"}
+LIMIT = "You've hit your session limit \u00b7 resets 7:40pm (UTC)"
+
+
+class Subscription(LoopTestCase):
+    """The default model route: the Claude Code subscription books no money, keeps its notional cost, and a
+    usage limit pauses the round instead of failing it or falling back to a paid route."""
+
+    def spend_rows(self):
+        f = self.r.home / "spend.jsonl"
+        return [json.loads(line) for line in f.read_text().splitlines()] if f.is_file() else []
+
+    def fake_claude(self, *events):
+        """A `claude` on PATH that records its argv and env keys, prints `events` as stream-json and exits 0."""
+        fake = self.r.tmp / "fakebin"
+        fake.mkdir(exist_ok=True)
+        self.calls = self.r.tmp / "claude-calls.jsonl"
+        (fake / "claude").write_text(textwrap.dedent(f"""\
+            #!{sys.executable}
+            import json, os, sys
+            with open({str(self.calls)!r}, "a") as fh:
+                fh.write(json.dumps({{"argv": sys.argv[1:], "env": sorted(os.environ)}}) + "\\n")
+            for e in {list(events)!r}:
+                print(json.dumps(e))
+            """))
+        (fake / "claude").chmod(0o755)
+        return {"PATH": f"{fake}{os.pathsep}{self.r.env['PATH']}"}
+
+    def claude_calls(self):
+        return [json.loads(line) for line in self.calls.read_text().splitlines()] if self.calls.is_file() else []
+
+    def default_round(self, *extra, env=None):
+        return self.r.loop("round", "--tasks", str(self.r.manifest), "--no-screen", *extra, env=env)
+
+    def test_round_books_notional_cost_and_ignores_the_money_cap(self):
+        """
+        With the week's money cap already spent on paid runs, a screened subscription round still runs; each of
+        its rows books usd 0 with claude's cost kept as notional_usd, so the cap's money stays where it was.
+        """
+        # GIVEN the cap spent yesterday on a paid run
+        self.r.ledger((1, CAP))
+        # WHEN a screened stub round runs on the subscription (recorded project check, two fake runs at $10)
+        p = self.r.round(env={**SUB, "FAKE_CLAUDE_REPLY": str(FIXTURES / "project_check/clean.json")})
+        # THEN it reached a PR, booked no money, kept the notional costs, and the week's money is unchanged
+        self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+        self.assertEqual(self.r.history()[0]["outcome"], "queued")
+        rows = self.spend_rows()[1:]
+        self.assertEqual([(r["kind"], r["usd"], r["notional_usd"], r["route"]) for r in rows],
+                         [("project-check", 0.0, 0.0076, "subscription"), ("exam-baseline", 0.0, 10.0, "subscription"),
+                          ("exam-candidate", 0.0, 10.0, "subscription")])
+        self.assertEqual(loop.week_spent(self.spend_rows(), loop.now()), CAP)
+
+    def test_screened_round_without_token_is_refused_before_anything_runs(self):
+        """The exam's sandboxes cannot read the keychain login: no token, no round, and no switch to Bedrock."""
+        # GIVEN the subscription with Bedrock keys but no CLAUDE_CODE_OAUTH_TOKEN
+        env = {"HARNESS_MODEL_ACCESS": "subscription", "CLAUDE_CODE_USE_BEDROCK": "1", "AWS_ACCESS_KEY_ID": "x"}
+        # WHEN a screened round starts
+        p = self.r.round(env=env)
+        # THEN exit 2 naming `claude setup-token`, before the improver, an exam or a history row
+        self.assertEqual(p.returncode, 2, p.stdout + p.stderr)
+        self.assertIn("claude setup-token", p.stderr)
+        self.assertEqual((self.r.history(), self.r.exam_calls()), ([], []))
+
+    def test_no_screen_round_needs_no_token(self):
+        """A --no-screen round runs no sandbox, so the machine's login is enough."""
+        # GIVEN the subscription and no token / WHEN a stub --no-screen round runs
+        p = self.r.round("--no-screen", env={"HARNESS_MODEL_ACCESS": "subscription"})
+        # THEN it runs to checked
+        self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+        self.assertEqual(self.r.history()[0]["outcome"], "checked")
+
+    def test_default_improver_gets_no_paid_credential_and_books_notional(self):
+        """
+        With Bedrock keys in the env but no route set, the default improver's claude sees no AWS key or Bedrock
+        switch, keeps the stored login (no CLAUDE_CONFIG_DIR, the fence flags), and its cost is notional.
+        """
+        # GIVEN Bedrock keys, no route, no token, and a claude that reports $2.50
+        env = {"HARNESS_MODEL_ACCESS": "", "CLAUDE_CODE_USE_BEDROCK": "1", "AWS_ACCESS_KEY_ID": "x",
+               "AWS_SECRET_ACCESS_KEY": "y",
+               **self.fake_claude({"type": "result", "subtype": "success", "is_error": False, "result": "done",
+                                   "total_cost_usd": 2.5})}
+        # WHEN a default --no-screen round runs
+        self.default_round(env=env)
+        # THEN one claude call, on the stored login, fenced, and an improver row of $0 money and $2.50 notional
+        (call,) = self.claude_calls()
+        self.assertFalse({"AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "CLAUDE_CODE_USE_BEDROCK",
+                          "CLAUDE_CONFIG_DIR"} & set(call["env"]))
+        self.assertEqual(call["argv"][call["argv"].index("--setting-sources") + 1], "project,local")
+        (row,) = [r for r in self.spend_rows() if r["kind"] == "improver"]
+        self.assertEqual((row["usd"], row["notional_usd"], row["route"]), (0.0, 2.5, "subscription"))
+
+    def test_rate_limited_improver_pauses_the_round_with_no_fallback(self):
+        """
+        The improver hits the session limit: the round ends paused (exit 4), naming the limit, with no checks,
+        exam or PR, and claude ran exactly once, so nothing retried it on a paid route.
+        """
+        # GIVEN a claude that hits the session limit
+        env = {"CLAUDE_CODE_USE_BEDROCK": "1", "AWS_ACCESS_KEY_ID": "x", "HARNESS_MODEL_ACCESS": "subscription",
+               **self.fake_claude({"type": "assistant", "error": "rate_limit",
+                                   "message": {"content": [{"type": "text", "text": LIMIT}]}},
+                                  {"type": "result", "subtype": "success", "is_error": True, "result": LIMIT,
+                                   "total_cost_usd": 0.1})}
+        # WHEN a default round runs
+        p = self.default_round(env=env)
+        # THEN exit 4, one paused history row naming the limit, and no exam, gh call or second claude call
+        self.assertEqual(p.returncode, loop.RATE_LIMITED_EXIT, p.stdout + p.stderr)
+        self.assertIn("paused", p.stderr)
+        (row,) = self.r.history()
+        self.assertEqual(row["outcome"], "paused")
+        self.assertIn("session limit", row["reason"])
+        self.assertEqual((self.r.exam_calls(), self.r.gh_calls(), len(self.claude_calls())), ([], [], 1))
+
+    def test_rate_limited_project_check_pauses_the_round(self):
+        """A session limit in the project check pauses the round, not drops it as blocked."""
+        # GIVEN a project check reply that is the session limit
+        reply = self.r.tmp / "limit.json"
+        reply.write_text(json.dumps({"type": "result", "is_error": True, "result": LIMIT, "total_cost_usd": 0.02}))
+        # WHEN a stub --no-screen round runs on the subscription
+        p = self.r.round("--no-screen", env={"HARNESS_MODEL_ACCESS": "subscription", "FAKE_CLAUDE_REPLY": str(reply)})
+        # THEN exit 4 and a paused row, its notional cost booked
+        self.assertEqual(p.returncode, loop.RATE_LIMITED_EXIT, p.stdout + p.stderr)
+        self.assertEqual(self.r.history()[0]["outcome"], "paused")
+        self.assertIn("project check", self.r.history()[0]["reason"])
+        self.assertEqual([(r["kind"], r["notional_usd"]) for r in self.spend_rows()], [("project-check", 0.02)])
+
+    def test_rate_limited_exam_run_pauses_without_a_verdict_or_pr(self):
+        """
+        The candidate's screen run stops on a usage limit: no screen verdict, no PR (not even a draft), and the
+        round is paused, so a limit never reads as a screen fail.
+        """
+        # GIVEN the candidate's run hits the limit
+        env = {**SUB, "FAKE_EXAM_RATE_LIMITED": "candidate"}
+        # WHEN a screened stub round runs
+        p = self.r.round(env=env)
+        # THEN exit 4, paused, no screen recorded, no PR, both runs booked
+        self.assertEqual(p.returncode, loop.RATE_LIMITED_EXIT, p.stdout + p.stderr)
+        (row,) = self.r.history()
+        self.assertEqual((row["outcome"], row["screen"], row["pr"]), ("paused", None, None))
+        self.assertIn("exam-candidate run", row["reason"])
+        self.assertEqual([c for c in self.r.gh_calls() if c["args"][:2] == ["pr", "create"]], [])
+        self.assertEqual([r["kind"] for r in self.spend_rows()], ["project-check", "exam-baseline", "exam-candidate"])
+
+    def test_budget_always_fits_and_shows_notional_use(self):
+        """On the subscription `budget` never refuses (no money moves) and prints the week's notional use."""
+        # GIVEN the cap spent on paid runs and $5.70 of subscription use this week
+        self.r.ledger((1, CAP))
+        self.r.loop("book", "--kind", "gardener", "--usd", "5.7", env={"HARNESS_MODEL_ACCESS": "subscription"})
+        # WHEN asked for $999 on the subscription
+        p = self.r.loop("budget", "--est", "999", "--what", "gardener", env={"HARNESS_MODEL_ACCESS": "subscription"})
+        # THEN it fits and says the week's notional use
+        self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+        self.assertIn("subscription use in the last 7 days: $5.70 notional", p.stdout)
+
+    def test_book_writes_no_money_so_paid_budgets_ignore_it(self):
+        """A subscription book row is usd 0 with notional_usd, so a later paid run's budget does not count it."""
+        # GIVEN a $6 subscription gardener run booked
+        b = self.r.loop("book", "--kind", "gardener", "--usd", "6", env={"HARNESS_MODEL_ACCESS": "subscription"})
+        # WHEN a paid run asks for the whole cap
+        after = self.r.loop("budget", "--est", str(CAP), "--what", "gardener")
+        # THEN the row books no money, keeps the $6, and the paid ask still fits
+        self.assertEqual(b.returncode, 0, b.stdout + b.stderr)
+        (row,) = self.spend_rows()
+        self.assertEqual((row["usd"], row["notional_usd"], row["route"]), (0.0, 6.0, "subscription"))
+        self.assertEqual(after.returncode, 0, after.stdout + after.stderr)
+
+    def test_unknown_route_is_refused(self):
+        """A typo in HARNESS_MODEL_ACCESS never picks a route: exit 2 naming the variable."""
+        # GIVEN / WHEN a command under a bad route
+        p = self.r.loop("budget", "--est", "1", "--what", "x", env={"HARNESS_MODEL_ACCESS": "max"})
+        # THEN exit 2 naming it
+        self.assertEqual(p.returncode, 2)
+        self.assertIn("HARNESS_MODEL_ACCESS", p.stderr)
 
 
 class Budget(LoopTestCase):
@@ -2143,21 +2330,54 @@ class ScoresBlock(unittest.TestCase):
         self.assertEqual(fresh, "Idea: x\n\n" + loop.scores_block("l"))
 
 
+ALL_CREDENTIALS = {"AWS_ACCESS_KEY_ID": "a", "AWS_SECRET_ACCESS_KEY": "b", "ANTHROPIC_MODEL": "m",
+                   "CLAUDE_CODE_USE_BEDROCK": "1", "ANTHROPIC_API_KEY": "x", "CLAUDE_CODE_OAUTH_TOKEN": "x",
+                   "GH_TOKEN": "x", "AWS_ADMIN_ACCESS_KEY_ID": "x", "AWS_PROFILE": "x", "ANTHROPIC_BASE_URL": "x",
+                   "MAX_THINKING_TOKENS": "8000"}
+
+
 class ImproverEnv(unittest.TestCase):
     def test_env_keeps_bedrock_and_drops_other_credentials(self):
         """The improver gets the Bedrock keys and model names, and no other token, key or Anthropic credential."""
-        # GIVEN an environment with Bedrock vars and other credentials
-        env = {"AWS_ACCESS_KEY_ID": "a", "AWS_SECRET_ACCESS_KEY": "b", "ANTHROPIC_MODEL": "m",
-               "CLAUDE_CODE_USE_BEDROCK": "1", "ANTHROPIC_API_KEY": "x", "CLAUDE_CODE_OAUTH_TOKEN": "x",
-               "GH_TOKEN": "x", "AWS_ADMIN_ACCESS_KEY_ID": "x", "AWS_PROFILE": "x", "ANTHROPIC_BASE_URL": "x",
-               "MAX_THINKING_TOKENS": "8000"}
+        # GIVEN an environment on the bedrock route with Bedrock vars and other credentials
+        env = {**ALL_CREDENTIALS, "HARNESS_MODEL_ACCESS": "bedrock"}
         # WHEN the improver env is built
         with unittest.mock.patch.dict(os.environ, env, clear=True):
             out = loop.improver_env(Path("/tmp/r"), True)
-        # THEN only the Bedrock set survives, plus the loop's own vars
+        # THEN only the Bedrock set survives, plus the loop's own vars and a fresh config dir
         self.assertEqual({k for k in env if k in out},
                          {"AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "ANTHROPIC_MODEL", "CLAUDE_CODE_USE_BEDROCK",
-                          "MAX_THINKING_TOKENS"})
+                          "MAX_THINKING_TOKENS", "HARNESS_MODEL_ACCESS"})
+        self.assertEqual(out["CLAUDE_CONFIG_DIR"], "/tmp/r/claude-config")
+
+    def test_subscription_env_drops_every_paid_route_and_keeps_the_token(self):
+        """
+        On the subscription (no route set) the improver keeps CLAUDE_CODE_OAUTH_TOKEN and loses the AWS keys,
+        the Bedrock switch and Bedrock's model ids, any of which would send it to a paid route.
+        """
+        # GIVEN every credential and no HARNESS_MODEL_ACCESS
+        # WHEN the improver env is built
+        with unittest.mock.patch.dict(os.environ, ALL_CREDENTIALS, clear=True):
+            out = loop.improver_env(Path("/tmp/r"), True)
+        # THEN only the token and the harmless tuning var survive, with a fresh config dir (the token needs none)
+        self.assertEqual({k for k in ALL_CREDENTIALS if k in out}, {"CLAUDE_CODE_OAUTH_TOKEN", "MAX_THINKING_TOKENS"})
+        self.assertEqual(out["CLAUDE_CONFIG_DIR"], "/tmp/r/claude-config")
+
+    def test_keychain_login_keeps_the_config_dir_and_gets_the_fence(self):
+        """Without the token the improver must use the stored login: no CLAUDE_CONFIG_DIR, the fence flags instead."""
+        # GIVEN the subscription with no token
+        env = {k: v for k, v in ALL_CREDENTIALS.items() if k != "CLAUDE_CODE_OAUTH_TOKEN"}
+        with tempfile.TemporaryDirectory() as tmp, unittest.mock.patch.dict(os.environ, env, clear=True):
+            # WHEN the env and argv are built
+            out = loop.improver_env(Path(tmp), True)
+            args = loop.argparse.Namespace(improver_cmd=None, improver_budget_usd=10.0)
+            argv = loop.improver_argv(args, "msg", Path(tmp))
+            settings = json.loads((Path(tmp) / "improver-settings.json").read_text())
+        # THEN no config dir, the fence flags, and auto-memory off in its settings
+        self.assertNotIn("CLAUDE_CONFIG_DIR", out)
+        self.assertEqual(argv[argv.index("--setting-sources") + 1], "project,local")
+        self.assertIn("--strict-mcp-config", argv)
+        self.assertIs(settings["autoMemoryEnabled"], False)
 
 
 class LeakUnit(unittest.TestCase):

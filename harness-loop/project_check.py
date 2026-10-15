@@ -5,11 +5,12 @@
 
 Reads, from the git repo in the current directory, the lines added in <base>...<head>, the
 commit messages of <base>..<head> and the PR body (body-file, optional), and asks Sonnet
-(`claude -p --model sonnet`, Bedrock only, no tools) whether any line names or points to a
+(`claude -p --model sonnet` on loop.py's model route, no tools) whether any line names or points to a
 specific project, company, product, person, private repo, domain, table, internal tool or
 infra, or carries a rule that only makes sense for one project. Prints one JSON line
-{clean, hits: [{line, why}], cost_usd, called, error} and exits 0 when clean, 1 when blocked
-(`called`: a paid call was made, so a null cost_usd means unknown, not zero).
+{clean, hits: [{line, why}], cost_usd, called, rate_limited, error} and exits 0 when clean, 1 when
+blocked (`called`: a paid call was made, so a null cost_usd means unknown, not zero; `rate_limited`:
+claude's usage-limit message, which loop.py turns into a paused round, not a block).
 
 Fail closed: a git error, an oversized input, a failed call or a reply that is not the asked
 JSON all block (exit 1, with `error` set). loop.py's run_checks runs it on every round, next to
@@ -17,7 +18,8 @@ the word-list leak scan, which stays: that one is free and catches exact names; 
 catches a project-only rule that uses none of them.
 
 Env: PROJECT_CHECK_CLAUDE replaces the claude command (tests use a fake that replays recorded
-replies); with the default command the call needs CLAUDE_CODE_USE_BEDROCK=1 and Bedrock keys.
+replies). With the default command: the Claude Code subscription (this machine's login, or
+CLAUDE_CODE_OAUTH_TOKEN), or Bedrock keys and CLAUDE_CODE_USE_BEDROCK=1 when HARNESS_MODEL_ACCESS=bedrock.
 """
 import json
 import os
@@ -28,7 +30,8 @@ import sys
 import tempfile
 
 sys.dont_write_bytecode = True  # loop.py hashes harness-loop/: importing it must not leave a __pycache__
-from loop import PROJECT_CHECK_MAX_USD, bedrock_env, on_bedrock  # noqa: E402  the improver's env rule: Bedrock keys, nothing else
+from loop import (KEYCHAIN_FENCE, PROJECT_CHECK_MAX_USD, bedrock_problem, keychain_login,  # noqa: E402
+                  model_env, rate_limit_reason)  # the improver's env rule: the route's credential, nothing else
 
 DEFAULT_CLAUDE = ["claude", "-p", "--model", "sonnet", "--tools", "", "--output-format", "json",
                   "--no-session-persistence", "--max-budget-usd", f"{PROJECT_CHECK_MAX_USD:.2f}"]
@@ -107,15 +110,21 @@ def parse_reply(text):
 
 
 def call_model(prompt, state):
-    """The reply text. Sets state["called"] once a call starts and state["cost_usd"] when the reply says it.
-    Raises on any failure of the call itself."""
+    """The reply text. Sets state["called"] once a call starts, state["cost_usd"] when the reply says it and
+    state["rate_limited"] on a usage limit. Raises on any failure of the call itself."""
     fake = os.environ.get("PROJECT_CHECK_CLAUDE")
-    argv = shlex.split(fake) if fake else DEFAULT_CLAUDE
-    env = bedrock_env()
-    if not fake and not on_bedrock(env):
-        raise RuntimeError("the project check runs on Bedrock only: set CLAUDE_CODE_USE_BEDROCK=1 and AWS_ACCESS_KEY_ID")
+    argv = shlex.split(fake) if fake else list(DEFAULT_CLAUDE)
+    env = model_env()
+    if not fake and bedrock_problem(env):
+        raise RuntimeError(f"the project check: {bedrock_problem(env)}")
     with tempfile.TemporaryDirectory(prefix="project-check-") as tmp:
-        env["CLAUDE_CONFIG_DIR"] = os.path.join(tmp, "config")  # no user settings, memory, hooks or plugins
+        if keychain_login(env):  # the login lives under the default config dir: fence the call with flags
+            settings = os.path.join(tmp, "settings.json")
+            with open(settings, "w") as fh:
+                json.dump({"autoMemoryEnabled": False}, fh)
+            argv += [*KEYCHAIN_FENCE, "--settings", settings]
+        else:
+            env["CLAUDE_CONFIG_DIR"] = os.path.join(tmp, "config")  # no user settings, memory, hooks or plugins
         state["called"] = True
         p = subprocess.run(argv, input=prompt, capture_output=True, text=True, cwd=tmp, env=env, timeout=TIMEOUT_S)
     try:
@@ -124,6 +133,10 @@ def call_model(prompt, state):
         envelope = None
     if isinstance(envelope, dict) and envelope.get("total_cost_usd") is not None:
         state["cost_usd"] = float(envelope["total_cost_usd"])
+    limit = rate_limit_reason([envelope])
+    if limit:
+        state["rate_limited"] = limit
+        raise RuntimeError(f"usage limit: {limit[:200]}")
     if p.returncode != 0:
         why = envelope.get("result") if isinstance(envelope, dict) else None
         raise RuntimeError(f"claude exited {p.returncode}: {str(why or p.stderr or p.stdout).strip()[:200]}")
@@ -135,8 +148,8 @@ def call_model(prompt, state):
 
 
 def check(base, head, body=""):
-    """{clean, hits, cost_usd, called, error}; clean is False on any error (fail closed)."""
-    state = {"cost_usd": None, "called": False}
+    """{clean, hits, cost_usd, called, rate_limited, error}; clean is False on any error (fail closed)."""
+    state = {"cost_usd": None, "called": False, "rate_limited": None}
     try:
         diff = git("diff", "--no-color", "--no-ext-diff", "--no-textconv", "--text", f"{base}...{head}")
         message = git("log", "--format=%B", f"{base}..{head}")
