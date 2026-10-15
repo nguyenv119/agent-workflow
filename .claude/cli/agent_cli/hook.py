@@ -199,10 +199,9 @@ def _shim(text):
     return text
 
 
-def pretooluse(repeats_only=False):
+def pretooluse():
     """Read the PreToolUse JSON on stdin; print a deny or warn envelope, or nothing. Never raises.
-    repeats_only: print only the repeat warning, and nothing when a rule denies (a second install beside
-    a project's own rule hook)."""
+    With no rule firing, a shape on the repeats cache adds the repeated-shape warning (_repeat_rule)."""
     try:
         data = json.loads(sys.stdin.read())
         if data.get("tool_name") != "Bash":
@@ -211,18 +210,15 @@ def pretooluse(repeats_only=False):
         hits = evaluate(command, load_rules())
         deny = [r for r in hits if r["mode"] == "deny"]
         out = {"hookEventName": "PreToolUse"}
-        if deny and repeats_only:
-            return
         if deny:
             out.update(permissionDecision="deny", permissionDecisionReason=message(deny[0]))
         else:
-            notes = [] if repeats_only else [message(r) for r in hits]
-            rep = _repeat_rule(command, data)
-            if rep:
-                notes.append(message(rep))
-            if not notes:
+            # a rule that fires already names the command for this chore, so the repeat warning is only
+            # for commands no rule matches
+            hits = hits or [r for r in [_repeat_rule(command, data)] if r]
+            if not hits:
                 return
-            out["additionalContext"] = "\n".join(notes)
+            out["additionalContext"] = "\n".join(message(r) for r in hits)
         print(json.dumps({"hookSpecificOutput": out}))
     except Exception:  # fail open: a broken hook must never block a session
         return
@@ -259,7 +255,9 @@ def quiet(s):
 def _repeat_rule(command, data):
     """The repeated-shape warning as a warn rule, the first time this session (and agent) types a shape on
     <store>/repeats-cache.json; None otherwise. A quiet shape, no session id, a bypass comment, a missing or
-    bad cache, or a store the once-only mark cannot be written to all give None: never warn twice."""
+    bad cache, or a store the once-only mark cannot be written to all give None: never warn twice. The cache
+    is shared by every project on the store, so a shape this project covers by a command (its `commands:`
+    line, or agent-cli) is dropped here too."""
     try:
         from . import record, repeats, shape
         session = SESSION_CHARS.sub("_", str(data.get("session_id") or ""))[:128]
@@ -267,7 +265,7 @@ def _repeat_rule(command, data):
                 or REPEAT_ID in BYPASS.findall(command)):
             return None
         s = (shape.shape(command) or "")[:record.MAX_SHAPE]  # the recorder cuts stored shapes the same way
-        if not s or quiet(s):
+        if not s or quiet(s) or repeats.command_covered()(s):
             return None
         store = record.store_dir()
         hit = json.loads((store / repeats.CACHE).read_text()).get(s)
@@ -280,11 +278,7 @@ def _repeat_rule(command, data):
         if f.is_file() and mark in f.read_text(encoding="utf-8", errors="replace").splitlines():
             return None
         warned.mkdir(mode=0o700, exist_ok=True)
-        fd = os.open(str(f), os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600)
-        try:
-            os.write(fd, (mark + "\n").encode())
-        finally:
-            os.close(fd)
+        record.append_line(f, mark)
     except Exception:  # a missing or bad cache, or an unwritable store: no warning, and the rules still run
         return None
     return {"id": REPEAT_ID, "mode": "warn",
@@ -359,10 +353,7 @@ def register(sub):
                         "read a PreToolUse event on stdin; print a deny or warn envelope, or nothing",
                         ["echo '{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"ls\"}}' "
                          "| agent-cli hook pretooluse"])
-    p.add_argument("--repeats-only", action="store_true",
-                   help="print only the repeated-shape warning, nothing when a rule denies (for a second "
-                        "install beside a project's own hook)")
-    p.set_defaults(func=lambda a: pretooluse(a.repeats_only))
+    p.set_defaults(func=lambda a: pretooluse())
     p = core.subcommand(hs, "userpromptsubmit",
                         "read a UserPromptSubmit event on stdin; when the prompt asks for a command, print "
                         "context telling the agent to file a CLI bead, else nothing",

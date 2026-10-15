@@ -47,13 +47,19 @@ def record(event, now=None):
            "exit": exit_code, **fields(command, hook.load_rules())}
     d = store_dir()
     d.mkdir(parents=True, exist_ok=True, mode=0o700)
-    fd = os.open(str(d / f"{now:%Y-%m-%d}.jsonl"), os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600)
-    try:
-        os.write(fd, (json.dumps(row) + "\n").encode())
-    finally:
-        os.close(fd)
+    append_line(d / f"{now:%Y-%m-%d}.jsonl", json.dumps(row))
     _sweep(d, now)
     return row
+
+
+def append_line(path, line):
+    """Append line + newline to path (created 0600) with one os.write on an O_APPEND fd: atomic for a short
+    line, so parallel sessions never interleave."""
+    fd = os.open(str(path), os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600)
+    try:
+        os.write(fd, (line + "\n").encode())
+    finally:
+        os.close(fd)
 
 
 def fields(command, rules, prefixes=None, tools=None):
@@ -84,7 +90,8 @@ def _repo(cwd):
 
 
 def _sweep(d, now):
-    """Delete day files older than the keep window, once per UTC day (the marker holds the last day)."""
+    """Delete day files older than the keep window, and warned/ marks last written before it, once per UTC
+    day (the marker holds the last day)."""
     today = f"{now:%Y-%m-%d}"
     marker = d / MARKER
     try:

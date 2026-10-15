@@ -87,11 +87,10 @@ def run(a):
     if a.repo is not None:
         rows = [r for r in rows if r.get("repo") == a.repo]
     groups = group(rows)
-    words = set(core.names(core.rules_line("repeats", "commands") or "")) | {"agent-cli"}
-    lead = prefix_re(tuple(core.seam_lines("command-prefixes")))
+    by_command = command_covered()
     repeated = [(s, g) for s, g in groups.items() if len(g["sessions"]) >= a.min_sessions]
     listed = [(s, g) for s, g in repeated
-              if not (live and (2 * g["ruled"] >= g["count"] or command_word(s, lead) in words))]
+              if not (live and (2 * g["ruled"] >= g["count"] or by_command(s)))]
     listed.sort(key=lambda sg: (-len(sg[1]["sessions"]), -sg[1]["count"], sg[0]))
     if a.write_cache:
         cache = {s: {"sessions": len(g["sessions"]), "count": g["count"]} for s, g in listed}
@@ -210,6 +209,14 @@ def group(rows):
             g["failed"] += r["exit"] != 0
         g["ruled"] += bool(r.get("rules") or r.get("bypassed"))
     return groups
+
+
+def command_covered():
+    """A test: is a shape's command word agent-cli or a name on this project's `commands:` line under
+    `## repeats` (read once, here)? The warning hook asks it again at read time: the cache is shared."""
+    words = set(core.names(core.rules_line("repeats", "commands") or "")) | {"agent-cli"}
+    lead = prefix_re(tuple(core.seam_lines("command-prefixes")))
+    return lambda s: command_word(s, lead) in words
 
 
 def command_word(s, lead):

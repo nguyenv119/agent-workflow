@@ -480,14 +480,14 @@ class RepeatCase(HookCase):
         self.store.mkdir(exist_ok=True)
         (self.store / "repeats-cache.json").write_text(cache if isinstance(cache, str) else json.dumps(cache))
 
-    def ask(self, command, session="live1", agent=None, env=None, project=None, args=()):
+    def ask(self, command, session="live1", agent=None, env=None, project=None):
         """The pretooluse hook's decision for command typed in session (and agent)."""
         event = {"hook_event_name": "PreToolUse", "tool_name": "Bash", "tool_input": {"command": command}}
         if session is not None:
             event["session_id"] = session
         if agent:
             event["agent_id"] = agent
-        p = agent_cli(project or self.p, "hook", "pretooluse", *args, stdin=json.dumps(event),
+        p = agent_cli(project or self.p, "hook", "pretooluse", stdin=json.dumps(event),
                       env={"PATH": self.bin + os.pathsep + os.environ["PATH"], **self.env, **(env or {})})
         return self.decision(p)
 
@@ -559,19 +559,41 @@ class RepeatWarning(RepeatCase):
         self.assertNotIn("hand-written", json.dumps(out))
         self.assertFalse((self.store / "warned").exists())
 
-    def test_a_warn_rule_and_the_repeat_warning_show_together(self):
-        """A warn rule's message and the repeat warning share one additionalContext, rule first."""
+    def test_a_firing_warn_rule_replaces_the_repeat_warning(self):
+        """When a warn rule fires, its message is the whole context: the rule already names the command for
+        this chore, so "propose a command" would contradict it."""
         # GIVEN a project warn rule on the chore, and the chore cached by hand
         rule = [{"id": "deploy-hint", "match": "{CMD}deploy-tool\\b", "mode": "warn", "message": "use ship"}]
         p = make_project(self.tmp / "warn", dict(REPEAT_SEAMS, **{"pretooluse-rules.json": json.dumps(rule)}))
         self.write_cache({CHORE_SHAPE: {"sessions": 4, "count": 6}})
-        # WHEN the chore is typed
-        out = self.ask(CHORE, project=p)
-        # THEN both messages are there, one per line
-        lines = out["additionalContext"].splitlines()
-        self.assertEqual(len(lines), 2, lines)
-        self.assertIn("use ship", lines[0])
-        self.assertIn("hand-written 6 times across 4 sessions", lines[1])
+        # WHEN the chore is typed there, and (control) in a project without the rule
+        ruled = self.ask(CHORE, project=p)
+        plain = self.ask(CHORE, session="live2")
+        # THEN the ruled project gets the rule line alone, and the control gets the repeat warning
+        self.assertEqual(len(ruled["additionalContext"].splitlines()), 1)
+        self.assertIn("use ship", ruled["additionalContext"])
+        self.assertNotIn("hand-written", ruled["additionalContext"])
+        self.assertIn("hand-written 6 times across 4 sessions", plain["additionalContext"])
+
+    def test_a_shape_this_project_covers_by_a_command_is_silent(self):
+        """A cached shape whose command is on this project's `commands:` line (or agent-cli) never warns.
+
+        The store and its cache are shared by every project, and the cache was filtered with the
+        `commands:` line of whichever project's session started last; another project's list must not
+        tell this project to wrap a command it already has.
+        """
+        # GIVEN a cache (written elsewhere) holding a shape of this project's own CLI and one of agent-cli
+        own = make_project(self.tmp / "own", REPEAT_SEAMS)
+        (own / ".claude/project-rules.md").write_text("## repeats\ncommands: deploy-tool\n")
+        self.write_cache({CHORE_SHAPE: {"sessions": 4, "count": 6},
+                          "agent-cli wt <arg>": {"sessions": 4, "count": 6}})
+        # WHEN both are typed in that project, and the chore in one without the line (control)
+        own_cli = self.ask(CHORE, project=own)
+        agent = self.ask("wrapx agent-cli wt list", project=own)
+        control = self.ask(CHORE)
+        # THEN the covered ones are silent and the control warns
+        self.assertEqual((own_cli, agent), (None, None))
+        self.assertIn("hand-written 6 times", control["additionalContext"])
 
     def test_a_bad_cache_is_silent_and_rule_warnings_still_show(self):
         """A missing, unparseable or wrong-typed cache gives no repeat warning and never drops a rule's warning.
@@ -629,21 +651,6 @@ class RepeatWarning(RepeatCase):
         # THEN exactly one file exists, directly inside warned/
         files = [f for f in self.tmp.rglob("*") if f.is_file() and "escape" in f.name]
         self.assertEqual([f.parent for f in files], [self.store / "warned"])
-
-    def test_repeats_only_skips_rule_messages_but_still_yields_to_a_deny(self):
-        """--repeats-only (a second install beside a project's own hook) prints only the repeat warning,
-        and nothing when a rule denies, so the two hooks never show a rule twice."""
-        rule = [{"id": "deploy-hint", "match": "{CMD}deploy-tool\\b", "mode": "warn", "message": "use ship"}]
-        p = make_project(self.tmp / "ro", dict(REPEAT_SEAMS, **{"pretooluse-rules.json": json.dumps(rule)}))
-        self.write_cache({CHORE_SHAPE: {"sessions": 4, "count": 6},
-                          "git worktree <arg> -b <v> <path>": {"sessions": 5, "count": 9}})
-        # WHEN the warned chore and the denied command go through with --repeats-only
-        warned = self.ask(CHORE, project=p, args=("--repeats-only",))
-        denied = self.ask("git worktree add -b x ../x", project=p, args=("--repeats-only",))
-        # THEN the first carries only the repeat line, the second prints nothing
-        self.assertEqual(len(warned["additionalContext"].splitlines()), 1)
-        self.assertIn("hand-written 6 times", warned["additionalContext"])
-        self.assertIsNone(denied)
 
     def test_five_thousand_shape_cache_stays_well_inside_the_timeout(self):
         """With a 5,000-shape cache the hook answers in under 5 s (its settings timeout), warning included.
