@@ -596,7 +596,8 @@ class RepeatWarning(RepeatCase):
         self.assertIn("hand-written 6 times", control["additionalContext"])
 
     def test_a_bad_cache_is_silent_and_rule_warnings_still_show(self):
-        """A missing, unparseable or wrong-typed cache gives no repeat warning and never drops a rule's warning.
+        """A missing, unparseable or wrong-typed cache gives no repeat warning (the plain project), and a rule's
+        warning is unaffected by it (the ruled project, where a firing rule means the cache is not consulted).
 
         The cache is written by a background SessionStart run that can be killed mid-way on an old
         install; a broken cache must cost nothing.
