@@ -40,4 +40,7 @@ scan-dirs: <dir with eval or helper scripts>, <another dir>
 ```
 ## repeats
 commands: <project cli>, <another cli>
+cli-phrases: <one regex for the user's own "make this a command" phrasing>
 ```
+
+`cli-phrases:` is optional too: the UserPromptSubmit hook already knows "should be a CLI", "make this a command", "turn this into a CLI" and "we keep typing this", and adds this regex (case-insensitive) to them.

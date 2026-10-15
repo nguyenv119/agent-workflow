@@ -36,6 +36,26 @@
             "command": "[ -x \"$CLAUDE_PROJECT_DIR/.claude/bin/agent-cli\" ] && [ -n \"$CLAUDE_ENV_FILE\" ] && \"$CLAUDE_PROJECT_DIR/.claude/bin/agent-cli\" self env >> \"$CLAUDE_ENV_FILE\"; exit 0"
           }
         ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "timeout": 5,
+            "command": "[ -x \"$CLAUDE_PROJECT_DIR/.claude/bin/agent-cli\" ] && \"$CLAUDE_PROJECT_DIR/.claude/bin/agent-cli\" repeats --write-cache --since 14d >/dev/null 2>&1; exit 0"
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "timeout": 5,
+            "command": "[ -x \"$CLAUDE_PROJECT_DIR/.claude/bin/agent-cli\" ] && \"$CLAUDE_PROJECT_DIR/.claude/bin/agent-cli\" hook userpromptsubmit 2>/dev/null; exit 0"
+          }
+        ]
       }
     ],
     "PreToolUse": [

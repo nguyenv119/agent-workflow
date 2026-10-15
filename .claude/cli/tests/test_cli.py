@@ -27,6 +27,7 @@ EXIT_HEADER = "Exit codes (every agent-cli command):"
 NOT_READ = {"hook pretooluse": "a hook: stdout is Claude Code's hook protocol, not ours",
             "hook posttooluse": "a hook: records a command shape, prints nothing",
             "hook posttoolusefailure": "a hook: records a command shape, prints nothing",
+            "hook userpromptsubmit": "a hook: stdout is Claude Code's hook protocol, not ours",
             "eval init": "writes a scaffold", "pr land": "merges a PR"}
 
 

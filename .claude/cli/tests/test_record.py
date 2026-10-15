@@ -182,6 +182,25 @@ class Recorder(TmpCase):
         record.record(event("ls"), now=NOW + dt.timedelta(days=1))
         self.assertFalse(late.exists())
 
+    def test_sweep_deletes_old_warned_once_marks(self):
+        """The daily sweep also deletes <store>/warned/ files (the repeat warning's once-per-session marks)
+        last written before the keep window; newer ones stay.
+
+        One file per session would otherwise pile up forever.
+        """
+        # GIVEN a mark last written 50 days ago and one written yesterday
+        warned = self.store / "warned"
+        warned.mkdir(parents=True)
+        old, recent = warned / "old-session.txt", warned / "new-session.txt"
+        for f, days in ((old, 50), (recent, 1)):
+            f.write_text("[]\n")
+            t = (NOW - dt.timedelta(days=days)).timestamp()
+            os.utime(f, (t, t))
+        # WHEN an event is recorded
+        record.record(event("ls"), now=NOW)
+        # THEN the old mark is gone and the recent one stays
+        self.assertEqual((old.exists(), recent.exists()), (False, True))
+
     def test_keep_days_comes_from_the_env(self):
         """AGENT_CLI_SHAPES_KEEP_DAYS sets the window (5 here deletes a 10-day-old file).
 

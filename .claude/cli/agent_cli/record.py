@@ -6,7 +6,8 @@ O_APPEND fd (atomic for a line this short). `rules` = ids of the active hook rul
 command, computed in memory, so a report can tell covered shapes from uncovered ones without the raw
 text; `bypassed` = the ids of rules that match but were skipped by `# agent-cli: allow <id>` (a deny
 rule's chore is only ever recorded when bypassed). Day files older than AGENT_CLI_SHAPES_KEEP_DAYS
-(default 45) are deleted, at most once a day.
+(default 45) are deleted, at most once a day, and so are the repeat warning's <store>/warned/ marks
+last written before that.
 """
 import datetime as dt
 import json
@@ -46,13 +47,19 @@ def record(event, now=None):
            "exit": exit_code, **fields(command, hook.load_rules())}
     d = store_dir()
     d.mkdir(parents=True, exist_ok=True, mode=0o700)
-    fd = os.open(str(d / f"{now:%Y-%m-%d}.jsonl"), os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600)
-    try:
-        os.write(fd, (json.dumps(row) + "\n").encode())
-    finally:
-        os.close(fd)
+    append_line(d / f"{now:%Y-%m-%d}.jsonl", json.dumps(row))
     _sweep(d, now)
     return row
+
+
+def append_line(path, line):
+    """Append line + newline to path (created 0600) with one os.write on an O_APPEND fd: atomic for a short
+    line, so parallel sessions never interleave."""
+    fd = os.open(str(path), os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600)
+    try:
+        os.write(fd, (line + "\n").encode())
+    finally:
+        os.close(fd)
 
 
 def fields(command, rules, prefixes=None, tools=None):
@@ -83,7 +90,8 @@ def _repo(cwd):
 
 
 def _sweep(d, now):
-    """Delete day files older than the keep window, once per UTC day (the marker holds the last day)."""
+    """Delete day files older than the keep window, and warned/ marks last written before it, once per UTC
+    day (the marker holds the last day)."""
     today = f"{now:%Y-%m-%d}"
     marker = d / MARKER
     try:
@@ -96,14 +104,23 @@ def _sweep(d, now):
         keep = int(os.environ.get("AGENT_CLI_SHAPES_KEEP_DAYS") or KEEP_DAYS)
     except ValueError:
         keep = KEEP_DAYS
-    cutoff = f"{now - dt.timedelta(days=max(keep, 1)):%Y-%m-%d}"
-    for f in d.iterdir():
-        m = DAY_FILE.fullmatch(f.name)
-        if m and m[1] < cutoff:
-            try:
-                f.unlink()
-            except FileNotFoundError:  # another session's sweep got it first
-                pass
+    cutoff = now - dt.timedelta(days=max(keep, 1))
+    day = f"{cutoff:%Y-%m-%d}"
+    old = [f for f in d.iterdir() if (m := DAY_FILE.fullmatch(f.name)) and m[1] < day]
+    if (d / "warned").is_dir():  # the repeat warning's once-per-session marks (hook.py), by last write
+        old += [f for f in (d / "warned").iterdir() if _mtime(f) < cutoff.timestamp()]
+    for f in old:
+        try:
+            f.unlink()
+        except FileNotFoundError:  # another session's sweep got it first
+            pass
+
+
+def _mtime(f):
+    try:
+        return f.stat().st_mtime
+    except FileNotFoundError:  # deleted since the listing: nothing to sweep
+        return float("inf")
 
 
 def hook_verb(event_name):

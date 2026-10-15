@@ -5,13 +5,14 @@ import re
 import shutil
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
-from helpers import CLAUDE, CORPUS, agent_cli, bash_event, corpus_entries, make_project
+from helpers import CLAUDE, CORPUS, agent_cli, bash_event, corpus_entries, make_project, post_event
 
 sys.path.insert(0, str(CLAUDE / "cli"))
-from agent_cli import hook, hook_rules  # noqa: E402
+from agent_cli import hook, hook_rules, shape  # noqa: E402
 
 VERDICT = "agent-cli-hand-verdict"
 WT_RULE = json.dumps([{"id": "test-wt", "match": r"{CMD}git\s+worktree\s+add\b", "mode": "deny",
@@ -449,6 +450,336 @@ class AllowCorpus(unittest.TestCase):
         sys.stderr.write(f"\nallow corpus: {allowed}/{len(entries)} allowed\n")
         self.assertEqual(allowed, len(entries))
         self.assertGreaterEqual(len(entries), 30)
+
+
+REPEAT_SEAMS = {"command-prefixes": "wrapx\nwrapx raw\n"}  # a made-up wrapper word, never a real one
+CHORE = "deploy-tool push --env staging"  # typed as PreToolUse sees it; the recorder saw it wrapped
+CHORE_SHAPE = "deploy-tool <arg> --env <v>"
+
+
+class RepeatCase(HookCase):
+    """A project with the wrapper seam and a shape store in a temp dir, seeded through the real hook verb."""
+
+    def setUp(self):
+        super().setUp()
+        self.p = make_project(self.tmp / "rep", REPEAT_SEAMS)
+        self.bin = str(self.p / ".claude/bin")
+        self.store = self.tmp / "shapes"
+        self.env = {"AGENT_CLI_SHAPES_DIR": str(self.store)}
+
+    def seed(self, command, sessions=3, project=None):
+        """Record command from `sessions` distinct sessions via `hook posttooluse`, then write the cache."""
+        for i in range(sessions):
+            r = agent_cli(project or self.p, "hook", "posttooluse", env=self.env,
+                          stdin=json.dumps(post_event(command, session=f"seed{i}", cwd=None)))
+            self.assertEqual(r.returncode, 0, r.stderr)
+        r = agent_cli(project or self.p, "repeats", "--since", "14d", "--write-cache", env=self.env)
+        self.assertEqual(r.returncode, 0, r.stderr)
+
+    def write_cache(self, cache):
+        self.store.mkdir(exist_ok=True)
+        (self.store / "repeats-cache.json").write_text(cache if isinstance(cache, str) else json.dumps(cache))
+
+    def ask(self, command, session="live1", agent=None, env=None, project=None):
+        """The pretooluse hook's decision for command typed in session (and agent)."""
+        event = {"hook_event_name": "PreToolUse", "tool_name": "Bash", "tool_input": {"command": command}}
+        if session is not None:
+            event["session_id"] = session
+        if agent:
+            event["agent_id"] = agent
+        p = agent_cli(project or self.p, "hook", "pretooluse", stdin=json.dumps(event),
+                      env={"PATH": self.bin + os.pathsep + os.environ["PATH"], **self.env, **(env or {})})
+        return self.decision(p)
+
+
+class RepeatWarning(RepeatCase):
+    def test_cached_shape_warns_once_per_session_then_is_silent(self):
+        """A shape on the repeats cache gets the warning (counts, the skill, the bypass) once per session.
+
+        The recorder saw the command after the wrapper rewrite and PreToolUse sees it as typed; the seam
+        strips the wrapper, so both give one shape. Once per session: a warning on every run is noise
+        the agent learns to skip.
+        """
+        # GIVEN the chore recorded wrapped in 3 sessions and the cache written
+        self.seed("wrapx " + CHORE)
+        # WHEN a new session types it unwrapped twice, and another session types it once
+        first = self.ask(CHORE)
+        again = self.ask("deploy-tool push --env prod")
+        other = self.ask(CHORE, session="live2")
+        # THEN the first run of each session warns, with no decision; the repeat in a session is silent
+        self.assertNotIn("permissionDecision", first)
+        text = first["additionalContext"]
+        self.assertIn(f"`{CHORE_SHAPE}` was hand-written 3 times across 3 sessions", text)
+        self.assertIn("propose a command (cli-for-agents skill", text)
+        self.assertIn(".claude/skills/cli-for-agents/SKILL.md", text)
+        self.assertIn("(bypass: append  # agent-cli: allow repeated-shape)", text)
+        self.assertIsNone(again)
+        self.assertEqual(other["additionalContext"], text)
+
+    def test_a_subagent_gets_its_own_warning(self):
+        """A subagent in the same session (another agent_id) is warned again; it never saw the parent's."""
+        # GIVEN a cached chore, already warned to the main agent of session live1
+        self.seed(CHORE)
+        self.assertIsNotNone(self.ask(CHORE))
+        # WHEN a subagent of that session types it, twice
+        sub = self.ask(CHORE, agent="agent-7")
+        sub_again = self.ask(CHORE, agent="agent-7")
+        # THEN it is warned once
+        self.assertIn("hand-written 3 times", sub["additionalContext"])
+        self.assertIsNone(sub_again)
+
+    def test_uncached_shape_is_silent(self):
+        """A shape the cache does not hold gets nothing: the warning is for repeats, not every command."""
+        # GIVEN a cache holding only the chore
+        self.seed(CHORE)
+        # WHEN another command is typed
+        # THEN nothing is printed
+        self.assertIsNone(self.ask("deploy-tool push --tag v1"))
+
+    def test_a_shape_in_two_sessions_is_not_cached_and_stays_silent(self):
+        """Control on the seed: below 3 sessions the shape is not a repeat, so the same command is silent."""
+        # GIVEN the chore recorded in only 2 sessions
+        self.seed(CHORE, sessions=2)
+        # WHEN it is typed
+        # THEN nothing is printed
+        self.assertIsNone(self.ask(CHORE))
+
+    def test_denied_command_shows_the_deny_not_the_repeat_warning(self):
+        """When a rule denies, the reason is the rule's message only, and the session is not marked.
+
+        The deny already names the command to use; a second message would compete with it.
+        """
+        # GIVEN a cache that (by hand) holds the shape of a command the built-in worktree rule denies
+        self.write_cache({"git worktree <arg> -b <v> <path>": {"sessions": 5, "count": 9}})
+        # WHEN the denied command is typed
+        out = self.ask("git worktree add -b x ../x")
+        # THEN it is denied with the rule's message, no repeat text, and nothing marked as warned
+        self.assertEqual(out["permissionDecision"], "deny")
+        self.assertIn("agent-cli wt new", out["permissionDecisionReason"])
+        self.assertNotIn("hand-written", json.dumps(out))
+        self.assertFalse((self.store / "warned").exists())
+
+    def test_a_firing_warn_rule_replaces_the_repeat_warning(self):
+        """When a warn rule fires, its message is the whole context: the rule already names the command for
+        this chore, so "propose a command" would contradict it."""
+        # GIVEN a project warn rule on the chore, and the chore cached by hand
+        rule = [{"id": "deploy-hint", "match": "{CMD}deploy-tool\\b", "mode": "warn", "message": "use ship"}]
+        p = make_project(self.tmp / "warn", dict(REPEAT_SEAMS, **{"pretooluse-rules.json": json.dumps(rule)}))
+        self.write_cache({CHORE_SHAPE: {"sessions": 4, "count": 6}})
+        # WHEN the chore is typed there, and (control) in a project without the rule
+        ruled = self.ask(CHORE, project=p)
+        plain = self.ask(CHORE, session="live2")
+        # THEN the ruled project gets the rule line alone, and the control gets the repeat warning
+        self.assertEqual(len(ruled["additionalContext"].splitlines()), 1)
+        self.assertIn("use ship", ruled["additionalContext"])
+        self.assertNotIn("hand-written", ruled["additionalContext"])
+        self.assertIn("hand-written 6 times across 4 sessions", plain["additionalContext"])
+
+    def test_a_shape_this_project_covers_by_a_command_is_silent(self):
+        """A cached shape whose command is on this project's `commands:` line (or agent-cli) never warns.
+
+        The store and its cache are shared by every project, and the cache was filtered with the
+        `commands:` line of whichever project's session started last; another project's list must not
+        tell this project to wrap a command it already has.
+        """
+        # GIVEN a cache (written elsewhere) holding a shape of this project's own CLI and one of agent-cli
+        own = make_project(self.tmp / "own", REPEAT_SEAMS)
+        (own / ".claude/project-rules.md").write_text("## repeats\ncommands: deploy-tool\n")
+        self.write_cache({CHORE_SHAPE: {"sessions": 4, "count": 6},
+                          "agent-cli wt <arg>": {"sessions": 4, "count": 6}})
+        # WHEN both are typed in that project, and the chore in one without the line (control)
+        own_cli = self.ask(CHORE, project=own)
+        agent = self.ask("wrapx agent-cli wt list", project=own)
+        control = self.ask(CHORE)
+        # THEN the covered ones are silent and the control warns
+        self.assertEqual((own_cli, agent), (None, None))
+        self.assertIn("hand-written 6 times", control["additionalContext"])
+
+    def test_a_bad_cache_is_silent_and_rule_warnings_still_show(self):
+        """A missing, unparseable or wrong-typed cache gives no repeat warning (the plain project), and a rule's
+        warning is unaffected by it (the ruled project, where a firing rule means the cache is not consulted).
+
+        The cache is written by a background SessionStart run that can be killed mid-way on an old
+        install; a broken cache must cost nothing.
+        """
+        rule = [{"id": "deploy-hint", "match": "{CMD}deploy-tool\\b", "mode": "warn", "message": "use ship"}]
+        p = make_project(self.tmp / "bad", dict(REPEAT_SEAMS, **{"pretooluse-rules.json": json.dumps(rule)}))
+        for label, cache in (("missing", None), ("not json", "{trunc"), ("a list", "[]"),
+                             ("no counts", json.dumps({CHORE_SHAPE: {}})),
+                             ("string counts", json.dumps({CHORE_SHAPE: "x"}))):
+            with self.subTest(cache=label):
+                # GIVEN that cache
+                shutil.rmtree(self.store, ignore_errors=True)
+                if cache is not None:
+                    self.write_cache(cache)
+                # WHEN the chore is typed (as plain, and with the warn rule's project)
+                plain = self.ask(CHORE, session=f"bad-{len(label)}")
+                ruled = self.ask(CHORE, session=f"bad-r{len(label)}", project=p)
+                # THEN no repeat warning, and the rule's warning alone
+                self.assertIsNone(plain)
+                self.assertEqual(ruled["additionalContext"].splitlines(), [ruled["additionalContext"]])
+                self.assertIn("use ship", ruled["additionalContext"])
+
+    def test_bypass_comment_kill_switch_and_missing_session_are_silent(self):
+        """`# agent-cli: allow repeated-shape` and AGENT_CLI_HOOKS=off silence it; with no session id there
+        is no way to warn only once, so it stays silent rather than warn on every run."""
+        # GIVEN a cached chore
+        self.seed(CHORE)
+        # WHEN it is typed with the bypass, with the kill switch, and with no session id
+        bypassed = self.ask(CHORE + "  # agent-cli: allow repeated-shape", session="b1")
+        off = self.ask(CHORE, session="b2", env={"AGENT_CLI_HOOKS": "off"})
+        no_session = self.ask(CHORE, session=None)
+        # THEN all three print nothing, and the control in a fresh session still warns
+        self.assertEqual((bypassed, off, no_session), (None, None, None))
+        self.assertIsNotNone(self.ask(CHORE, session="b3"))
+
+    def test_an_unwritable_store_is_silent(self):
+        """When the warned-once mark cannot be written the hook says nothing, rather than warn every run."""
+        # GIVEN a cached chore in a store dir that refuses writes
+        self.seed(CHORE)
+        self.store.chmod(0o500)
+        self.addCleanup(self.store.chmod, 0o700)
+        # WHEN it is typed
+        # THEN nothing is printed
+        self.assertIsNone(self.ask(CHORE))
+
+    def test_session_id_cannot_write_outside_the_warned_dir(self):
+        """A session id with `/` or `..` is flattened to one file name inside <store>/warned/."""
+        # GIVEN a cached chore
+        self.seed(CHORE)
+        # WHEN a session id that is a path is used
+        self.assertIsNotNone(self.ask(CHORE, session="../../escape"))
+        # THEN exactly one file exists, directly inside warned/
+        files = [f for f in self.tmp.rglob("*") if f.is_file() and "escape" in f.name]
+        self.assertEqual([f.parent for f in files], [self.store / "warned"])
+
+    def test_five_thousand_shape_cache_stays_well_inside_the_timeout(self):
+        """With a 5,000-shape cache the hook answers in under 5 s (its settings timeout), warning included.
+
+        A hook past its timeout is killed; on every Bash call that would add seconds and lose the warning.
+        """
+        # GIVEN a cache of 5,000 shapes plus the chore
+        cache = {f"tool{i} <arg> --flag{i % 50} <v>": {"sessions": 3 + i % 7, "count": 3 + i} for i in range(5000)}
+        cache[CHORE_SHAPE] = {"sessions": 3, "count": 3}
+        self.write_cache(cache)
+        # WHEN the chore is typed
+        t0 = time.monotonic()
+        out = self.ask(CHORE)
+        took = time.monotonic() - t0
+        # THEN it warns, inside the timeout
+        sys.stderr.write(f"\npretooluse with a 5,000-shape cache: {took:.2f}s\n")
+        self.assertIn("hand-written 3 times", out["additionalContext"])
+        self.assertLess(took, 5)
+
+
+class QuietShapes(RepeatCase):
+    def test_generic_read_shapes_never_warn(self):
+        """Shapes built only from generic reads (cat, sed -n, grep, head, git status/diff, inline python)
+        never warn, even when cached: they top the repeats list but carry no chore a command could wrap."""
+        quiet = {"sed -n <n> <path>": "sed -n 1,20p src/a.py", "grep -n <str> <path> | head <n>": "grep -n 'x' src/a.py | head -5",
+                 "python3 - <heredoc>": "python3 - <<'EOF'\nprint(1)\nEOF", "git status": "git status",
+                 "python3 -c <str>; echo <arg>": "python3 -c 'print(1)'; echo done",
+                 "git diff <path> -- <path>": "git diff a/b -- c/d"}
+        loud = {"python3 <path>/report.py --day <n>": "python3 tools/report.py --day 3",
+                "cat <path> | deploy-tool <arg>": "cat a/b | deploy-tool push"}
+        # GIVEN every one of those shapes cached
+        self.write_cache({s: {"sessions": 9, "count": 40} for s in {**quiet, **loud}})
+        for i, (s, cmd) in enumerate({**quiet, **loud}.items()):
+            with self.subTest(shape=s):
+                # WHEN its command is typed (the test checks the hook shaped it as cached)
+                self.assertEqual(shape.shape(cmd, (), ()), s)
+                out = self.ask(cmd, session=f"q{i}")
+                # THEN reads are silent and a pipeline with a real tool, or a named script, warns
+                if s in quiet:
+                    self.assertIsNone(out)
+                else:
+                    self.assertIn("hand-written 40 times", out["additionalContext"])
+
+    def test_quiet_reads_whole_segments(self):
+        """quiet() is true only when every segment is a generic read; one real tool, or a transform such as
+        sort | uniq -c or jq (a recipe a command can wrap), makes it loud."""
+        # GIVEN shapes, WHEN each is checked, THEN only all-read ones are quiet
+        for s, want in (("cat <path>", True), ("read <path>", True), ("ls -la <path> && wc -l <path>", True),
+                        ("node -e <str>", True), ("python3 <heredoc>", True), ("git log --oneline -<n>", True),
+                        ("git push origin <arg>", False), ("python3 <path>/loop.py", False),
+                        ("grep <str> <path> | psql <arg>", False), ("for f in <arg>; do cat <path>; done", False),
+                        ("<path>/deploy.sh", False), ("git log --format=<v> | sort | uniq -c | sort -rn", False),
+                        ("cat <path> | jq <str>", False)):
+            with self.subTest(shape=s):
+                self.assertIs(hook.quiet(s), want)
+
+
+class UserPromptSubmit(HookCase):
+    def prompt(self, text, env=None, project=None):
+        p = agent_cli(project or self.p, "hook", "userpromptsubmit",
+                      stdin=json.dumps({"hook_event_name": "UserPromptSubmit", "session_id": "s", "prompt": text}),
+                      env={"PATH": self.bin + os.pathsep + os.environ["PATH"], **(env or {})})
+        self.assertEqual(p.returncode, 0, p.stderr)
+        return json.loads(p.stdout)["hookSpecificOutput"] if p.stdout.strip() else None
+
+    def test_each_default_phrase_adds_the_file_a_bead_context(self):
+        """Each default phrase, any case, tells the agent to file a CLI bead citing the skill and house rules."""
+        for text in ("This should be a CLI.", "honestly this SHOULD BE A COMMAND", "can you make this a command",
+                     "Make it into a CLI please", "make that a cli", "turn this into a command",
+                     "Turn that into a CLI", "we keep typing this", "We keep doing this by hand"):
+            with self.subTest(prompt=text):
+                # GIVEN the prompt, WHEN the hook reads it
+                out = self.prompt(text)
+                # THEN it adds the context, naming the skill, the house rules and the repeats report
+                self.assertEqual(out["hookEventName"], "UserPromptSubmit")
+                ctx = out["additionalContext"]
+                self.assertIn("The user wants this to become a command. File a bead for it", ctx)
+                self.assertIn(".claude/skills/cli-for-agents/SKILL.md and house-rules.md", ctx)
+                self.assertIn("agent-cli repeats --top 10", ctx)
+
+    def test_ordinary_prompts_add_nothing(self):
+        """Prompts that only share words with the phrases add nothing (no context on every turn)."""
+        for text in ("should we cache this?", "make this faster", "this should be a client-side check",
+                     "turn this into a list", "the command should be shorter", "we keep this file", ""):
+            with self.subTest(prompt=text):
+                # GIVEN the prompt, WHEN the hook reads it, THEN nothing is printed
+                self.assertIsNone(self.prompt(text))
+
+    def test_project_phrase_line_adds_a_regex(self):
+        """A `cli-phrases:` regex under `## repeats` in project-rules.md also fires; a bad one is ignored and
+        the defaults keep working."""
+        good = make_project(self.tmp / "good")
+        (good / ".claude/project-rules.md").write_text("## repeats\ncli-phrases: `wrap (it|this) up as a tool`\n")
+        bad = make_project(self.tmp / "badre")
+        (bad / ".claude/project-rules.md").write_text("## repeats\ncli-phrases: (unclosed\n")
+        # GIVEN each project, WHEN prompts are read
+        # THEN the project's phrase fires only where it is listed, and the bad regex leaves the defaults
+        self.assertIsNotNone(self.prompt("please wrap this up as a tool", project=good))
+        self.assertIsNone(self.prompt("please wrap this up as a tool"))
+        self.assertIsNotNone(self.prompt("this should be a CLI", project=bad))
+        self.assertIsNone(self.prompt("please wrap this up as a tool", project=bad))
+
+    def test_garbage_stdin_and_kill_switch_print_nothing(self):
+        """Fail open: bad stdin prints nothing and exits 0; AGENT_CLI_HOOKS=off silences it."""
+        # GIVEN garbage stdin, and a matching prompt under the kill switch
+        r = agent_cli(self.p, "hook", "userpromptsubmit", stdin="garbage")
+        # WHEN each runs, THEN nothing is printed and both exit 0
+        self.assertEqual((r.returncode, r.stdout), (0, ""))
+        self.assertIsNone(self.prompt("this should be a CLI", env={"AGENT_CLI_HOOKS": "off"}))
+
+
+class Settings(unittest.TestCase):
+    def test_settings_write_the_cache_at_session_start_and_read_prompts(self):
+        """settings.json refreshes the repeats cache on SessionStart and runs the phrase hook on
+        UserPromptSubmit, each guarded, timeout 5, ending in exit 0 (a project without agent-cli sees no error)."""
+        # GIVEN the harness settings
+        hooks = json.loads((CLAUDE / "settings.json").read_text())["hooks"]
+        for ev, needle in (("SessionStart", " repeats --write-cache --since 14d >/dev/null 2>&1"),
+                           ("UserPromptSubmit", " hook userpromptsubmit 2>/dev/null")):
+            with self.subTest(event=ev):
+                # WHEN the event's entries are read
+                entries = [h for g in hooks[ev] for h in g["hooks"] if needle in h["command"]]
+                # THEN exactly one, timeout 5, guarded and ending in exit 0
+                self.assertEqual(len(entries), 1)
+                (h,) = entries
+                self.assertEqual(h.get("timeout"), 5)
+                self.assertTrue(h["command"].startswith('[ -x "$CLAUDE_PROJECT_DIR/.claude/bin/agent-cli" ]'))
+                self.assertTrue(h["command"].endswith("; exit 0"))
 
 
 if __name__ == "__main__":

@@ -1,8 +1,10 @@
-"""PreToolUse hook framework: the command's code view, rule loading and evaluation, the `hook` verbs
-(posttooluse/posttoolusefailure, the shape recorder, live in record.py).
+"""PreToolUse hook framework: the command's code view, rule loading and evaluation, the repeated-shape
+warning, the UserPromptSubmit phrase hook and the `hook` verbs (posttooluse/posttoolusefailure, the shape
+recorder, live in record.py).
 
-Safety: fails open (any error prints nothing, exit 0); AGENT_CLI_HOOKS=off disables every rule;
-`# agent-cli: allow <id>` skips one rule; only Bash is inspected; commands over 20 KB are not matched.
+Safety: fails open (any error prints nothing, exit 0); AGENT_CLI_HOOKS=off disables every rule and both
+warnings; `# agent-cli: allow <id>` skips one rule (`repeated-shape` for the repeat warning); only Bash is
+inspected; commands over 20 KB are not matched.
 """
 import json
 import os
@@ -187,29 +189,133 @@ def match(rule, raw, code):
 def message(rule):
     """The rule's message with the bypass hint; bare `agent-cli` becomes the absolute shim path when it is
     not on PATH (the PATH wiring failed)."""
-    text = rule["message"]
+    return f"{_shim(rule['message'])}  (bypass: append  # agent-cli: allow {rule['id']})"
+
+
+def _shim(text):
+    """text with bare `agent-cli` as the absolute shim path when agent-cli is not on PATH."""
     if not shutil.which("agent-cli"):
         text = re.sub(r"(?<![\w/.-])agent-cli(?![\w-])", str(core.BIN / "agent-cli"), text)
-    return f"{text}  (bypass: append  # agent-cli: allow {rule['id']})"
+    return text
 
 
 def pretooluse():
-    """Read the PreToolUse JSON on stdin; print a deny or warn envelope, or nothing. Never raises."""
+    """Read the PreToolUse JSON on stdin; print a deny or warn envelope, or nothing. Never raises.
+    With no rule firing, a shape on the repeats cache adds the repeated-shape warning (_repeat_rule)."""
     try:
         data = json.loads(sys.stdin.read())
         if data.get("tool_name") != "Bash":
             return
-        hits = evaluate(data["tool_input"]["command"], load_rules())
+        command = data["tool_input"]["command"]
+        hits = evaluate(command, load_rules())
         deny = [r for r in hits if r["mode"] == "deny"]
         out = {"hookEventName": "PreToolUse"}
         if deny:
             out.update(permissionDecision="deny", permissionDecisionReason=message(deny[0]))
-        elif hits:
-            out["additionalContext"] = "\n".join(message(r) for r in hits)
         else:
-            return
+            # a rule that fires already names the command for this chore, so the repeat warning is only
+            # for commands no rule matches
+            hits = hits or [r for r in [_repeat_rule(command, data)] if r]
+            if not hits:
+                return
+            out["additionalContext"] = "\n".join(message(r) for r in hits)
         print(json.dumps({"hookSpecificOutput": out}))
     except Exception:  # fail open: a broken hook must never block a session
+        return
+
+
+REPEAT_ID = "repeated-shape"
+# Generic reads: shapes made only of these top the repeats list (an agent reading files), but there is no
+# chore in them for a command to wrap, so they never warn. The report keeps them: it is a measurement.
+# Transforms (sort, uniq, cut, tr, awk, jq) are left out on purpose: `git log ... | sort | uniq -c` is a
+# recipe a command can wrap, not a look at a file.
+QUIET_WORDS = frozenset("""cat head tail less more sed grep egrep rg ls tree find wc diff stat file du df echo
+printf pwd cd read which type true sleep date basename dirname realpath readlink""".split())
+QUIET_GIT = frozenset("status diff log show".split())
+INLINE_CODE = frozenset(("-", "-c", "-e", "<heredoc>"))  # `python3 - <heredoc>`: the code is the value
+SEGMENT_SEP = re.compile(r" (?:&&|\|\||\||&) |; ")
+SESSION_CHARS = re.compile(r"[^\w-]")
+
+
+def quiet(s):
+    """True when every segment of shape s is a generic read: a QUIET_WORDS command, a git read, or an
+    interpreter running inline code (`python3 - <heredoc>`, `node -e <str>`); a named script is loud."""
+    from .shape import INTERPRETER
+    for seg in SEGMENT_SEP.split(s):
+        words = seg.split()
+        if not words:
+            continue
+        name, second = words[0].rsplit("/", 1)[-1], words[1] if len(words) > 1 else ""
+        if not (name in QUIET_WORDS and "/" not in words[0] or name == "git" and second in QUIET_GIT
+                or INTERPRETER.fullmatch(name) and second in INLINE_CODE):
+            return False
+    return True
+
+
+def _repeat_rule(command, data):
+    """The repeated-shape warning as a warn rule, the first time this session (and agent) types a shape on
+    <store>/repeats-cache.json; None otherwise. A quiet shape, no session id, a bypass comment, a missing or
+    bad cache, or a store the once-only mark cannot be written to all give None: never warn twice. The cache
+    is shared by every project on the store, so a shape this project covers by a command (its `commands:`
+    line, or agent-cli) is dropped here too."""
+    try:
+        from . import record, repeats, shape
+        session = SESSION_CHARS.sub("_", str(data.get("session_id") or ""))[:128]
+        if (not session or os.environ.get("AGENT_CLI_HOOKS") == "off" or len(command) > MAX_CMD
+                or REPEAT_ID in BYPASS.findall(command)):
+            return None
+        s = (shape.shape(command) or "")[:record.MAX_SHAPE]  # the recorder cuts stored shapes the same way
+        if not s or quiet(s) or repeats.command_covered()(s):
+            return None
+        store = record.store_dir()
+        hit = json.loads((store / repeats.CACHE).read_text()).get(s)
+        if hit is None:
+            return None
+        count, sessions = int(hit["count"]), int(hit["sessions"])
+        mark = json.dumps([str(data.get("agent_id") or ""), s])
+        warned = store / "warned"
+        f = warned / f"{session}.txt"
+        if f.is_file() and mark in f.read_text(encoding="utf-8", errors="replace").splitlines():
+            return None
+        warned.mkdir(mode=0o700, exist_ok=True)
+        record.append_line(f, mark)
+    except Exception:  # a missing or bad cache, or an unwritable store: no warning, and the rules still run
+        return None
+    return {"id": REPEAT_ID, "mode": "warn",
+            "message": f"`{s}` was hand-written {count} times across {sessions} sessions; propose a command "
+                       "(cli-for-agents skill: .claude/skills/cli-for-agents/SKILL.md and house-rules.md) "
+                       "instead of typing it again; agent-cli repeats --top 10 lists the others."}
+
+
+CLI_PHRASES = (r"\bshould\s+be\s+an?\s+(?:cli|command)\b",
+               r"\bmake\s+(?:this|that|it)\s+(?:an?|into\s+an?)\s+(?:cli|command)\b",
+               r"\bturn\s+(?:this|that|it)\s+into\s+an?\s+(?:cli|command)\b",
+               r"\bwe\s+keep\s+(?:typing|doing)\s+this\b")
+CLI_CONTEXT = ("The user wants this to become a command. File a bead for it whose acceptance cites "
+               ".claude/skills/cli-for-agents/SKILL.md and house-rules.md; run agent-cli repeats --top 10 to see "
+               "the shape counts.")
+
+
+def userpromptsubmit():
+    """Read the UserPromptSubmit JSON on stdin; when the prompt asks for a command (CLI_PHRASES, or the regex
+    on the `cli-phrases:` line under `## repeats` in project-rules.md), print the file-a-CLI-bead context.
+    Prints nothing otherwise; never raises."""
+    try:
+        prompt = json.loads(sys.stdin.read())["prompt"]
+        if os.environ.get("AGENT_CLI_HOOKS") == "off" or not isinstance(prompt, str):
+            return
+        patterns = list(CLI_PHRASES)
+        extra = core.rules_line("repeats", "cli-phrases")
+        if extra:
+            try:
+                re.compile(extra)
+                patterns.append(extra)
+            except re.error as e:
+                sys.stderr.write(f"agent-cli hook: ignoring the cli-phrases regex in project-rules.md: {e}\n")
+        if any(re.search(p, prompt, re.I) for p in patterns):
+            print(json.dumps({"hookSpecificOutput": {"hookEventName": "UserPromptSubmit",
+                                                     "additionalContext": _shim(CLI_CONTEXT)}}))
+    except Exception:  # fail open: a broken hook must never block a prompt
         return
 
 
@@ -239,7 +345,8 @@ def list_rules(json_mode):
 
 
 def register(sub):
-    _, hs = core.group(sub, "hook", "PreToolUse rules that point hand-rolled chores at the right command, and the shape recorder",
+    _, hs = core.group(sub, "hook", "PreToolUse rules that point hand-rolled chores at the right command, the repeated-shape "
+                       "warning, the prompt phrase hook and the shape recorder",
                        ["agent-cli hook test --cmd 'echo \"<promise>WIN</promise>\"'", "agent-cli hook rules --json",
                         "agent-cli hook scan .claude/loop-evals --since 7d --json"])
     p = core.subcommand(hs, "pretooluse",
@@ -247,6 +354,11 @@ def register(sub):
                         ["echo '{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"ls\"}}' "
                          "| agent-cli hook pretooluse"])
     p.set_defaults(func=lambda a: pretooluse())
+    p = core.subcommand(hs, "userpromptsubmit",
+                        "read a UserPromptSubmit event on stdin; when the prompt asks for a command, print "
+                        "context telling the agent to file a CLI bead, else nothing",
+                        ["echo '{\"prompt\":\"this should be a CLI\"}' | agent-cli hook userpromptsubmit"])
+    p.set_defaults(func=lambda a: userpromptsubmit())
     p = core.subcommand(hs, "test", "show which rules fire on a command (exit 2 when one denies)",
                         ["agent-cli hook test --cmd 'echo \"<promise>WIN</promise>\"'",
                          "agent-cli hook test --cmd 'gh pr checks 12' --json"])
