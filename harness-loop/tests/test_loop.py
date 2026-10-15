@@ -310,6 +310,17 @@ class RoundOpensPR(LoopTestCase):
         # GIVEN a booked main run, WHEN the manifest's set changes and a round runs, THEN main is re-examined
         self.assert_fresh_main_after(manifest={"set": "other", "tasks": [{"id": "t1", "screen": True}]})
 
+    def test_main_run_from_the_other_model_route_is_not_reused(self):
+        """A main run made on the subscription is not reused by a Bedrock round (or the reverse): the model
+        ids differ, so pairing them would spend a whole candidate screen and then drop it for the mismatch."""
+        # GIVEN a booked main run made on the subscription route
+        self.r.base_run(env={"HARNESS_MODEL_ACCESS": "subscription"})
+        # WHEN a round runs on the bedrock route (the LoopRepo default)
+        p = self.r.round()
+        # THEN main is examined afresh on bedrock before the candidate
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertEqual(self.kinds(), ["baseline", "candidate"])
+
     def assert_stale_main_retired(self, env, field):
         """Book a main run made under other exam settings, run two rounds: drop, retire, re-run main."""
         self.r.base_run(env=env)

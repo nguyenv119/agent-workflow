@@ -746,7 +746,7 @@ def find_base_run(base_sha, manifest):
             continue
         if (meta.get("set") == data.get("set") and meta.get("tasks") == want and meta.get("screen")
                 and meta.get("agent") == "workflow" and meta.get("kind") == "baseline"
-                and meta.get("status") == "complete" and (meta_f.parent / "summary.sha256").is_file()
+                and meta.get("status") == "complete" and meta.get("model_access", "bedrock") == route() and (meta_f.parent / "summary.sha256").is_file()
                 and meta_f.parent.name in booked and tree and harness_tree(str(meta.get("harness_commit"))) == tree):
             found.append((meta_f.stat().st_mtime, meta_f.parent))
     return max(found)[1] if found else None
@@ -1302,7 +1302,7 @@ def cmd_exam(args):
 
 def exam_restacked(args, main_sha, head, cand, post):
     """cmd_exam after the path gate: the free checks on cand (head restacked on main, None on a conflict),
-    written to the PR before Bedrock or the budget is asked for, then the paid screen."""
+    written to the PR before the model route or the budget is asked for, then the screen."""
     free = None
     if cand is None:
         free = "exam: stale, rebase the PR onto main"

@@ -52,10 +52,12 @@ def rate_limit_reason(events):
     """The usage-limit message in claude's json / stream-json events, or None.
 
     A limit shows as an event with error "rate_limit", an api error status of 429, or an error result
-    whose text matches LIMIT_TEXT. A successful result that mentions a limit is not one."""
+    whose text matches LIMIT_TEXT. A run that ends in a successful result is never limited, and a
+    system event (claude's api_retry on a 429 it is retrying) is not a limit on its own."""
+    events = [e for e in events if isinstance(e, dict) and e.get("type") != "system"]
+    if any(e.get("type") == "result" and e.get("is_error") is False for e in events):
+        return None
     for event in events:
-        if not isinstance(event, dict):
-            continue
         status = event.get("api_error_status", event.get("apiErrorStatus"))
         text = event.get("result") if isinstance(event.get("result"), str) else ""
         if event.get("error") == "rate_limit" or status == 429:
@@ -94,7 +96,7 @@ def _need(host, key):
 def sandbox_env(host, model_access, tries_dir, model=None):
     """Env for `claude` in the sandbox, built from an allowlist of host vars.
 
-    bedrock (default, D41): CLAUDE_CODE_USE_BEDROCK, AWS_REGION and the
+    subscription is the default route (model_route). bedrock (D41): CLAUDE_CODE_USE_BEDROCK, AWS_REGION and the
     Bedrock-only AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY, plus the global.*
     model ids. subscription: CLAUDE_CODE_OAUTH_TOKEN only (the sandbox cannot
     read the host's keychain login). api: ANTHROPIC_API_KEY only. Nothing else

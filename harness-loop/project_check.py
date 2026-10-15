@@ -148,7 +148,7 @@ def call_model(prompt, state):
 
 
 def check(base, head, body=""):
-    """{clean, hits, cost_usd, called, error}; clean is False on any error (fail closed)."""
+    """{clean, hits, cost_usd, called, rate_limited, error}; clean is False on any error (fail closed)."""
     state = {"cost_usd": None, "called": False, "rate_limited": None}
     try:
         diff = git("diff", "--no-color", "--no-ext-diff", "--no-textconv", "--text", f"{base}...{head}")

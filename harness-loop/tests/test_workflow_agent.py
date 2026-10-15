@@ -163,6 +163,23 @@ class RateLimitTest(unittest.TestCase):
             with self.subTest(events=events):
                 self.assertIsNone(trial_export.rate_limit_reason(events))
 
+    def test_a_retried_429_that_recovers_is_not_a_limit(self):
+        """claude reports each 429 it retries as a system api_retry event; if the run then succeeds,
+        pausing would throw away a finished improver round or stop an exam that was fine."""
+        # GIVEN a retry event, a throttled assistant turn, then a successful result
+        events = [{"type": "system", "subtype": "api_retry", "attempt": 1, "error_status": 429, "error": "rate_limit"},
+                  {"type": "assistant", "error": "rate_limit"},
+                  {"type": "result", "is_error": False, "result": "done"}]
+        # WHEN scanned THEN no limit is reported
+        self.assertIsNone(trial_export.rate_limit_reason(events))
+
+    def test_a_retry_event_alone_is_not_a_limit(self):
+        """A stream cut off right after an api_retry (killed mid-retry) is a failed try, not a usage limit."""
+        # GIVEN only the retry event
+        events = [{"type": "system", "subtype": "api_retry", "attempt": 1, "error_status": 429, "error": "rate_limit"}]
+        # WHEN scanned THEN no limit is reported
+        self.assertIsNone(trial_export.rate_limit_reason(events))
+
     def test_stream_and_written_result_mark_the_try_rate_limited(self):
         """A rate-limited try gets status rate_limited, so run_exam stops instead of scoring it unsolved."""
         # GIVEN a stream that ends in the session limit

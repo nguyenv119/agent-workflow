@@ -63,6 +63,7 @@ manifest = json.loads(Path(args.tasks).read_text())
     "run_id": run.name, "kind": args.kind, "harness_commit": args.harness, "screen": args.screen,
     "set": manifest.get("set"), "model": os.environ.get("FAKE_EXAM_MODEL", "m"), "tasks": sorted(t["id"] for t in manifest.get("tasks", []) if t["screen"] or not args.screen),
     "manifest": str(Path(args.tasks).resolve()), "agent": "workflow", "tries": args.tries,
+    "model_access": os.environ.get("HARNESS_MODEL_ACCESS") or "subscription",
     "status": status, **({"early_stop": early_stop} if early_stop else {}),
     **({"rate_limited": "You've hit your session limit"} if limited else {}), "max_budget_usd": float(os.environ.get("FAKE_EXAM_CAP", "12.05"))}))
 (run / "summary.json").write_text(json.dumps({"total_cost_usd": round(total, 4)}))
