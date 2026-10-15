@@ -52,6 +52,10 @@ DEFAULTS = {
     "unique_ids": False,
     "require_source": [],              # [{"pattern", "why"}] the raw HTML must match
     "template": None,                  # page new: default template path
+    "max_layers": None,                # int: more layers outside the hidden section fail
+    "max_words": None,                 # {"why": n, "<p selector>": n, "layer_p": n}, outside the hidden section:
+                                       # "why" caps the <p> words under the "Why" h2 in total; a selector key
+                                       # caps each matching <p> in a layer; "layer_p" each other layer <p>
 }
 CHECK = "agent-cli page check docs/cache-2026-01-01.html --rules .claude/page-rules.json"
 MARK = 'agent-cli page mark-update docs/cache-2026-01-01.html --note "layer 2 now covers eviction"'
@@ -153,6 +157,7 @@ class _Page(HTMLParser):
         self.caps = []            # open text captures: [tag, depth, purpose, buffer]
         self.kicker = None
         self.ids, self.legacy = Counter(), set()
+        self.h2, self.why_words, self.figcap = "", 0, 0
 
     def abs_pos(self):
         line, col = self.getpos()
@@ -175,6 +180,10 @@ class _Page(HTMLParser):
                 cap[1] += 1
         if tag in ("style", "script"):
             self.hidden += 1
+        if tag == "figcaption":
+            self.figcap += 1
+        if tag == "p" and self.r["max_words"] and not self.agents and not self.figcap:
+            self.caps.append([tag, 1, ("words", cls), []])
         if self.hidden_tag and tag == self.hidden_tag:
             if self.agents:
                 self.agents += 1
@@ -187,7 +196,8 @@ class _Page(HTMLParser):
                     self.layers[-1]["end"] = self.abs_pos()
                 self.layer_depth = 1
                 self.layers.append({"name": f"layer {len(self.layers) + 1}", "seen": [], "lead": {},
-                                    "start": self.abs_pos(), "end": None})
+                                    "start": self.abs_pos(), "end": None, "hidden": bool(self.agents),
+                                    "words": []})
             elif self.layer_depth:
                 self.layer_depth += 1
         if not self.agents:
@@ -232,6 +242,8 @@ class _Page(HTMLParser):
                     self.finish(cap[2], " ".join("".join(cap[3]).split()))
         if tag in ("style", "script") and self.hidden:
             self.hidden -= 1
+        if tag == "figcaption" and self.figcap:
+            self.figcap -= 1
         if self.hidden_tag and tag == self.hidden_tag and self.agents:
             self.agents -= 1
         if tag == self.wrap_tag and self.layer_depth:
@@ -259,6 +271,8 @@ class _Page(HTMLParser):
             self.layers[-1]["name"] = self.heading
         elif tag == self.title_tag and not self.agents and re.match(self.L["heading"], self.heading):
             self.out.append(f"'{self.heading}': layer not wrapped in {self.L['wrap']}")
+        if tag == "h2":
+            self.h2 = self.heading
         if tag in ("h2", "h3") and not self.agents:
             for why, _ in forbidden(self.heading, self.r["forbid_headings_outside_hidden"]):
                 self.out.append(f"'{self.heading}': {why}")
@@ -268,6 +282,14 @@ class _Page(HTMLParser):
             self.legend_text = text
         elif purpose == "kicker":
             self.kicker = text
+        elif purpose[0] == "words":
+            n, caps = len(text.split()), self.r["max_words"]
+            if self.layer_depth:
+                key = next((k for k in caps if k not in ("why", "layer_p") and matches(k, "p", purpose[1])),
+                           "layer_p")
+                self.layers[-1]["words"].append((key, n))
+            elif self.h2.lower() == "why":
+                self.why_words += n
         else:
             _, lay, sel = purpose
             lay["lead"][sel] = text
@@ -308,6 +330,17 @@ def check_page(src, rules=None):
         for sel, lead in L["lead"].items():
             if sel in layer["lead"] and not re.match(lead, layer["lead"][sel]):
                 out.append(f"'{layer['name']}': {sel} must start with /{lead}/")
+    shown = [x for x in p.layers if not x["hidden"]]
+    if r["max_layers"] is not None and len(shown) > r["max_layers"]:
+        out.append(f"{len(shown)} layers, cap {r['max_layers']}; merge or cut layers")
+    caps = r["max_words"] or {}
+    if "why" in caps and p.why_words > caps["why"]:
+        out.append(f"'Why': {p.why_words} words, cap {caps['why']}; trim it")
+    for layer in shown:
+        for key, n in layer["words"]:
+            if key in caps and n > caps[key]:
+                what = "paragraph" if key == "layer_p" else key
+                out.append(f"'{layer['name']}': {what} is {n} words, cap {caps[key]}; trim it")
     if p.swatches > lg["max_swatches"]:
         out.append(f"legend: {p.swatches} update swatches, keep only the latest one")
     if p.swatches and lg["line"] and not re.search(lg["line"], p.legend_text):

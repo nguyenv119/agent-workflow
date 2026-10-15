@@ -108,6 +108,50 @@ class StrictRules(unittest.TestCase):
         self.assertTrue(any("unfilled skeleton text" in v for v in out), out)
 
 
+class LengthCaps(unittest.TestCase):
+    CAPS = {"max_layers": 2, "max_words": {"why": 5, "p.pain": 10, "p.done": 6, "layer_p": 5}}
+
+    def check(self, html):
+        return page.check_page(html, rules(**self.CAPS))
+
+    def test_page_under_the_caps_passes_and_hidden_text_is_not_counted(self):
+        """Two layers at the caps pass; a third layer and long text inside For agents, and a long figcaption, don't count."""
+        # GIVEN 2 visible layers, a figcaption paragraph over layer_p, and a long layer inside details.agents
+        long = "<p>" + "word " * 40 + "</p>"
+        fig = '<figure class="dia"><svg></svg><figcaption><p>' + "word " * 40 + "</p></figcaption></figure>"
+        hidden = ('<details class="agents"><summary>For agents</summary>'
+                  + layer("Layer 9. Notes", PAIN + long + FIG + DONE) + "</details>")
+        two = [layer(), layer("Layer 2. Misses go to the database", PAIN + "<p>one two three</p>" + fig + DONE)]
+        # WHEN checked; THEN no violation
+        self.assertEqual(self.check(doc(two, agents=hidden)), [])
+
+    def test_each_cap_fails_with_where_count_and_cap(self):
+        """Each cap broken alone names its heading or layer, the count and the cap."""
+        many = " ".join(["w"] * 12)
+        cases = {
+            "3 layers, cap 2": doc([layer(), layer("Layer 2. B"), layer("Layer 3. C")]),
+            "'Why': 6 words, cap 5": doc(extra='<p class="new">one two three</p><p>four five six</p>'),
+            "'Layer 1. A': p.pain is 12 words, cap 10": doc([layer("Layer 1. A", f'<p class="pain">Original pain point: {many[6:]}</p>'
+                                                                   "<p>a</p>" + FIG + DONE)]),
+            "'Layer 1. A': p.done is 12 words, cap 6": doc([layer("Layer 1. A", PAIN + "<p>a</p>" + FIG
+                                                                  + f'<p class="done">Done: {many[2:]}</p>')]),
+            "'Layer 1. A': paragraph is 12 words, cap 5": doc([layer("Layer 1. A", PAIN + f"<p>{many}</p>"
+                                                                     + FIG + DONE)]),
+        }
+        for want, html in cases.items():
+            with self.subTest(want):
+                # GIVEN a page over one cap; WHEN checked; THEN exactly that violation
+                self.assertEqual([v for v in self.check(html)], [want + ("; merge or cut layers" if "layers" in want
+                                                                         else "; trim it")])
+
+    def test_caps_are_off_by_default(self):
+        """Defaults leave both caps null, so long pages from other projects keep passing."""
+        self.assertIsNone(page.DEFAULTS["max_layers"])
+        self.assertIsNone(page.DEFAULTS["max_words"])
+        big = doc([layer(f"Layer {i}. X", PAIN + "<p>" + "w " * 99 + "</p>" + FIG + DONE) for i in range(1, 9)])
+        self.assertEqual(page.check_page(big, rules()), [])
+
+
 class MarkUpdate(TmpCase):
     def setUp(self):
         super().setUp()
