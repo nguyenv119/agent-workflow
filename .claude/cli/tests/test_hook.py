@@ -740,6 +740,40 @@ class UserPromptSubmit(HookCase):
                 # GIVEN the prompt, WHEN the hook reads it, THEN nothing is printed
                 self.assertIsNone(self.prompt(text))
 
+    def test_notification_turns_add_nothing_even_with_a_phrase(self):
+        """Turns the harness starts (a background agent's result, a system notification, Stop-hook feedback, a
+        peer session, a scheduled task, a compaction resume) are not the user asking: a phrase inside one adds
+        nothing, also after leading blank lines or a system-reminder block."""
+        report = "Done. Note: this lookup should be a CLI."
+        for text in (f"<task-notification>\n<task-id>abc</task-id>\n<status>completed</status>\n"
+                     f"<result>{report}</result>\n</task-notification>",
+                     f"<task-notification>\n<summary>Stop hook feedback: {report}</summary>\n</task-notification>",
+                     f"[SYSTEM NOTIFICATION - NOT USER INPUT]\n{report}",
+                     f"Stop hook feedback:\n{report}",
+                     f"Another Claude session sent a message: {report}",
+                     f"<scheduled-task name=\"daily\">{report}</scheduled-task>",
+                     f"<ci-monitor-event>{report}</ci-monitor-event>",
+                     f"[Cross-session idle notice] {report}",
+                     f"This session is being continued from a previous conversation that ran out of context. {report}",
+                     f"\n\n  <task-notification>{report}</task-notification>",
+                     f"<system-reminder>\nline one\nline two\n</system-reminder>\n"
+                     f"<task-notification>{report}</task-notification>"):
+            with self.subTest(prompt=text[:40]):
+                # GIVEN a harness-started turn carrying the phrase, WHEN the hook reads it, THEN nothing is printed
+                self.assertIsNone(self.prompt(text))
+
+    def test_marker_text_not_at_the_start_still_triggers(self):
+        """Only a prompt that opens with a marker is skipped: the user quoting a marker mid-message, or a
+        system-reminder ahead of their own words, still gets the context."""
+        for text in ("I saw <task-notification> in the log; this should be a CLI",
+                     "<system-reminder>\nline one\nline two\n</system-reminder>\nthis should be a CLI",
+                     "> Stop hook feedback: x\nthis should be a CLI",
+                     "<system-reminder>a</system-reminder>\nthis should be a CLI\n"
+                     "<system-reminder>b</system-reminder><task-notification>"):
+            with self.subTest(prompt=text[:40]):
+                # GIVEN the user's own prompt, WHEN the hook reads it, THEN the context is added
+                self.assertIsNotNone(self.prompt(text))
+
     def test_project_phrase_line_adds_a_regex(self):
         """A `cli-phrases:` regex under `## repeats` in project-rules.md also fires; a bad one is ignored and
         the defaults keep working."""
