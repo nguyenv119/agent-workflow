@@ -294,15 +294,21 @@ CLI_PHRASES = (r"\bshould\s+be\s+an?\s+(?:cli|command)\b",
 CLI_CONTEXT = ("The user wants this to become a command. File a bead for it whose acceptance cites "
                ".claude/skills/cli-for-agents/SKILL.md and house-rules.md; run agent-cli repeats --top 10 to see "
                "the shape counts.")
+# Turns the harness starts arrive as UserPromptSubmit too, and the event carries no origin field (the
+# transcript's turnOrigin may not be flushed yet), so the prompt's opening text tells them apart.
+NOT_USER = re.compile(r"\s*(?:<system-reminder>(?:(?!</system-reminder>).)*</system-reminder>\s*)*"
+                      r"(?:<task-notification>|<scheduled-task[\s>]|<ci-monitor-event>|\[SYSTEM NOTIFICATION"
+                      r"|\[Cross-session idle notice\]|Stop hook feedback:|Another Claude session sent a message"
+                      r"|This session is being continued from a previous)", re.S)
 
 
 def userpromptsubmit():
     """Read the UserPromptSubmit JSON on stdin; when the prompt asks for a command (CLI_PHRASES, or the regex
     on the `cli-phrases:` line under `## repeats` in project-rules.md), print the file-a-CLI-bead context.
-    Prints nothing otherwise; never raises."""
+    Prints nothing otherwise, or when the prompt opens with a NOT_USER marker; never raises."""
     try:
         prompt = json.loads(sys.stdin.read())["prompt"]
-        if os.environ.get("AGENT_CLI_HOOKS") == "off" or not isinstance(prompt, str):
+        if os.environ.get("AGENT_CLI_HOOKS") == "off" or not isinstance(prompt, str) or NOT_USER.match(prompt):
             return
         patterns = list(CLI_PHRASES)
         extra = core.rules_line("repeats", "cli-phrases")
