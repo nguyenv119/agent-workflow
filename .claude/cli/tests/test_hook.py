@@ -756,7 +756,8 @@ class UserPromptSubmit(HookCase):
                      f"[Cross-session idle notice] {report}",
                      f"This session is being continued from a previous conversation that ran out of context. {report}",
                      f"\n\n  <task-notification>{report}</task-notification>",
-                     f"<system-reminder>ctx</system-reminder>\n<task-notification>{report}</task-notification>"):
+                     f"<system-reminder>\nline one\nline two\n</system-reminder>\n"
+                     f"<task-notification>{report}</task-notification>"):
             with self.subTest(prompt=text[:40]):
                 # GIVEN a harness-started turn carrying the phrase, WHEN the hook reads it, THEN nothing is printed
                 self.assertIsNone(self.prompt(text))
@@ -765,7 +766,7 @@ class UserPromptSubmit(HookCase):
         """Only a prompt that opens with a marker is skipped: the user quoting a marker mid-message, or a
         system-reminder ahead of their own words, still gets the context."""
         for text in ("I saw <task-notification> in the log; this should be a CLI",
-                     "<system-reminder>ctx</system-reminder>\nthis should be a CLI",
+                     "<system-reminder>\nline one\nline two\n</system-reminder>\nthis should be a CLI",
                      "> Stop hook feedback: x\nthis should be a CLI",
                      "<system-reminder>a</system-reminder>\nthis should be a CLI\n"
                      "<system-reminder>b</system-reminder><task-notification>"):
