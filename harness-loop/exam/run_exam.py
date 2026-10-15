@@ -11,7 +11,7 @@ Each task x try runs `harbor run` (WorkflowAgent, or Harbor's own oracle / nop
 agents; `controls` runs both) and becomes a try folder made by
 .claude/skills/coordinator/save_try.py --from-files, with the coordinator's own
 try folders under inner/ and a result.json:
-  {task, try, status: ok|budget_cut|error, reward, cost_usd, wall_s, harness_commit,
+  {task, try, status: ok|budget_cut|rate_limited|error, reward, cost_usd, wall_s, harness_commit,
    harness_version, model, origin_url, bead_branch_in_origin, exam_no_pr_line, harbor_trial_dir}
 Rewards count only status ok tries. A workflow try is an error when its
 recorded harness_commit is not the requested sha, or its harness_version (the
@@ -53,9 +53,17 @@ way each task x try gets a fresh container that Harbor deletes afterwards; with
 docker, run_exam also removes any container or network of that try Harbor left.
 --concurrency defaults to what fits in Docker (local_concurrency) or 1 on daytona.
 
-Env: Harbor gets only HARBOR_ENV, plus the AWS keys for workflow runs, plus
-DAYTONA_* (daytona) or DOCKER_* (docker): Harbor copies some host vars into the
-sandbox. EXAM_HARBOR / EXAM_DOCKER override the `harbor run` / `docker` command
+Model route: HARNESS_MODEL_ACCESS (trial_export.model_route): the Claude Code
+subscription by default, whose sandboxes need CLAUDE_CODE_OAUTH_TOKEN from
+`claude setup-token` (they cannot read this machine's keychain login); bedrock
+only when set to bedrock. Checked before any try starts; never switched on a
+failure. A try that hits a usage limit (status rate_limited) stops the run like
+a budget stop: nothing more starts, the run is incomplete and run.json
+rate_limited holds claude's message, so a limit never reads as an unsolved task.
+
+Env: Harbor gets only HARBOR_ENV, plus the route's model credential for workflow
+runs (CLAUDE_CODE_OAUTH_TOKEN, or the AWS keys), plus DAYTONA_* (daytona) or
+DOCKER_* (docker): Harbor copies some host vars into the sandbox. EXAM_HARBOR / EXAM_DOCKER override the `harbor run` / `docker` command
 prefixes (tests use fakes).
 """
 import argparse
@@ -95,12 +103,19 @@ TASK_CPUS, TASK_MEMORY_MB, DOCKER_RESERVE_MB = 2, 4096, 1024
 # CLAUDE_CODE_MAX_OUTPUT_TOKENS, DISABLE_ADAPTIVE_THINKING) into the sandbox,
 # which would make a baseline and a candidate differ by who launched them.
 HARBOR_ENV = ("PATH", "HOME", "TMPDIR", "LANG", "EXAM_HARBOR")
-# Bedrock keys, for WorkflowAgent only: oracle and nop never call a model.
-MODEL_ENV = ("AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN", "AWS_REGION")
+# The route's model credential, for WorkflowAgent only: oracle and nop never call a model.
+MODEL_ENV = {"subscription": (trial_export.OAUTH_TOKEN,),
+             "bedrock": ("AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN", "AWS_REGION")}
 # Where the docker CLI finds the engine; none of these holds a secret.
 DOCKER_ENV = ("DOCKER_HOST", "DOCKER_CONTEXT", "DOCKER_CONFIG")
-MODELS = {"opus": trial_export.BEDROCK_MODELS["ANTHROPIC_MODEL"],
-          "sonnet": trial_export.BEDROCK_MODELS["ANTHROPIC_DEFAULT_SONNET_MODEL"]}
+MODELS = {"bedrock": {"opus": trial_export.BEDROCK_MODELS["ANTHROPIC_MODEL"],
+                      "sonnet": trial_export.BEDROCK_MODELS["ANTHROPIC_DEFAULT_SONNET_MODEL"]},
+          "subscription": trial_export.API_MODELS}
+
+
+def model_id(args):
+    """The model id --model names on this run's route (an id passes through)."""
+    return MODELS[args.route].get(args.model, args.model)
 
 
 def git(repo, *args):
@@ -216,7 +231,8 @@ def harbor_cmd(args, task, agent, jobs_dir, job_name, sha, run_id):
     cmd += ["-a", "workflow_agent:WorkflowAgent",
             "--agent-timeout-multiplier", "4", "--agent-setup-timeout-multiplier", "3"]
     kw = {"harness_commit": sha, "max_budget_usd": args.max_budget_usd, "title": task["title"],
-          "workdir": task["workdir"], "model": MODELS.get(args.model, args.model), "run_name": run_id}
+          "workdir": task["workdir"], "model": model_id(args), "run_name": run_id,
+          "model_access": args.route}
     if task["test_command"]:
         kw["test_command"] = task["test_command"]
     if args.addon:
@@ -226,9 +242,9 @@ def harbor_cmd(args, task, agent, jobs_dir, job_name, sha, run_id):
     return cmd
 
 
-def harbor_env(host, where="docker", agent="workflow"):
+def harbor_env(host, where="docker", agent="workflow", route="subscription"):
     """Allowlisted host env for `harbor run`, with the exam dir on PYTHONPATH."""
-    keep = HARBOR_ENV + (MODEL_ENV if agent == "workflow" else ()) + (DOCKER_ENV if where == "docker" else ())
+    keep = HARBOR_ENV + (MODEL_ENV[route] if agent == "workflow" else ()) + (DOCKER_ENV if where == "docker" else ())
     env = {k: v for k, v in host.items()
            if k in keep or (where == "daytona" and k.startswith("DAYTONA_"))}
     env["PYTHONPATH"] = os.pathsep.join(filter(None, [str(EXAM_DIR), host.get("PYTHONPATH")]))
@@ -249,7 +265,7 @@ def run_try(ctx, task, n, agent):
     job_name = f"{agent + '-' if ctx['controls'] else ''}{task['id']}-try{n}"
     cmd = harbor_cmd(ctx["args"], task, agent, jobs_dir, job_name, ctx["sha"], ctx["run"].name)
     t0 = time.monotonic()
-    p = subprocess.run(cmd, env=harbor_env(os.environ, ctx["args"].env, agent), capture_output=True, text=True)
+    p = subprocess.run(cmd, env=harbor_env(os.environ, ctx["args"].env, agent, ctx["args"].route), capture_output=True, text=True)
     wall = round(time.monotonic() - t0, 1)
     leftovers = []
     if ctx["args"].env == "docker":
@@ -321,10 +337,11 @@ def run_try(ctx, task, n, agent):
         "reward": reward, "cost_usd": cost, "cost_unknown": cost_unknown, "wall_s": wall,
         "harness_commit": exam.get("harness_commit") or ctx["sha"],
         "harness_version": exam.get("harness_version") if agent == "workflow" else None,
-        "model": MODELS.get(ctx["args"].model, ctx["args"].model) if agent == "workflow" else None,
+        "model": model_id(ctx["args"]) if agent == "workflow" else None,
         "origin_url": exam.get("origin_url"), "bead_branch_in_origin": bool(exam.get("branch")),
         "exam_no_pr_line": bool(exam.get("exam_no_pr_line")),
         "harbor_trial_dir": str(trial) if trial else None,
+        **({"rate_limited": exam.get("rate_limited") or "usage limit"} if status == "rate_limited" else {}),
     }
     (folder / "result.json").write_text(json.dumps(result, indent=2) + "\n")
     return result
@@ -366,6 +383,11 @@ def schedule(ctx, jobs):
                     done.append(r)
                     print(f"run_exam: {r['agent']} {r['task']} try-{r['try']}: {r['status']} "
                           f"reward={r['reward']} ${r['cost_usd']}", file=sys.stderr)
+                    if r["status"] == "rate_limited" and not ctx.get("rate_limited"):
+                        ctx["rate_limited"] = r.get("rate_limited") or "usage limit"
+                        print(f"run_exam: rate limit: {ctx['rate_limited']}; {len(queue)} run(s) not started",
+                              file=sys.stderr)
+                        queue.clear()
                 # Decide once the whole batch is in done: a finished try not yet appended would be in
                 # neither done nor left, and its task would drop out of the pairing.
                 left = {j[0]["id"] for j in queue} | {futures[f][0]["id"] for f in pending}
@@ -375,7 +397,7 @@ def schedule(ctx, jobs):
                     print(f"run_exam: early stop: {why}; {len(queue)} run(s) not started", file=sys.stderr)
                     ctx["early_stop"] = why
                     queue.clear()
-    return not ctx.get("not_started") and not ctx.get("crashed") and not ctx.get("early_stop")
+    return not any(ctx.get(k) for k in ("not_started", "crashed", "early_stop", "rate_limited"))
 
 
 def crashed_try(ctx, job, exc):
@@ -453,6 +475,12 @@ def main(argv=None):
     ap.add_argument("--addon")
     ap.add_argument("--early-stop-vs", help="sealed baseline run: stop once the screen can no longer pass")
     args = ap.parse_args(argv)
+    try:
+        args.route = trial_export.model_route(os.environ)
+        if args.agent == "workflow":  # the sandbox's credential, checked before any try is booked
+            trial_export.sandbox_env(os.environ, args.route, tries_dir="/")
+    except (ValueError, RuntimeError) as e:
+        sys.exit(f"run_exam: {e}")
     if not shutil.which(harbor_prefix()[0]):  # else every try errors and is booked at max_budget_usd
         sys.exit(f"run_exam: harbor not found ({harbor_prefix()[0]}): create harness-loop/.venv "
                  "or set EXAM_HARBOR")
@@ -505,7 +533,7 @@ def main(argv=None):
     meta = {"run_id": run.name, "kind": args.kind or ("controls" if args.agent != "workflow" else "candidate"),
             "harness_ref": args.harness, "branch": branch_of(AW_ROOT, args.harness), "harness_commit": sha,
             "harness_version": harness_version, "addon": args.addon, "set": data["set"], "manifest": str(Path(args.tasks).resolve()), "screen": args.screen,
-            "agent": args.agent, "model": MODELS.get(args.model, args.model) if args.agent == "workflow" else None,
+            "agent": args.agent, "model": model_id(args) if args.agent == "workflow" else None, "model_access": args.route,
             "tries": args.tries, "tasks": sorted(t["id"] for t in tasks), "budget_usd": args.budget_usd,
             "max_budget_usd": args.max_budget_usd, "env": args.env, "concurrency": args.concurrency,
             "status": "running",
@@ -518,6 +546,8 @@ def main(argv=None):
     complete = schedule(ctx, jobs)
     if ctx.get("early_stop"):
         meta["early_stop"] = ctx["early_stop"]
+    if ctx.get("rate_limited"):
+        meta["rate_limited"] = ctx["rate_limited"]
     results = finish(ctx, meta, complete)
     if results and all(r["status"] == "error" for r in results):
         sys.exit("run_exam: every try errored")

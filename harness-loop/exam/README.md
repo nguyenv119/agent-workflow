@@ -18,10 +18,16 @@ harness-loop/.venv/bin/pip install -r harness-loop/exam/requirements.txt
 ## Run one task
 
 `--env docker` runs the task on this machine; `--env daytona` rents a cloud sandbox (see "Where tasks
-run" below). Model access goes through Bedrock by default; export the Bedrock-only
-`AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` (and `AWS_REGION`, default `us-east-1`) on the host.
-Only those, the region and the `global.anthropic.claude-*-5-5` model ids enter the sandbox
-(`trial_export.sandbox_env`). `model_access=api` sends `ANTHROPIC_API_KEY` instead and nothing else.
+run" below). Model access follows `HARNESS_MODEL_ACCESS`. Unset, it is the Claude Code
+subscription: a sandbox cannot read this machine's keychain login, so run `claude setup-token` once
+and export the token it prints as `CLAUDE_CODE_OAUTH_TOKEN`; only that token and a first-party model
+id enter the sandbox, and run_exam refuses to start without it. `HARNESS_MODEL_ACCESS=bedrock` is
+the paid opt-in: export the Bedrock-only `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` (and
+`AWS_REGION`, default `us-east-1`); only those, the region and the `global.anthropic.claude-*-5-5`
+model ids enter the sandbox (`trial_export.sandbox_env`). Nothing switches route on a failure. A try
+that hits a usage limit is `rate_limited`: the run stops starting tries and is marked incomplete with
+run.json `rate_limited`, so the limit never scores as an unsolved task. `model_access=api` (an agent
+kwarg only) sends `ANTHROPIC_API_KEY` instead and nothing else.
 
 Harbor redacts secrets from the trial dir only when they are agent env, which is what
 `--ae KEY=VALUE` sets. Because the keys come from the host env instead, `WorkflowAgent.__init__`
@@ -83,7 +89,8 @@ from; everything else runs during Harbor's setup.
 Harbor's default network mode is public. None of the 105 Monthly-SWEBench 2026-05 tasks or the 6
 Terminal-Bench 4.0 Software picks set `network_mode` in `task.toml`, so none needs an override. A
 task that restricts the agent phase would need an allowlist with
-`bedrock-runtime.<region>.amazonaws.com`, github.com (bd/dolt downloads) and its package registries.
+the model host (`api.anthropic.com` on the subscription, `bedrock-runtime.<region>.amazonaws.com`
+on Bedrock), github.com (bd/dolt downloads) and its package registries.
 
 ## Where tasks run
 
@@ -114,7 +121,8 @@ Docker Desktop's default memory (7.65 GiB) that is 1. Giving Docker 10 GiB (Sett
 which leaves 6 GiB to macOS) makes it 2; 14 GiB would make it 3 but leaves too little for anything
 else. On daytona the default stays 1.
 
-Env for Harbor: an allowlist (`HARBOR_ENV`), plus the Bedrock keys only for WorkflowAgent runs
+Env for Harbor: an allowlist (`HARBOR_ENV`), plus the route's credential (`CLAUDE_CODE_OAUTH_TOKEN`,
+or the Bedrock keys) only for WorkflowAgent runs
 (oracle and nop never call a model), plus `DAYTONA_*` on daytona or `DOCKER_HOST` /
 `DOCKER_CONTEXT` / `DOCKER_CONFIG` on docker. Nothing else from the host reaches Harbor.
 

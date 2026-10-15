@@ -89,10 +89,11 @@ FAKE_HARBOR = textwrap.dedent('''\
                 cmd += ["--addon", ak["harness_addon"]]
             subprocess.run(cmd, check=True, capture_output=True)
             version = json.loads((Path(tmp) / ".claude/HARNESS_VERSION").read_text())
+    status = {"success": "ok", "error_max_budget_usd": "budget_cut"}.get(subtype, "error")
     (exam / "result.json").write_text(json.dumps({
         "harness_commit": spec.get("harness_commit", ak["harness_commit"]), "branch": branch or None,
-        "origin_url": "file:///tmp/origin.git",
-        "status": {"success": "ok", "error_max_budget_usd": "budget_cut"}.get(subtype, "error"),
+        "origin_url": "file:///tmp/origin.git", "rate_limited": spec.get("rate_limited"),
+        "status": "rate_limited" if spec.get("rate_limited") else status,
         "total_cost_usd": cost, "exam_no_pr_line": True, "harness_version": version}))
     inner = agent_dir / "tries/app/exam-1/try-1"
     inner.mkdir(parents=True)
@@ -160,7 +161,8 @@ class RunExamTest(unittest.TestCase):
         return m
 
     def run_exam(self, *args, check=True, extra_env=None):
-        env = {**os.environ, "HARNESS_LOOP_HOME": str(self.home),
+        env = {k: v for k, v in os.environ.items() if k not in ("HARNESS_MODEL_ACCESS", "CLAUDE_CODE_OAUTH_TOKEN")}
+        env = {**env, "HARNESS_LOOP_HOME": str(self.home), "CLAUDE_CODE_OAUTH_TOKEN": "oauth-test",
                "EXAM_HARBOR": f"{sys.executable} {self.fake} {self.log} {self.spec} run",
                "EXAM_DOCKER": f"{sys.executable} {self.fake_docker} {self.docker_log} {self.docker_spec}",
                **(extra_env or {})}
@@ -284,8 +286,9 @@ class RunExamTest(unittest.TestCase):
         # GIVEN a host env with an admin key, an API key and a claude tuning var
         m = self.manifest({"t1": 2})
         planted = {"AWS_ADMIN_X": "x", "ANTHROPIC_API_KEY": "x", "CLAUDE_CODE_MAX_OUTPUT_TOKENS": "1",
-                   "AWS_ACCESS_KEY_ID": "id", "DAYTONA_API_KEY": "d"}
-        # WHEN run_exam runs on Daytona
+                   "AWS_ACCESS_KEY_ID": "id", "AWS_SECRET_ACCESS_KEY": "s", "DAYTONA_API_KEY": "d",
+                   "HARNESS_MODEL_ACCESS": "bedrock"}
+        # WHEN run_exam runs on Daytona on the bedrock route
         self.run_exam("--tasks", m, "--budget-usd", 100, "--env", "daytona", extra_env=planted)
         # THEN none of the planted vars reached Harbor, but the Bedrock and Daytona keys did
         env = self.envs()[0]
@@ -516,8 +519,9 @@ class RunExamTest(unittest.TestCase):
         """
         # GIVEN a host env with a Daytona key and a Docker host
         m = self.manifest({"t1": 2})
-        planted = {"DAYTONA_API_KEY": "d", "DOCKER_HOST": "unix:///tmp/d.sock", "AWS_ACCESS_KEY_ID": "id"}
-        # WHEN run_exam runs with no --env
+        planted = {"DAYTONA_API_KEY": "d", "DOCKER_HOST": "unix:///tmp/d.sock", "AWS_ACCESS_KEY_ID": "id",
+                   "AWS_SECRET_ACCESS_KEY": "s", "HARNESS_MODEL_ACCESS": "bedrock"}
+        # WHEN run_exam runs with no --env (bedrock route)
         self.run_exam("--tasks", m, "--budget-usd", 100, extra_env=planted)
         # THEN Harbor runs it in docker and deletes the environment afterwards
         argv = self.argvs()[0]
@@ -556,6 +560,62 @@ class RunExamTest(unittest.TestCase):
         self.assertNotEqual(p.returncode, 0)
         self.assertIn("Docker Desktop", p.stderr)
         self.assertFalse(self.log.exists())
+
+    def test_subscription_is_the_default_route_and_harbor_gets_only_the_token(self):
+        """
+        With no route set the workflow runs go on the subscription: Harbor sees the OAuth token and no AWS key,
+        the agent is told model_access=subscription with a first-party model id, and run.json records the route.
+        """
+        # GIVEN Bedrock keys on the host too, and no HARNESS_MODEL_ACCESS
+        m = self.manifest({"t1": 2})
+        # WHEN run_exam runs
+        self.run_exam("--tasks", m, "--budget-usd", 100,
+                      extra_env={"AWS_ACCESS_KEY_ID": "id", "AWS_SECRET_ACCESS_KEY": "s", "CLAUDE_CODE_USE_BEDROCK": "1"})
+        # THEN Harbor got the token only, and the subscription kwargs
+        env, argv = self.envs()[0], self.argvs()[0]
+        self.assertIn("CLAUDE_CODE_OAUTH_TOKEN", env)
+        self.assertFalse({"AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "CLAUDE_CODE_USE_BEDROCK"} & set(env))
+        ak = dict(argv[i + 1].split("=", 1) for i, a in enumerate(argv) if a == "--ak")
+        self.assertEqual((ak["model_access"], ak["model"]), ("subscription", "claude-opus-5-5"))
+        meta = json.loads((self.only_run() / "run.json").read_text())
+        self.assertEqual((meta["model_access"], meta["model"]), ("subscription", "claude-opus-5-5"))
+
+    def test_subscription_without_token_refuses_before_any_try(self):
+        """
+        The sandbox cannot read the keychain login: with no token every try would error and be booked at the
+        cap, so run_exam refuses before Harbor runs, naming `claude setup-token`, and never falls back to Bedrock.
+        """
+        # GIVEN Bedrock keys but no OAuth token
+        m = self.manifest({"t1": 2})
+        # WHEN run_exam runs
+        p = self.run_exam("--tasks", m, "--budget-usd", 100, check=False,
+                          extra_env={"CLAUDE_CODE_OAUTH_TOKEN": "", "AWS_ACCESS_KEY_ID": "id",
+                                     "AWS_SECRET_ACCESS_KEY": "s", "CLAUDE_CODE_USE_BEDROCK": "1"})
+        # THEN it exits non-zero naming the fix, and Harbor never ran and no run dir exists
+        self.assertNotEqual(p.returncode, 0)
+        self.assertIn("claude setup-token", p.stderr)
+        self.assertFalse(self.log.exists())
+        self.assertFalse((self.home / "runs").exists())
+
+    def test_rate_limited_try_stops_the_run_unscored(self):
+        """
+        A try that hits the usage limit stops the run like a budget stop: nothing more starts, the run is
+        incomplete with run.json rate_limited, and the try counts as neither solved nor unsolved.
+        """
+        # GIVEN three tasks at concurrency 1, the first hitting the session limit
+        m = self.manifest({"t1": 2, "t2": 2, "t3": 2})
+        self.spec.write_text(json.dumps({"t1": {"rate_limited": "You've hit your session limit", "cost": 0.5}}))
+        # WHEN run_exam runs
+        self.run_exam("--tasks", m, "--budget-usd", 100, "--concurrency", 1)
+        # THEN only t1 ran; the run is incomplete, says why, and scores nothing
+        run = self.only_run()
+        self.assertEqual(len(self.argvs()), 1)
+        meta = json.loads((run / "run.json").read_text())
+        self.assertEqual((meta["status"], meta["rate_limited"]), ("incomplete", "You've hit your session limit"))
+        self.assertEqual(meta["rewards"], {})
+        summary = json.loads((run / "summary.json").read_text())
+        self.assertEqual((summary["counts"], summary["solved"]), ({"rate_limited": 1}, 0))
+        self.assertEqual(self.results(run)["t1"]["rate_limited"], "You've hit your session limit")
 
     def test_controls_get_no_model_keys(self):
         """Oracle and nop never call a model, so the Bedrock keys stay on the host."""

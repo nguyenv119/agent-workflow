@@ -3,7 +3,7 @@
     PYTHONPATH=harness-loop/exam harbor run --agent workflow_agent:WorkflowAgent \\
       --path <task dir> --env docker \\
       --agent-kwarg harness_commit=<sha> --agent-kwarg max_budget_usd=<usd> \\
-      [--agent-kwarg title=... test_command=... workdir=... model_access=api model=...]
+      [--agent-kwarg title=... test_command=... workdir=... model_access=subscription|bedrock|api model=...]
 
 Harbor's own ClaudeCode agent pipes the task text straight to `claude --print`,
 which tests plain Claude Code. This subclass keeps its install and stream-json
@@ -17,7 +17,8 @@ handling, and around `claude` it:
     ignored), then `claude -p "/work <bead>"` in the workdir, then finish_task.sh
     (checks the bead branch out so the hidden tests grade it; writes
     end.sha/diff.patch), even when claude fails;
-  - passes only trial_export.sandbox_env() into the sandbox (Bedrock by default)
+  - passes only trial_export.sandbox_env() into the sandbox (the subscription's
+    CLAUDE_CODE_OAUTH_TOKEN by default; Bedrock when HARNESS_MODEL_ACCESS=bedrock)
     and registers its secrets as agent env so Harbor's trial-dir scrubber
     redacts them;
   - post-run: sets cost_usd from total_cost_usd (includes subagents) and writes
@@ -54,7 +55,7 @@ REMOTE = PurePosixPath("/installed-agent/exam")
 OWN_KWARGS = ("harness_commit", "harness_addon", "model_access", "model", "title",
               "test_command", "run_name", "workdir")
 # sandbox_env values Harbor's scrubber must know about (it only reads agent env).
-SECRET_KEYS = ("AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "ANTHROPIC_API_KEY")
+SECRET_KEYS = ("AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "ANTHROPIC_API_KEY", trial_export.OAUTH_TOKEN)
 
 
 def trust_cmd(config_dir, repo) -> str:
@@ -80,12 +81,13 @@ def resolve_commit(ref):
 
 class WorkflowAgent(ClaudeCode):
     def __init__(self, logs_dir: Path, *args, harness_commit="HEAD", harness_addon=None,
-                 model_access="bedrock", model=None, title=None, test_command=None,
+                 model_access=None, model=None, title=None, test_command=None,
                  run_name=None, workdir=None, **kwargs):
         # Resolved now: the run records the sha that ran, and HEAD may move.
         self._harness_commit = resolve_commit(_text(harness_commit))
         self._harness_addon = _text(harness_addon)
-        self._model_access = _text(model_access)
+        # None: the route HARNESS_MODEL_ACCESS names (run_exam passes it explicitly).
+        self._model_access = _text(model_access) or trial_export.model_route(os.environ)
         self._title = _text(title)
         self._test_command = _text(test_command) or ""
         self._run_name = _text(run_name) or Path(logs_dir).parent.name

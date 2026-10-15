@@ -83,11 +83,106 @@ class SandboxEnvTest(unittest.TestCase):
         self.assertEqual(env["ANTHROPIC_API_KEY"], "sk-ant-x")
         self.assertEqual(env["ANTHROPIC_MODEL"], "claude-sonnet-5-5")
 
+    def test_subscription_passes_only_the_oauth_token(self):
+        """
+        The subscription route sends the sandbox the `claude setup-token` token
+        and a first-party model id, never AWS keys, the API key or Bedrock ids:
+        any of those would bill a paid route instead.
+        """
+        # GIVEN the host env holding every credential
+        # WHEN the subscription sandbox env is built
+        env = trial_export.sandbox_env(HOST, "subscription", tries_dir="/t")
+        # THEN only the token, the first-party model and the exam switches travel
+        self.assertEqual(set(env), {"CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_MODEL",
+                                    "CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS", "IS_SANDBOX", "HARNESS_TRIES_DIR"})
+        self.assertEqual(env["CLAUDE_CODE_OAUTH_TOKEN"], "oauth-x")
+        self.assertEqual(env["ANTHROPIC_MODEL"], "claude-opus-5-5")
+
+    def test_subscription_without_token_names_setup_token(self):
+        """The sandbox cannot read the host's keychain login: without the token, fail before spend, saying how."""
+        # GIVEN a host env with Bedrock keys but no OAuth token
+        host = {k: v for k, v in HOST.items() if k != "CLAUDE_CODE_OAUTH_TOKEN"}
+        # WHEN / THEN building the subscription env raises naming `claude setup-token`, and never picks Bedrock
+        with self.assertRaisesRegex(RuntimeError, "claude setup-token"):
+            trial_export.sandbox_env(host, "subscription", tries_dir="/t")
+
     def test_unknown_access_mode_is_rejected(self):
         """A typo in model_access must not silently pick a route."""
         # GIVEN / WHEN / THEN an unknown mode raises
         with self.assertRaises(ValueError):
             trial_export.sandbox_env(HOST, "oauth", tries_dir="/t")
+
+
+class ModelRouteTest(unittest.TestCase):
+    def test_unset_or_empty_is_the_subscription_and_bedrock_is_opt_in(self):
+        """The subscription is the default; only the exact word bedrock picks the paid route."""
+        # GIVEN / WHEN / THEN
+        self.assertEqual(trial_export.model_route({}), "subscription")
+        self.assertEqual(trial_export.model_route({"HARNESS_MODEL_ACCESS": ""}), "subscription")
+        self.assertEqual(trial_export.model_route({"HARNESS_MODEL_ACCESS": "bedrock"}), "bedrock")
+
+    def test_unknown_route_is_rejected(self):
+        """A typo (or the sandbox-only api mode) must not silently pick a route."""
+        for value in ("Bedrock", "api", "max"):
+            with self.subTest(value=value):
+                with self.assertRaisesRegex(ValueError, "HARNESS_MODEL_ACCESS"):
+                    trial_export.model_route({"HARNESS_MODEL_ACCESS": value})
+
+
+# What claude printed when the subscription's session limit hit (assistant message, then the result line).
+LIMIT_TEXT = "You've hit your session limit \u00b7 resets 7:40pm (UTC)"
+LIMIT_EVENTS = [
+    {"type": "assistant", "error": "rate_limit", "message": {"content": [{"type": "text", "text": LIMIT_TEXT}]}},
+    {"type": "result", "subtype": "success", "is_error": True, "result": LIMIT_TEXT, "total_cost_usd": 0.02}]
+
+
+class RateLimitTest(unittest.TestCase):
+    def test_each_shape_of_a_usage_limit_is_found(self):
+        """The assistant's rate_limit error, a 429 status and an error result naming a limit each count."""
+        cases = {
+            "assistant error": ([LIMIT_EVENTS[0]], LIMIT_TEXT),
+            "error result text": ([LIMIT_EVENTS[1]], LIMIT_TEXT),
+            "api status 429": ([{"type": "result", "is_error": True, "api_error_status": 429, "result": "x"}], "x"),
+            "bedrock throttle": ([{"type": "result", "is_error": True, "result": "ThrottlingException: slow down"}],
+                                 "ThrottlingException: slow down"),
+        }
+        for name, (events, want) in cases.items():
+            with self.subTest(name):
+                # GIVEN / WHEN / THEN
+                self.assertEqual(trial_export.rate_limit_reason(events), want)
+
+    def test_success_mentioning_a_limit_and_other_errors_are_not_limits(self):
+        """A finished run that talks about rate limits, or an error of another kind, is not a pause."""
+        cases = [
+            [{"type": "result", "is_error": False, "result": "Added a rate limit and a 429 test."}],
+            [{"type": "result", "is_error": True, "subtype": "error_max_budget_usd", "result": "budget"}],
+            [{"type": "assistant", "error": "server_error"}],
+            [None, "text", {"type": "result"}],
+        ]
+        for events in cases:
+            with self.subTest(events=events):
+                self.assertIsNone(trial_export.rate_limit_reason(events))
+
+    def test_stream_and_written_result_mark_the_try_rate_limited(self):
+        """A rate-limited try gets status rate_limited, so run_exam stops instead of scoring it unsolved."""
+        # GIVEN a stream that ends in the session limit
+        logs = tmpdir(self)
+        (logs / "claude-code.txt").write_text("\n".join(json.dumps(e) for e in LIMIT_EVENTS) + "\n")
+        (logs / "exam").mkdir()
+        # WHEN parsed and written
+        stream = trial_export.stream_result(logs / "claude-code.txt")
+        result = trial_export.write_result(logs, "b", "a" * 40)
+        # THEN both carry the limit's text, and the status is rate_limited, not ok
+        self.assertEqual(stream["rate_limited"], LIMIT_TEXT)
+        self.assertEqual((result["status"], result["rate_limited"]), ("rate_limited", LIMIT_TEXT))
+
+    def test_one_json_envelope_is_read_as_one_event(self):
+        """`--output-format json` prints one (possibly multi-line) object; it is parsed whole."""
+        # GIVEN an indented envelope
+        text = json.dumps(LIMIT_EVENTS[1], indent=2)
+        # WHEN / THEN it is one event and its limit is found
+        self.assertEqual(trial_export.json_events(text), [LIMIT_EVENTS[1]])
+        self.assertEqual(trial_export.rate_limit_reason(trial_export.json_events(text)), LIMIT_TEXT)
 
 
 class StreamResultTest(unittest.TestCase):
@@ -110,7 +205,7 @@ class StreamResultTest(unittest.TestCase):
         result = trial_export.stream_result(stream)
         # THEN cost and subtype come from the result line, the session from the first init
         self.assertEqual(result, {"total_cost_usd": 11.84, "subtype": "error_max_budget_usd",
-                                  "session_id": "parent", "exam_no_pr_line": False})
+                                  "session_id": "parent", "exam_no_pr_line": False, "rate_limited": None})
 
     def test_missing_result_gives_nones(self):
         """A run killed before its result line has no cost; say so, never 0."""
@@ -119,7 +214,8 @@ class StreamResultTest(unittest.TestCase):
         (d / "s.txt").write_text(json.dumps({"type": "assistant"}) + "\n")
         # WHEN parsed
         # THEN every field is empty
-        none = {"total_cost_usd": None, "subtype": None, "session_id": None, "exam_no_pr_line": False}
+        none = {"total_cost_usd": None, "subtype": None, "session_id": None, "exam_no_pr_line": False,
+                "rate_limited": None}
         self.assertEqual(trial_export.stream_result(d / "s.txt"), none)
         self.assertEqual(trial_export.stream_result(d / "missing.txt"), none)
 
