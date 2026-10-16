@@ -158,6 +158,11 @@ class LoopRepo:
         f = self.home / "history.jsonl"
         return [json.loads(line) for line in f.read_text().splitlines()] if f.is_file() else []
 
+    def spend(self):
+        """Every spend.jsonl row, oldest first ([] before the first booking)."""
+        f = self.home / "spend.jsonl"
+        return [json.loads(line) for line in f.read_text().splitlines()] if f.is_file() else []
+
     def gh_calls(self):
         return [json.loads(line) for line in self.gh_log.read_text().splitlines()] if self.gh_log.is_file() else []
 
@@ -1248,10 +1253,6 @@ class Subscription(LoopTestCase):
     """The default model route: the Claude Code subscription books no money, keeps its notional cost, and a
     usage limit pauses the round instead of failing it or falling back to a paid route."""
 
-    def spend_rows(self):
-        f = self.r.home / "spend.jsonl"
-        return [json.loads(line) for line in f.read_text().splitlines()] if f.is_file() else []
-
     def fake_claude(self, *events):
         """A `claude` on PATH that records its argv and env keys, prints `events` as stream-json and exits 0."""
         fake = self.r.tmp / "fakebin"
@@ -1286,11 +1287,11 @@ class Subscription(LoopTestCase):
         # THEN it reached a PR, booked no money, kept the notional costs, and the week's money is unchanged
         self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
         self.assertEqual(self.r.history()[0]["outcome"], "queued")
-        rows = self.spend_rows()[1:]
+        rows = self.r.spend()[1:]
         self.assertEqual([(r["kind"], r["usd"], r["notional_usd"], r["route"]) for r in rows],
                          [("project-check", 0.0, 0.0076, "subscription"), ("exam-baseline", 0.0, 10.0, "subscription"),
                           ("exam-candidate", 0.0, 10.0, "subscription")])
-        self.assertEqual(loop.week_spent(self.spend_rows(), loop.now()), CAP)
+        self.assertEqual(loop.week_spent(self.r.spend(), loop.now()), CAP)
 
     def test_screened_round_with_no_working_exam_credential_is_refused_before_anything_runs(self):
         """
@@ -1331,7 +1332,7 @@ class Subscription(LoopTestCase):
         self.assertFalse({"AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "CLAUDE_CODE_USE_BEDROCK",
                           "CLAUDE_CONFIG_DIR"} & set(call["env"]))
         self.assertEqual(call["argv"][call["argv"].index("--setting-sources") + 1], "project,local")
-        (row,) = [r for r in self.spend_rows() if r["kind"] == "improver"]
+        (row,) = [r for r in self.r.spend() if r["kind"] == "improver"]
         self.assertEqual((row["usd"], row["notional_usd"], row["route"]), (0.0, 2.5, "subscription"))
 
     def test_rate_limited_improver_pauses_the_round_with_no_fallback(self):
@@ -1366,7 +1367,7 @@ class Subscription(LoopTestCase):
         self.assertEqual(p.returncode, loop.RATE_LIMITED_EXIT, p.stdout + p.stderr)
         self.assertEqual(self.r.history()[0]["outcome"], "paused")
         self.assertIn("project check", self.r.history()[0]["reason"])
-        self.assertEqual([(r["kind"], r["notional_usd"]) for r in self.spend_rows()], [("project-check", 0.02)])
+        self.assertEqual([(r["kind"], r["notional_usd"]) for r in self.r.spend()], [("project-check", 0.02)])
 
     def test_rate_limited_exam_run_pauses_without_a_verdict_or_pr(self):
         """
@@ -1383,7 +1384,7 @@ class Subscription(LoopTestCase):
         self.assertEqual((row["outcome"], row["screen"], row["pr"]), ("paused", None, None))
         self.assertIn("exam-candidate run", row["reason"])
         self.assertEqual([c for c in self.r.gh_calls() if c["args"][:2] == ["pr", "create"]], [])
-        self.assertEqual([r["kind"] for r in self.spend_rows()], ["project-check", "exam-baseline", "exam-candidate"])
+        self.assertEqual([r["kind"] for r in self.r.spend()], ["project-check", "exam-baseline", "exam-candidate"])
 
     def test_budget_always_fits_and_shows_notional_use(self):
         """On the subscription `budget` never refuses (no money moves) and prints the week's notional use."""
@@ -1404,7 +1405,7 @@ class Subscription(LoopTestCase):
         after = self.r.loop("budget", "--est", str(CAP), "--what", "gardener")
         # THEN the row books no money, keeps the $6, and the paid ask still fits
         self.assertEqual(b.returncode, 0, b.stdout + b.stderr)
-        (row,) = self.spend_rows()
+        (row,) = self.r.spend()
         self.assertEqual((row["usd"], row["notional_usd"], row["route"]), (0.0, 6.0, "subscription"))
         self.assertEqual(after.returncode, 0, after.stdout + after.stderr)
 
@@ -1435,12 +1436,8 @@ class ExamRoute(LoopTestCase):
         f = self.r.tmp / "preflight.jsonl"
         return [json.loads(line)["route"] for line in f.read_text().splitlines()] if f.is_file() else []
 
-    def spend(self):
-        f = self.r.home / "spend.jsonl"
-        return [json.loads(line) for line in f.read_text().splitlines()] if f.is_file() else []
-
     def exam_rows(self):
-        return [(r["kind"], r["usd"], r.get("notional_usd"), r["route"]) for r in self.spend()
+        return [(r["kind"], r["usd"], r.get("notional_usd"), r["route"]) for r in self.r.spend()
                 if r["kind"].startswith("exam-")]
 
     def run_routes(self):
@@ -1479,7 +1476,7 @@ class ExamRoute(LoopTestCase):
         self.assertEqual(self.exam_rows(), [("exam-baseline", 10.0, None, "bedrock"),
                                             ("exam-candidate", 10.0, None, "bedrock")])
         # AND the host's project check stayed on the subscription
-        (pc,) = [r for r in self.spend() if r["kind"] == "project-check"]
+        (pc,) = [r for r in self.r.spend() if r["kind"] == "project-check"]
         self.assertEqual(pc["route"], "subscription")
         self.assertIn("exam route: bedrock", p.stdout)
         self.assertNoPlanted(p.stdout, p.stderr)
@@ -1522,8 +1519,24 @@ class ExamRoute(LoopTestCase):
         for reason in ("subscription: CLAUDE_CODE_OAUTH_TOKEN is not set", "bedrock: preflight call failed",
                        "api: preflight call failed"):
             self.assertIn(reason, p.stderr)
-        self.assertEqual((self.r.history(), self.r.exam_calls(), self.spend()), ([], [], []))
+        self.assertEqual((self.r.history(), self.r.exam_calls(), self.r.spend()), ([], [], []))
         self.assertNoPlanted(p.stdout, p.stderr)
+
+    def test_paid_monthly_exam_is_held_to_the_weekly_cap(self):
+        """
+        monthly on the subscription with no token runs its exams on paid Bedrock, so its budget counts against the
+        weekly cap; without that, a paid monthly could run past the cap.
+        """
+        # GIVEN one round queued with no token ($20 of paid exams booked) and $40 more spent this week
+        self.assertEqual(self.r.round(env=NO_TOKEN).returncode, 0)
+        self.r.ledger((0, 40.0))
+        self.r.exam_log.unlink()
+        # WHEN monthly asks for $30 with no token
+        p = self.r.loop("monthly", "--budget-usd", "30", env=NO_TOKEN)
+        # THEN exit 2 naming the cap, and no exam ran
+        self.assertEqual(p.returncode, 2, p.stdout + p.stderr)
+        self.assertIn("weekly cap", p.stderr)
+        self.assertEqual(self.r.exam_calls(), [])
 
     def test_rate_limited_token_pauses_and_never_falls_back_to_paid(self):
         """A token that hits its usage limit at the preflight pauses (exit 4); Bedrock is never tried."""
@@ -1732,10 +1745,6 @@ class BookAndBudgetCLI(LoopTestCase):
     """`loop.py book` and `loop.py budget`: a run outside the loop (the weekly gardener) asks the weekly cap
     first and books its cost after, so the cap counts every dollar the week spent."""
 
-    def spend_rows(self):
-        f = self.r.home / "spend.jsonl"
-        return [json.loads(line) for line in f.read_text().splitlines()] if f.is_file() else []
-
     def test_budget_over_the_cap_exits_1_naming_it_and_under_exits_0(self):
         """--est 999 exits 1 with the refusal naming the weekly cap; --est 0.01 on an empty ledger exits 0."""
         # GIVEN an empty ledger
@@ -1747,7 +1756,7 @@ class BookAndBudgetCLI(LoopTestCase):
         self.assertIn("refusing gardener", over.stderr)
         self.assertIn(f"${CAP:.2f} weekly cap", over.stderr)
         self.assertEqual(under.returncode, 0, under.stdout + under.stderr)
-        self.assertEqual(self.spend_rows(), [])
+        self.assertEqual(self.r.spend(), [])
 
     def test_budget_counts_this_weeks_spend_against_the_estimate(self):
         """With the cap less $5 spent this week, --est 6 is refused and --est 5 fits exactly."""
@@ -1770,10 +1779,10 @@ class BookAndBudgetCLI(LoopTestCase):
         after = self.r.loop("budget", "--est", "5", "--what", "gardener")
         # THEN one new row with the fields, and the second ask is refused because the $6 now counts
         self.assertEqual(b.returncode, 0, b.stdout + b.stderr)
-        row = self.spend_rows()[-1]
+        row = self.r.spend()[-1]
         self.assertEqual({k: row[k] for k in ("kind", "round", "usd", "note")},
                          {"kind": "gardener-replay", "round": "gardener", "usd": 6.0, "note": "reports/2026-04-07"})
-        self.assertEqual(len(self.spend_rows()), 2)
+        self.assertEqual(len(self.r.spend()), 2)
         datetime.datetime.fromisoformat(row["ts"])
         self.assertEqual(after.returncode, 1, after.stderr)
 
@@ -1785,7 +1794,7 @@ class BookAndBudgetCLI(LoopTestCase):
             p = self.r.loop("book", "--kind", "gardener", "--usd", usd)
             # THEN exit 2 and the ledger stays empty
             self.assertEqual(p.returncode, 2, (usd, p.stdout, p.stderr))
-            self.assertEqual(self.spend_rows(), [])
+            self.assertEqual(self.r.spend(), [])
 
     def test_book_refuses_the_kinds_the_loop_books_itself(self):
         """--kind exam-baseline (or improver, project-check, sidecheck-*) exits 2 and books nothing.
@@ -1798,7 +1807,7 @@ class BookAndBudgetCLI(LoopTestCase):
             # THEN exit 2 naming the kind, and the ledger stays empty
             self.assertEqual(p.returncode, 2, (kind, p.stdout, p.stderr))
             self.assertIn(kind, p.stderr)
-            self.assertEqual(self.spend_rows(), [])
+            self.assertEqual(self.r.spend(), [])
 
 
 class SyncAndMonthly(LoopTestCase):
