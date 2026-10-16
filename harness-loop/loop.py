@@ -74,9 +74,10 @@ subscription route the exam takes the first credential that answers a one-call H
 fresh CLAUDE_CONFIG_DIR and only that credential): CLAUDE_CODE_OAUTH_TOKEN (from `claude setup-token`, booked
 notional), then Bedrock (AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY, real money), then ANTHROPIC_API_KEY (real
 money). Only the exam moves: the improver and the project check stay on the subscription. A paid exam's budget
-counts against the weekly cap, and its ledger rows carry its route. A token that hits a usage limit at the
-preflight pauses (exit 4), never falls through to a paid route. None working refuses the round, exam or monthly
+counts against the weekly cap, and its ledger rows carry its route. A token that hits a usage limit, times out or
+fails for any reason but bad auth at the preflight pauses (exit 4), never falls through to a paid route. None working refuses the round, exam or monthly
 before anything starts, naming each credential and why (never a value). `exam-route` prints the choice.
+Preflight calls are not booked (one Haiku call each, well under a cent).
 
 Budget: WEEKLY_BUDGET_USD over a rolling 7 days of $HARNESS_LOOP_HOME/spend.jsonl, which only
 this script writes (improver cost from claude's result line, exam cost from each run's
@@ -108,7 +109,7 @@ decision, 13 Oct 2026); a cited ~/.claude/tries/<repo>/<bead>/try-N reaches the 
 
 Env: HARNESS_LOOP_HOME (default ~/.harness-loop); LOOP_RUN_EXAM / LOOP_COMPARE replace the
 run_exam.py / compare.py command; PROJECT_CHECK_CLAUDE replaces project_check.py's claude command
-(tests use fakes).
+(tests use fakes); EXAM_PREFLIGHT_CLAUDE replaces the `claude` of the exam credential preflight.
 """
 import argparse
 import datetime
@@ -137,6 +138,8 @@ WEEKLY_BUDGET_USD = 75.0  # fits one default round with a side check ($71)
 IMPROVER_MAX_USD = 10.0
 IMPROVER_TIMEOUT_S = 3600
 PREFLIGHT_TIMEOUT_S = 120  # the exam credential preflight: one short Haiku call
+# A preflight reply that means the subscription token itself is bad (so the next credential may be tried).
+AUTH_FAIL = re.compile(r"\b401\b|invalid|not logged in|unauthori[sz]ed|expired|revoked|authenticat|/login", re.I)
 PROJECT_CHECK_MAX_USD = 1.0  # project_check.py's --max-budget-usd; booked when a call's cost is unknown
 DEFAULT_EXAM_BUDGET_USD = 30.0
 FIRST_ESTIMATE_USD = 15.0  # exam/run_exam.py FIRST_ESTIMATE_USD (a test pins they match)
@@ -907,8 +910,9 @@ def bedrock_problem(env):
 
 def preflight(via):
     """'' when one cheap claude call answers on the credential the exam's sandboxes would get on route `via`,
-    else why not (never a credential value). Raises RateLimited when the subscription token hits a usage
-    limit: a limited subscription pauses, it never moves the exam to a paid route."""
+    else why not (never a credential value). On the subscription only a missing token or an auth failure
+    (AUTH_FAIL) falls through to the next, paid, credential; a usage limit, a timeout or any other failure
+    raises RateLimited, so a busy subscription pauses and never moves the exam to a paid route."""
     try:
         cred = sandbox_env(os.environ, via, tries_dir="/")
     except RuntimeError as e:  # "<VAR> is not set on the host; ..."
@@ -921,6 +925,8 @@ def preflight(via):
         try:
             p = subprocess.run(cmd, cwd=tmp, env=env, capture_output=True, text=True, timeout=PREFLIGHT_TIMEOUT_S)
         except (OSError, subprocess.TimeoutExpired) as e:
+            if via == "subscription":
+                raise RateLimited(f"exam preflight on the subscription did not answer ({e.__class__.__name__})") from None
             return f"preflight call failed ({e.__class__.__name__})"
     events = json_events(p.stdout)
     if p.returncode == 0 and any(isinstance(e, dict) and e.get("type") == "result" and e.get("is_error") is False
@@ -930,7 +936,7 @@ def preflight(via):
     said = said or (p.stderr.strip().splitlines() or [""])[-1]
     for v in secrets:
         said = said.replace(v, "***")
-    if via == "subscription" and rate_limit_reason(events):
+    if via == "subscription" and (rate_limit_reason(events) or not AUTH_FAIL.search(said)):
         raise RateLimited(f"exam preflight on the subscription: {said[:200]}")
     return f"preflight call failed (exit {p.returncode}: {said[:200]})"
 

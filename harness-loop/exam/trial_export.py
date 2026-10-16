@@ -28,13 +28,13 @@ API_MODEL = "claude-opus-5-5"
 API_MODELS = {"opus": API_MODEL, "sonnet": "claude-sonnet-5-5"}  # first-party ids (subscription and api)
 
 # The model route (owner decision, 15 Oct 2026): the Claude Code subscription unless the caller opts in to
-# paid Bedrock. Nothing ever switches route on its own, so a failed or rate-limited subscription call never
-# turns into a paid one.
+# paid Bedrock. A host call never switches route, so a failed or rate-limited host call never turns into a paid one.
 ROUTE_VAR = "HARNESS_MODEL_ACCESS"
 ROUTES = ("subscription", "bedrock")
-# The exam's credential chain (owner decision, 16 Oct 2026): with no CLAUDE_CODE_OAUTH_TOKEN, loop.py runs the exam
-# on Bedrock, else on ANTHROPIC_API_KEY, and tells run_exam.py which with HARNESS_MODEL_ACCESS. Only the exam
-# takes api; every host call stays on ROUTES.
+# The exam's credential chain (owner decision, 16 Oct 2026): on the subscription, loop.py runs the exam on the first
+# of these whose one-call preflight answers: CLAUDE_CODE_OAUTH_TOKEN, then Bedrock, then ANTHROPIC_API_KEY. So a
+# missing or failing token moves the exam to a paid route; only a token at its usage limit pauses instead. loop.py
+# tells run_exam.py the choice with HARNESS_MODEL_ACCESS. Only the exam takes api; every host call stays on ROUTES.
 EXAM_ROUTES = ROUTES + ("api",)
 # The subscription's login as an env var, from `claude setup-token`: what a sandbox, or a claude with its own
 # CLAUDE_CONFIG_DIR, needs, since neither can read this machine's keychain login.

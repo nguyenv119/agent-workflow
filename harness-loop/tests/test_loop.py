@@ -134,9 +134,11 @@ class LoopRepo:
             "STUB_TRY_PATHS": "~/.claude/tries/agent-workflow/b-1/try-1 ~/.claude/tries/agent-workflow/b-2/try-1",
         }
 
-    def preflight(self, fail="", limit=""):
-        """EXAM_PREFLIGHT_CLAUDE: the fake preflight logging to preflight.jsonl, failing or limiting those routes."""
-        return f"{sys.executable} {FIXTURES / 'fake_preflight.py'} {self.tmp / 'preflight.jsonl'} fail={fail} limit={limit}"
+    def preflight(self, fail="", limit="", busy=""):
+        """EXAM_PREFLIGHT_CLAUDE: the fake preflight logging to preflight.jsonl, failing, limiting or overloading
+        those routes."""
+        return (f"{sys.executable} {FIXTURES / 'fake_preflight.py'} {self.tmp / 'preflight.jsonl'} "
+                f"fail={fail} limit={limit} busy={busy}")
 
     def loop(self, *args, env=None):
         return subprocess.run([sys.executable, str(self.aw / "harness-loop/loop.py"), *args],
@@ -1534,6 +1536,35 @@ class ExamRoute(LoopTestCase):
         self.assertEqual(p.returncode, loop.RATE_LIMITED_EXIT, p.stdout + p.stderr)
         self.assertEqual(self.preflights(), ["subscription"])
         self.assertEqual((self.r.history(), self.r.exam_calls()), ([], []))
+
+    def test_overloaded_token_pauses_instead_of_paying(self):
+        """
+        A token whose preflight fails for a reason other than bad auth (here a 529 overloaded) may be fine a minute
+        later, so the run pauses (exit 4) rather than moving the exam to paid Bedrock.
+        """
+        # GIVEN a token whose preflight is overloaded, and working Bedrock keys
+        env = {**NO_TOKEN, "CLAUDE_CODE_OAUTH_TOKEN": PLANTED["CLAUDE_CODE_OAUTH_TOKEN"],
+               "EXAM_PREFLIGHT_CLAUDE": self.r.preflight(busy="subscription")}
+        # WHEN a screened stub round starts
+        p = self.r.round(env=env)
+        # THEN exit 4 naming the error, only the subscription was tried, nothing started
+        self.assertEqual(p.returncode, loop.RATE_LIMITED_EXIT, p.stdout + p.stderr)
+        self.assertIn("529", p.stderr)
+        self.assertEqual(self.preflights(), ["subscription"])
+        self.assertEqual((self.r.history(), self.r.exam_calls()), ([], []))
+
+    def test_token_with_bad_auth_falls_through_to_bedrock(self):
+        """A token the API rejects (401) is a bad credential, not a busy one: the exam moves on to Bedrock."""
+        # GIVEN a token whose preflight gets a 401, and working Bedrock keys
+        env = {**NO_TOKEN, "CLAUDE_CODE_OAUTH_TOKEN": PLANTED["CLAUDE_CODE_OAUTH_TOKEN"],
+               "EXAM_PREFLIGHT_CLAUDE": self.r.preflight(fail="subscription")}
+        # WHEN the exam route is asked for
+        p = self.r.loop("exam-route", env=env)
+        # THEN bedrock, after trying the token, and the token's value is not in the reason
+        self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+        self.assertIn("exam route: bedrock (passed over: subscription: preflight call failed", p.stdout)
+        self.assertEqual(self.preflights(), ["subscription", "bedrock"])
+        self.assertNoPlanted(p.stdout, p.stderr)
 
     def test_preflight_gets_only_the_candidate_credential(self):
         """Each preflight sees its own credential only: Bedrock's gets no API key, the key's gets no AWS key."""
