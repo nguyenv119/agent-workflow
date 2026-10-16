@@ -7,6 +7,7 @@
     loop.py monthly [--budget-usd X]
     loop.py exam --pr N --tasks <manifest> [--budget-usd X] [--check-only]
     loop.py sync
+    loop.py exam-route
     loop.py guard <commit> [--base <ref>]
     loop.py leak [--diff <ref>] [--body <file>]
     loop.py budget --est X --what S
@@ -61,14 +62,22 @@ checked (--no-screen, all checks pass), paused (a usage limit: see Model route),
 Model route (owner decision, 15 Oct 2026): HARNESS_MODEL_ACCESS picks how every paid claude call runs,
 the improver, the project check and the exam's /work runs alike. subscription (the default, also when
 unset): the Claude Code subscription. Host calls use this machine's `claude` login, or
-CLAUDE_CODE_OAUTH_TOKEN when set; the exam's sandboxes cannot read the keychain login, so an exam on
-the subscription needs CLAUDE_CODE_OAUTH_TOKEN (from `claude setup-token`) and a round or exam without
-it is refused before anything starts. bedrock: CLAUDE_CODE_USE_BEDROCK=1 and Bedrock keys, opt-in only.
-Nothing switches route on a failure. Every ledger row records its route; a subscription row books usd 0
+CLAUDE_CODE_OAUTH_TOKEN when set. bedrock: CLAUDE_CODE_USE_BEDROCK=1 and Bedrock keys, opt-in only.
+Nothing switches a host call's route on a failure. Every ledger row records its route; a subscription row books usd 0
 and keeps claude's total_cost_usd as notional_usd, so the weekly cap counts only money and `budget`
 shows the subscription use. A usage limit (claude's rate_limit error, a 429, "You've hit your session
 limit") in the improver, the project check or an exam try ends the round "paused": nothing more starts,
 no screen verdict, no PR, exit 4; exam and monthly exit 4 the same way. Run it again once the limit resets.
+
+Exam route (owner decision, 16 Oct 2026): the exam's sandboxes cannot read the keychain login, so on the
+subscription route the exam takes the first credential that answers a one-call Haiku preflight (run with a
+fresh CLAUDE_CONFIG_DIR and only that credential): CLAUDE_CODE_OAUTH_TOKEN (from `claude setup-token`, booked
+notional), then Bedrock (AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY, real money), then ANTHROPIC_API_KEY (real
+money). Only the exam moves: the improver and the project check stay on the subscription. A paid exam's budget
+counts against the weekly cap, and its ledger rows carry its route. A token that hits a usage limit, times out or
+fails for any reason but bad auth at the preflight pauses (exit 4), never falls through to a paid route. None working refuses the round, exam or monthly
+before anything starts, naming each credential and why (never a value). `exam-route` prints the choice.
+Preflight calls are not booked (one Haiku call each, well under a cent).
 
 Budget: WEEKLY_BUDGET_USD over a rolling 7 days of $HARNESS_LOOP_HOME/spend.jsonl, which only
 this script writes (improver cost from claude's result line, exam cost from each run's
@@ -100,10 +109,11 @@ decision, 13 Oct 2026); a cited ~/.claude/tries/<repo>/<bead>/try-N reaches the 
 
 Env: HARNESS_LOOP_HOME (default ~/.harness-loop); LOOP_RUN_EXAM / LOOP_COMPARE replace the
 run_exam.py / compare.py command; PROJECT_CHECK_CLAUDE replaces project_check.py's claude command
-(tests use fakes).
+(tests use fakes); EXAM_PREFLIGHT_CLAUDE replaces the `claude` of the exam credential preflight.
 """
 import argparse
 import datetime
+import functools
 import hashlib
 import json
 import os
@@ -119,7 +129,7 @@ LOOP_DIR = Path(__file__).resolve().parent
 AW_ROOT = LOOP_DIR.parent
 sys.dont_write_bytecode = True  # hash_tree(LOOP_DIR) must not see an exam/__pycache__ this import left
 sys.path.insert(0, str(LOOP_DIR / "exam"))
-from trial_export import OAUTH_TOKEN, json_events, model_route, rate_limit_reason  # noqa: E402
+from trial_export import EXAM_ROUTES, OAUTH_TOKEN, json_events, model_route, rate_limit_reason, sandbox_env  # noqa: E402
 HOME = Path(os.environ.get("HARNESS_LOOP_HOME") or Path.home() / ".harness-loop")
 TRIES = Path.home() / ".claude/tries"  # every repo's /work tries: <repo>/<bead>/try-<n>
 GH_REPO = "nguyenv119/agent-workflow"
@@ -127,6 +137,9 @@ GH_REPO = "nguyenv119/agent-workflow"
 WEEKLY_BUDGET_USD = 75.0  # fits one default round with a side check ($71)
 IMPROVER_MAX_USD = 10.0
 IMPROVER_TIMEOUT_S = 3600
+PREFLIGHT_TIMEOUT_S = 120  # the exam credential preflight: one short Haiku call
+# A preflight reply that means the subscription token itself is bad (so the next credential may be tried).
+AUTH_FAIL = re.compile(r"\b401\b|invalid|not logged in|unauthori[sz]ed|expired|revoked|authenticat|/login", re.I)
 PROJECT_CHECK_MAX_USD = 1.0  # project_check.py's --max-budget-usd; booked when a call's cost is unknown
 DEFAULT_EXAM_BUDGET_USD = 30.0
 FIRST_ESTIMATE_USD = 15.0  # exam/run_exam.py FIRST_ESTIMATE_USD (a test pins they match)
@@ -265,10 +278,11 @@ def week_notional(rows, at):
     return sum(float(r.get("notional_usd") or 0) for r in rows if at - datetime.datetime.fromisoformat(r["ts"]) < week)
 
 
-def check_budget(est, what, code=2):
-    """Money spent this week; dies when `est` more would pass the cap. A subscription run moves no money."""
+def check_budget(est, what, code=2, paid=None):
+    """Money spent this week; dies when `est` more would pass the cap. A subscription run moves no money:
+    paid defaults to the model route's, and a caller whose exam runs on another route passes its own."""
     spent = week_spent(read_jsonl(HOME / "spend.jsonl"), now())
-    if route() != "subscription" and spent + est > WEEKLY_BUDGET_USD + 1e-9:
+    if (route() != "subscription" if paid is None else paid) and spent + est > WEEKLY_BUDGET_USD + 1e-9:
         die(f"refusing {what}: ${spent:.2f} spent in the last 7 days + up to ${est:.2f} "
             f"> ${WEEKLY_BUDGET_USD:.2f} weekly cap", code=code)
     return spent
@@ -277,11 +291,13 @@ def check_budget(est, what, code=2):
 BOOKED = []  # every ledger row this process wrote; restore_state puts them back
 
 
-def book(kind, usd, round_n, note=""):
-    """One ledger row. On the subscription `usd` is claude's notional cost: booked as notional_usd, usd 0."""
-    cost, paid = round(float(usd), 4), route() != "subscription"
+def book(kind, usd, round_n, note="", via=None):
+    """One ledger row on route `via` (default: the model route). On the subscription `usd` is claude's notional
+    cost: booked as notional_usd, usd 0."""
+    via = via or route()
+    cost, paid = round(float(usd), 4), via != "subscription"
     row = {"ts": now().isoformat(), "kind": kind, "round": round_n, "usd": cost if paid else 0.0, "note": note,
-           "route": route(), **({} if paid else {"notional_usd": cost})}
+           "route": via, **({} if paid else {"notional_usd": cost})}
     BOOKED.append(row)
     append_jsonl(HOME / "spend.jsonl", row)
 
@@ -688,18 +704,19 @@ def run_exam(sha, manifest, kind, budget, round_n, screen=True, tries=1, extra=(
                                                    "--budget-usd", f"{budget:.2f}", "--kind", kind,
                                                    "--tries", str(tries)] + (["--screen"] if screen else []) + list(extra)
     label = f"sidecheck-{kind}" if side_home else f"exam-{kind}"
-    env = {**exam_env(), "HARNESS_LOOP_HOME": str(side_home)} if side_home else exam_env()
+    via = exam_route()[0]
+    env = {**exam_env(), "HARNESS_MODEL_ACCESS": via, **({"HARNESS_LOOP_HOME": str(side_home)} if side_home else {})}
     try:
         p = subprocess.run(cmd, capture_output=True, text=True, env=env)
     except BaseException:
-        book(label, budget, round_n, "interrupted: booked at budget")
+        book(label, budget, round_n, "interrupted: booked at budget", via)
         raise
     m = re.search(r"^run_exam: (\S+) (complete|incomplete)", p.stdout, re.M)
     if not m:
         raise RuntimeError(f"run_exam left no run (exit {p.returncode}): {p.stderr.strip()[-300:]}")
     run = Path(m[1])
     cost = json.loads((run / "summary.json").read_text()).get("total_cost_usd") or 0
-    book(label, cost, round_n, "side check" if side_home else run.name)
+    book(label, cost, round_n, "side check" if side_home else run.name, via)
     limit = json.loads((run / "run.json").read_text()).get("rate_limited")
     if limit:  # no name: a side run's carries the private set
         raise RateLimited(f"{label} run: {limit}")
@@ -746,7 +763,7 @@ def find_base_run(base_sha, manifest):
             continue
         if (meta.get("set") == data.get("set") and meta.get("tasks") == want and meta.get("screen")
                 and meta.get("agent") == "workflow" and meta.get("kind") == "baseline"
-                and meta.get("status") == "complete" and meta.get("model_access", "bedrock") == route() and (meta_f.parent / "summary.sha256").is_file()
+                and meta.get("status") == "complete" and meta.get("model_access", "bedrock") == exam_route()[0] and (meta_f.parent / "summary.sha256").is_file()
                 and meta_f.parent.name in booked and tree and harness_tree(str(meta.get("harness_commit"))) == tree):
             found.append((meta_f.stat().st_mtime, meta_f.parent))
     return max(found)[1] if found else None
@@ -891,13 +908,63 @@ def bedrock_problem(env):
     return ""
 
 
-def sandbox_token_problem():
-    """Why the exam's sandboxed /work runs cannot use the subscription, or '' (always '' on bedrock, where
-    run_exam.py's own preflight checks the keys before any try)."""
-    if route() == "subscription" and not os.environ.get(OAUTH_TOKEN):
-        return (f"the exam on the subscription needs {OAUTH_TOKEN} (its sandboxes cannot read this machine's "
-                "login): run `claude setup-token` once and export the token it prints; "
-                "HARNESS_MODEL_ACCESS=bedrock runs it on paid Bedrock instead")
+def preflight(via):
+    """'' when one cheap claude call answers on the credential the exam's sandboxes would get on route `via`,
+    else why not (never a credential value). On the subscription only a missing token or an auth failure
+    (AUTH_FAIL) falls through to the next, paid, credential; a usage limit, a timeout or any other failure
+    raises RateLimited, so a busy subscription pauses and never moves the exam to a paid route."""
+    try:
+        cred = sandbox_env(os.environ, via, tries_dir="/")
+    except RuntimeError as e:  # "<VAR> is not set on the host; ..."
+        return str(e).split(";")[0]
+    secrets = [v for k, v in cred.items() if SCRUB_ENV.match(k) and v]
+    cmd = shlex.split(os.environ.get("EXAM_PREFLIGHT_CLAUDE") or "claude") + [
+        "-p", "reply ok", "--model", "haiku", "--output-format", "json", "--no-session-persistence"]
+    with tempfile.TemporaryDirectory(prefix="exam-preflight-") as tmp:  # no user settings, hooks or login
+        env = {"PATH": os.environ.get("PATH", ""), "HOME": os.environ.get("HOME", ""), "CLAUDE_CONFIG_DIR": tmp, **cred}
+        try:
+            p = subprocess.run(cmd, cwd=tmp, env=env, capture_output=True, text=True, timeout=PREFLIGHT_TIMEOUT_S)
+        except (OSError, subprocess.TimeoutExpired) as e:
+            if via == "subscription":
+                raise RateLimited(f"exam preflight on the subscription did not answer ({e.__class__.__name__})") from None
+            return f"preflight call failed ({e.__class__.__name__})"
+    events = json_events(p.stdout)
+    if p.returncode == 0 and any(isinstance(e, dict) and e.get("type") == "result" and e.get("is_error") is False
+                                 for e in events):
+        return ""
+    said = next((e["result"] for e in events if isinstance(e, dict) and isinstance(e.get("result"), str)), "")
+    said = said or (p.stderr.strip().splitlines() or [""])[-1]
+    for v in secrets:
+        said = said.replace(v, "***")
+    if via == "subscription" and (rate_limit_reason(events) or not AUTH_FAIL.search(said)):
+        raise RateLimited(f"exam preflight on the subscription: {said[:200]}")
+    return f"preflight call failed (exit {p.returncode}: {said[:200]})"
+
+
+@functools.cache
+def exam_route():
+    """(route, reasons) for the exam's sandboxed /work runs, decided once per process. On HARNESS_MODEL_ACCESS=bedrock:
+    bedrock (run_exam.py checks the keys). On the subscription (owner decision, 16 Oct 2026) the first of
+    EXAM_ROUTES whose one-call preflight answers: the CLAUDE_CODE_OAUTH_TOKEN, then Bedrock (paid), then
+    ANTHROPIC_API_KEY (paid); route None when none does. reasons: why each earlier one was passed over."""
+    if route() == "bedrock":
+        return "bedrock", ()
+    reasons = []
+    for via in EXAM_ROUTES:
+        why = preflight(via)
+        if not why:
+            return via, tuple(reasons)
+        reasons.append(f"{via}: {why}")
+    return None, tuple(reasons)
+
+
+def exam_problem():
+    """Why no exam can run, or ''. Prints the route the exam takes and what was passed over."""
+    via, reasons = exam_route()
+    if via is None:
+        return ("no exam credential works (" + "; ".join(reasons) + "); for the subscription run "
+                f"`claude setup-token` once and export {OAUTH_TOKEN}")
+    print(f"exam route: {via}" + (f" (passed over: {'; '.join(reasons)})" if reasons else ""))
     return ""
 
 
@@ -995,8 +1062,8 @@ def cmd_round(args):
             die(f"--improver-budget-usd is capped at ${IMPROVER_MAX_USD:.2f}")
     if bool(args.sidecheck) != bool(args.sidecheck_addon):
         die("--sidecheck and --sidecheck-addon go together")
-    if not args.no_screen and sandbox_token_problem():
-        die(f"refusing this round: {sandbox_token_problem()}")
+    if not args.no_screen and (why := exam_problem()):
+        die(f"refusing this round: {why}")
     if args.sidecheck:
         side_home_ok(Path(args.sidecheck).resolve().parent / SIDE_HOME, Path(args.sidecheck_addon).resolve())
     private = private_patterns()
@@ -1013,7 +1080,9 @@ def cmd_round(args):
     exam_budget = 0.0 if args.no_screen else args.budget_usd
     if args.sidecheck and not args.no_screen:
         exam_budget += args.sidecheck_budget_usd
-    check_budget((args.improver_budget_usd + PROJECT_CHECK_MAX_USD if default else 0.0) + exam_budget, "this round")
+    host = args.improver_budget_usd + PROJECT_CHECK_MAX_USD if default and route() != "subscription" else 0.0
+    exam_paid = bool(exam_budget) and exam_route()[0] != "subscription"
+    check_budget(host + (exam_budget if exam_paid else 0.0), "this round", paid=route() != "subscription" or exam_paid)
 
     n = next_round()
     round_dir, wt, branch = HOME / "rounds" / str(n), HOME / "wt" / str(n), f"harness-loop/{n}"
@@ -1191,9 +1260,9 @@ def cmd_monthly(args):
     if not queue:
         print("monthly: nothing queued")
         return
-    if sandbox_token_problem():
-        die(f"the monthly exam: {sandbox_token_problem()}")
-    check_budget(args.budget_usd, "the monthly exam")
+    if why := exam_problem():
+        die(f"the monthly exam: {why}")
+    check_budget(args.budget_usd, "the monthly exam", paid=exam_route()[0] != "subscription")
     git("fetch", "-q", "origin", "main")
     main_sha = git("rev-parse", "origin/main").strip()
     try:
@@ -1321,17 +1390,23 @@ def exam_restacked(args, main_sha, head, cand, post):
         die(f"PR #{args.pr}: {free.removeprefix('exam: ')} (main {main_sha[:7]})", code=1)
     if args.check_only:
         return
-    if bedrock_problem(os.environ) or sandbox_token_problem():
-        die(f"the exam: {bedrock_problem(os.environ) or sandbox_token_problem()}")
+    if why := bedrock_problem(os.environ) or exam_problem():
+        die(f"the exam: {why}")
     n, manifest = f"pr-{args.pr}", Path(args.tasks).resolve()
     base_run = find_base_run(main_sha, manifest)
     check_screen_budget(args.budget_usd, base_run)
-    check_budget(args.budget_usd, "the exam")
+    check_budget(args.budget_usd, "the exam", paid=exam_route()[0] != "subscription")
     base_run, cand_run, stop, stats = screen_against_main(main_sha, cand, manifest, args.budget_usd, n, base_run)
     if stop:
         die(stop, code=1)
     post(score_line("screen", stats, main_sha, cand, tries_of(cand_run), f"screen={stats['screen']}"),
          *early_stop_line(cand_run), *([f"gate guard (advisory): {'; '.join(guard)}"] if guard else []))
+
+
+def cmd_exam_route(_args):
+    """Print the exam's route and what was passed over (one preflight call per credential tried); exit 1 if none."""
+    if why := exam_problem():
+        die(why, code=1)
 
 
 def cmd_guard(args):
@@ -1419,6 +1494,8 @@ def main(argv=None):
     e.add_argument("--tasks", required=True)
     e.add_argument("--budget-usd", type=float, default=DEFAULT_EXAM_BUDGET_USD)
     e.add_argument("--check-only", action="store_true", help="path gate and free checks only: no spend, no PR edit")
+    sub.add_parser("exam-route", help="which credential the exam would run on (one cheap preflight call each); "
+                   "exit 1 if none works")
     g = sub.add_parser("guard", help="run the round's gate guard on one commit (exit 1 = rejected)")
     g.add_argument("commit")
     g.add_argument("--base", help="diff base (default: <commit>^)")
@@ -1438,7 +1515,7 @@ def main(argv=None):
     except ValueError as e:
         die(str(e))
     try:
-        {"round": cmd_round, "monthly": cmd_monthly, "sync": cmd_sync, "exam": cmd_exam, "guard": cmd_guard,
+        {"round": cmd_round, "monthly": cmd_monthly, "sync": cmd_sync, "exam": cmd_exam, "exam-route": cmd_exam_route, "guard": cmd_guard,
          "leak": cmd_leak, "budget": cmd_budget, "book": cmd_book}[args.cmd](args)
     except RateLimited as e:
         die(f"paused: {e}; nothing fell back to a paid route, run again once the limit resets", code=RATE_LIMITED_EXIT)

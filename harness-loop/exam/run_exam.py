@@ -56,13 +56,14 @@ docker, run_exam also removes any container or network of that try Harbor left.
 Model route: HARNESS_MODEL_ACCESS (trial_export.model_route): the Claude Code
 subscription by default, whose sandboxes need CLAUDE_CODE_OAUTH_TOKEN from
 `claude setup-token` (they cannot read this machine's keychain login); bedrock
-only when set to bedrock. Checked before any try starts; never switched on a
+only when set to bedrock; api (ANTHROPIC_API_KEY) only when loop.py's exam
+credential chain picked it. Checked before any try starts; never switched on a
 failure. A try that hits a usage limit (status rate_limited) stops the run like
 a budget stop: nothing more starts, the run is incomplete and run.json
 rate_limited holds claude's message, so a limit never reads as an unsolved task.
 
 Env: Harbor gets only HARBOR_ENV, plus the route's model credential for workflow
-runs (CLAUDE_CODE_OAUTH_TOKEN, or the AWS keys), plus DAYTONA_* (daytona) or
+runs (CLAUDE_CODE_OAUTH_TOKEN, the AWS keys, or ANTHROPIC_API_KEY), plus DAYTONA_* (daytona) or
 DOCKER_* (docker): Harbor copies some host vars into the sandbox. EXAM_HARBOR / EXAM_DOCKER override the `harbor run` / `docker` command
 prefixes (tests use fakes).
 """
@@ -104,13 +105,13 @@ TASK_CPUS, TASK_MEMORY_MB, DOCKER_RESERVE_MB = 2, 4096, 1024
 # which would make a baseline and a candidate differ by who launched them.
 HARBOR_ENV = ("PATH", "HOME", "TMPDIR", "LANG", "EXAM_HARBOR")
 # The route's model credential, for WorkflowAgent only: oracle and nop never call a model.
-MODEL_ENV = {"subscription": (trial_export.OAUTH_TOKEN,),
+MODEL_ENV = {"subscription": (trial_export.OAUTH_TOKEN,), "api": ("ANTHROPIC_API_KEY",),
              "bedrock": ("AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN", "AWS_REGION")}
 # Where the docker CLI finds the engine; none of these holds a secret.
 DOCKER_ENV = ("DOCKER_HOST", "DOCKER_CONTEXT", "DOCKER_CONFIG")
 MODELS = {"bedrock": {"opus": trial_export.BEDROCK_MODELS["ANTHROPIC_MODEL"],
                       "sonnet": trial_export.BEDROCK_MODELS["ANTHROPIC_DEFAULT_SONNET_MODEL"]},
-          "subscription": trial_export.API_MODELS}
+          "subscription": trial_export.API_MODELS, "api": trial_export.API_MODELS}
 
 
 def model_id(args):
@@ -476,7 +477,7 @@ def main(argv=None):
     ap.add_argument("--early-stop-vs", help="sealed baseline run: stop once the screen can no longer pass")
     args = ap.parse_args(argv)
     try:
-        args.route = trial_export.model_route(os.environ)
+        args.route = trial_export.model_route(os.environ, trial_export.EXAM_ROUTES)
         if args.agent == "workflow":  # the sandbox's credential, checked before any try is booked
             trial_export.sandbox_env(os.environ, args.route, tries_dir="/")
     except (ValueError, RuntimeError) as e:

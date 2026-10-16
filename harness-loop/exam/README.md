@@ -24,10 +24,14 @@ and export the token it prints as `CLAUDE_CODE_OAUTH_TOKEN`; only that token and
 id enter the sandbox, and run_exam refuses to start without it. `HARNESS_MODEL_ACCESS=bedrock` is
 the paid opt-in: export the Bedrock-only `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` (and
 `AWS_REGION`, default `us-east-1`); only those, the region and the `global.anthropic.claude-*-5-5`
-model ids enter the sandbox (`trial_export.sandbox_env`). Nothing switches route on a failure. A try
+model ids enter the sandbox (`trial_export.sandbox_env`). run_exam never switches route on a failure. A try
 that hits a usage limit is `rate_limited`: the run stops starting tries and is marked incomplete with
-run.json `rate_limited`, so the limit never scores as an unsolved task. `model_access=api` (an agent
-kwarg only) sends `ANTHROPIC_API_KEY` instead and nothing else.
+run.json `rate_limited`, so the limit never scores as an unsolved task. `HARNESS_MODEL_ACCESS=api`
+(run_exam only, never the loop's own route) sends `ANTHROPIC_API_KEY` instead and nothing else.
+`loop.py` picks the exam's route itself when it runs on the subscription: the token, then Bedrock,
+then the API key, whichever first answers a one-call preflight. A missing or failing token therefore
+moves the exam to a paid route; only a token at its usage limit pauses the run instead
+(`loop.py exam-route` shows the choice).
 
 Harbor redacts secrets from the trial dir only when they are agent env, which is what
 `--ae KEY=VALUE` sets. Because the keys come from the host env instead, `WorkflowAgent.__init__`
