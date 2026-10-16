@@ -3,7 +3,7 @@
 
     trial_export.py finalize <trial_dir>
 
-model_route()   which paid route claude uses: subscription (default) or bedrock (opt-in)
+model_route()   which paid route claude uses: subscription (default) or bedrock (opt-in); the exam also api
 sandbox_env()   the exact env a WorkflowAgent run passes into the sandbox
 rate_limit_reason()  the usage-limit / 429 message in claude's output, or None
 stream_result() cost, subtype, session id, rate limit and the no-PR line from claude's stream-json
@@ -32,6 +32,10 @@ API_MODELS = {"opus": API_MODEL, "sonnet": "claude-sonnet-5-5"}  # first-party i
 # turns into a paid one.
 ROUTE_VAR = "HARNESS_MODEL_ACCESS"
 ROUTES = ("subscription", "bedrock")
+# The exam's credential chain (owner decision, 16 Oct 2026): with no CLAUDE_CODE_OAUTH_TOKEN, loop.py runs the exam
+# on Bedrock, else on ANTHROPIC_API_KEY, and tells run_exam.py which with HARNESS_MODEL_ACCESS. Only the exam
+# takes api; every host call stays on ROUTES.
+EXAM_ROUTES = ROUTES + ("api",)
 # The subscription's login as an env var, from `claude setup-token`: what a sandbox, or a claude with its own
 # CLAUDE_CONFIG_DIR, needs, since neither can read this machine's keychain login.
 OAUTH_TOKEN = "CLAUDE_CODE_OAUTH_TOKEN"
@@ -40,11 +44,11 @@ OAUTH_TOKEN = "CLAUDE_CODE_OAUTH_TOKEN"
 LIMIT_TEXT = re.compile(r"hit your (?:\w+ )?limit|usage limit|rate[ _-]?limit|\b429\b|throttl|too many requests", re.I)
 
 
-def model_route(env):
-    """'subscription' (unset or empty) or 'bedrock' from env[HARNESS_MODEL_ACCESS]; ValueError otherwise."""
+def model_route(env, routes=ROUTES):
+    """'subscription' (unset or empty) or another of `routes` from env[HARNESS_MODEL_ACCESS]; ValueError otherwise."""
     route = env.get(ROUTE_VAR) or "subscription"
-    if route not in ROUTES:
-        raise ValueError(f"{ROUTE_VAR} must be one of {', '.join(ROUTES)}, got {route!r}")
+    if route not in routes:
+        raise ValueError(f"{ROUTE_VAR} must be one of {', '.join(routes)}, got {route!r}")
     return route
 
 

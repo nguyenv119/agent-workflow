@@ -580,6 +580,25 @@ class RunExamTest(unittest.TestCase):
         meta = json.loads((self.only_run() / "run.json").read_text())
         self.assertEqual((meta["model_access"], meta["model"]), ("subscription", "claude-opus-5-5"))
 
+    def test_api_route_gives_harbor_only_the_api_key(self):
+        """
+        HARNESS_MODEL_ACCESS=api (the exam's last fallback, set by loop.py): Harbor sees ANTHROPIC_API_KEY and no
+        token or AWS key, the agent gets model_access=api with a first-party model id, and run.json records it.
+        """
+        # GIVEN an API key, Bedrock keys and the token on the host
+        m = self.manifest({"t1": 2})
+        # WHEN run_exam runs on the api route
+        self.run_exam("--tasks", m, "--budget-usd", 100,
+                      extra_env={"HARNESS_MODEL_ACCESS": "api", "ANTHROPIC_API_KEY": "k", "AWS_ACCESS_KEY_ID": "id",
+                                 "AWS_SECRET_ACCESS_KEY": "s"})
+        # THEN Harbor got the key only, and the api kwargs
+        env, argv = self.envs()[0], self.argvs()[0]
+        self.assertIn("ANTHROPIC_API_KEY", env)
+        self.assertFalse({"CLAUDE_CODE_OAUTH_TOKEN", "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY"} & set(env))
+        ak = dict(argv[i + 1].split("=", 1) for i, a in enumerate(argv) if a == "--ak")
+        self.assertEqual((ak["model_access"], ak["model"]), ("api", "claude-opus-5-5"))
+        self.assertEqual(json.loads((self.only_run() / "run.json").read_text())["model_access"], "api")
+
     def test_subscription_without_token_refuses_before_any_try(self):
         """
         The sandbox cannot read the keychain login: with no token every try would error and be booked at the

@@ -129,9 +129,14 @@ class LoopRepo:
             "FAKE_EXAM_LOG": str(self.exam_log), "FAKE_EXAM_SPEC": json.dumps(SPEC_PASS),
             "LOOP_RUN_EXAM": f"{sys.executable} {FIXTURES / 'fake_run_exam.py'}",
             "PROJECT_CHECK_CLAUDE": f"{sys.executable} {FIXTURES / 'fake_claude.py'}",
+            "EXAM_PREFLIGHT_CLAUDE": self.preflight(),
             "FAKE_CLAUDE_REPLY": str(self.free_clean),
             "STUB_TRY_PATHS": "~/.claude/tries/agent-workflow/b-1/try-1 ~/.claude/tries/agent-workflow/b-2/try-1",
         }
+
+    def preflight(self, fail="", limit=""):
+        """EXAM_PREFLIGHT_CLAUDE: the fake preflight logging to preflight.jsonl, failing or limiting those routes."""
+        return f"{sys.executable} {FIXTURES / 'fake_preflight.py'} {self.tmp / 'preflight.jsonl'} fail={fail} limit={limit}"
 
     def loop(self, *args, env=None):
         return subprocess.run([sys.executable, str(self.aw / "harness-loop/loop.py"), *args],
@@ -1285,9 +1290,12 @@ class Subscription(LoopTestCase):
                           ("exam-candidate", 0.0, 10.0, "subscription")])
         self.assertEqual(loop.week_spent(self.spend_rows(), loop.now()), CAP)
 
-    def test_screened_round_without_token_is_refused_before_anything_runs(self):
-        """The exam's sandboxes cannot read the keychain login: no token, no round, and no switch to Bedrock."""
-        # GIVEN the subscription with Bedrock keys but no CLAUDE_CODE_OAUTH_TOKEN
+    def test_screened_round_with_no_working_exam_credential_is_refused_before_anything_runs(self):
+        """
+        No token, an incomplete Bedrock key pair and no API key: no exam credential works, so the round is
+        refused before the improver, an exam or a history row, naming `claude setup-token` among the reasons.
+        """
+        # GIVEN the subscription with half a Bedrock key pair and no CLAUDE_CODE_OAUTH_TOKEN
         env = {"HARNESS_MODEL_ACCESS": "subscription", "CLAUDE_CODE_USE_BEDROCK": "1", "AWS_ACCESS_KEY_ID": "x"}
         # WHEN a screened round starts
         p = self.r.round(env=env)
@@ -1404,6 +1412,170 @@ class Subscription(LoopTestCase):
         p = self.r.loop("budget", "--est", "1", "--what", "x", env={"HARNESS_MODEL_ACCESS": "max"})
         # THEN exit 2 naming it
         self.assertEqual(p.returncode, 2)
+        self.assertIn("HARNESS_MODEL_ACCESS", p.stderr)
+
+
+# Planted credential values: none may reach any output, ledger row, history row or round file.
+PLANTED = {"CLAUDE_CODE_OAUTH_TOKEN": "PLANTED-oauth-7f3a", "AWS_ACCESS_KEY_ID": "PLANTED-akid-91c2",
+           "AWS_SECRET_ACCESS_KEY": "PLANTED-aws-secret-55d0", "ANTHROPIC_API_KEY": "PLANTED-api-key-0e4b"}
+NO_TOKEN = {"HARNESS_MODEL_ACCESS": "subscription", "AWS_ACCESS_KEY_ID": PLANTED["AWS_ACCESS_KEY_ID"],
+            "AWS_SECRET_ACCESS_KEY": PLANTED["AWS_SECRET_ACCESS_KEY"], "ANTHROPIC_API_KEY": PLANTED["ANTHROPIC_API_KEY"]}
+
+
+class ExamRoute(LoopTestCase):
+    """
+    The exam's credential chain on the subscription route (owner decision, 16 Oct): CLAUDE_CODE_OAUTH_TOKEN, then
+    Bedrock, then ANTHROPIC_API_KEY, each taken only if the earlier is absent or fails a one-call preflight
+    (stubbed here: fake_preflight.py). Only the exam moves; a paid exam books real dollars against the cap.
+    """
+
+    def preflights(self):
+        f = self.r.tmp / "preflight.jsonl"
+        return [json.loads(line)["route"] for line in f.read_text().splitlines()] if f.is_file() else []
+
+    def spend(self):
+        f = self.r.home / "spend.jsonl"
+        return [json.loads(line) for line in f.read_text().splitlines()] if f.is_file() else []
+
+    def exam_rows(self):
+        return [(r["kind"], r["usd"], r.get("notional_usd"), r["route"]) for r in self.spend()
+                if r["kind"].startswith("exam-")]
+
+    def run_routes(self):
+        return sorted(json.loads(f.read_text())["model_access"] for f in (self.r.home / "runs").glob("*/run.json"))
+
+    def assertNoPlanted(self, *texts):
+        """No planted value in the given texts or in any file under the loop home."""
+        files = [f.read_text(errors="replace") for f in self.r.home.rglob("*") if f.is_file()]
+        for value in PLANTED.values():
+            for text in [*texts, *files]:
+                self.assertNotIn(value, text)
+
+    def test_token_set_runs_the_exam_on_the_subscription_at_no_money(self):
+        """Case 1: with the token set (and paid keys present) the exam stays on the subscription, booked notional."""
+        # GIVEN the token and every paid credential
+        env = {**NO_TOKEN, "CLAUDE_CODE_OAUTH_TOKEN": PLANTED["CLAUDE_CODE_OAUTH_TOKEN"]}
+        # WHEN a screened stub round runs
+        p = self.r.round(env=env)
+        # THEN one subscription preflight, both exam runs on the subscription, booked usd 0 with notional cost
+        self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+        self.assertEqual(self.preflights(), ["subscription"])
+        self.assertEqual(self.run_routes(), ["subscription", "subscription"])
+        self.assertEqual(self.exam_rows(), [("exam-baseline", 0.0, 10.0, "subscription"),
+                                            ("exam-candidate", 0.0, 10.0, "subscription")])
+        self.assertIn("exam route: subscription", p.stdout)
+
+    def test_no_token_and_bedrock_ok_runs_a_paid_bedrock_exam(self):
+        """Case 2: no token, Bedrock answers its preflight: the exam runs on Bedrock and books real dollars."""
+        # GIVEN no token, Bedrock keys and an API key
+        # WHEN a screened stub round runs
+        p = self.r.round(env=NO_TOKEN)
+        # THEN only Bedrock was preflighted (no token to try), the runs are Bedrock's, booked as money
+        self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+        self.assertEqual(self.preflights(), ["bedrock"])
+        self.assertEqual(self.run_routes(), ["bedrock", "bedrock"])
+        self.assertEqual(self.exam_rows(), [("exam-baseline", 10.0, None, "bedrock"),
+                                            ("exam-candidate", 10.0, None, "bedrock")])
+        # AND the host's project check stayed on the subscription
+        (pc,) = [r for r in self.spend() if r["kind"] == "project-check"]
+        self.assertEqual(pc["route"], "subscription")
+        self.assertIn("exam route: bedrock", p.stdout)
+        self.assertNoPlanted(p.stdout, p.stderr)
+
+    def test_paid_exam_is_held_to_the_weekly_cap(self):
+        """With the cap already spent, a round whose exam would be paid is refused before anything starts."""
+        # GIVEN the week's cap spent, and no token (the exam would go to Bedrock)
+        self.r.ledger((1, CAP))
+        # WHEN a screened stub round starts
+        p = self.r.round(env=NO_TOKEN)
+        # THEN exit 2 naming the cap, no history row, no exam run
+        self.assertEqual(p.returncode, 2, p.stdout + p.stderr)
+        self.assertIn("weekly cap", p.stderr)
+        self.assertEqual((self.r.history(), self.r.exam_calls()), ([], []))
+
+    def test_bedrock_fails_preflight_so_the_api_key_runs_the_exam(self):
+        """Case 3: Bedrock's preflight fails, the API key's passes: the exam runs on the key, booked as money."""
+        # GIVEN no token, a Bedrock preflight that fails with the credentials in its error text
+        env = {**NO_TOKEN, "EXAM_PREFLIGHT_CLAUDE": self.r.preflight(fail="bedrock")}
+        # WHEN a screened stub round runs
+        p = self.r.round(env=env)
+        # THEN Bedrock then the key were tried, the runs used the key, rows are paid on route api
+        self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+        self.assertEqual(self.preflights(), ["bedrock", "api"])
+        self.assertEqual(self.run_routes(), ["api", "api"])
+        self.assertEqual(self.exam_rows(), [("exam-baseline", 10.0, None, "api"), ("exam-candidate", 10.0, None, "api")])
+        self.assertIn("exam route: api", p.stdout)
+        self.assertIn("bedrock: preflight call failed", p.stdout)
+        # AND no credential value reached the output, ledger, history or round files
+        self.assertNoPlanted(p.stdout, p.stderr)
+
+    def test_no_credential_works_so_the_round_is_refused_naming_each(self):
+        """Case 4: nothing works: refused before anything runs, naming each credential tried and why, no value."""
+        # GIVEN no token and Bedrock and the key both failing their preflights
+        env = {**NO_TOKEN, "EXAM_PREFLIGHT_CLAUDE": self.r.preflight(fail="bedrock,api")}
+        # WHEN a screened stub round starts
+        p = self.r.round(env=env)
+        # THEN exit 2 naming all three, no history row, no exam run, no ledger row, no planted value
+        self.assertEqual(p.returncode, 2, p.stdout + p.stderr)
+        for reason in ("subscription: CLAUDE_CODE_OAUTH_TOKEN is not set", "bedrock: preflight call failed",
+                       "api: preflight call failed"):
+            self.assertIn(reason, p.stderr)
+        self.assertEqual((self.r.history(), self.r.exam_calls(), self.spend()), ([], [], []))
+        self.assertNoPlanted(p.stdout, p.stderr)
+
+    def test_rate_limited_token_pauses_and_never_falls_back_to_paid(self):
+        """A token that hits its usage limit at the preflight pauses (exit 4); Bedrock is never tried."""
+        # GIVEN a token whose preflight hits the session limit, and working Bedrock keys
+        env = {**NO_TOKEN, "CLAUDE_CODE_OAUTH_TOKEN": PLANTED["CLAUDE_CODE_OAUTH_TOKEN"],
+               "EXAM_PREFLIGHT_CLAUDE": self.r.preflight(limit="subscription")}
+        # WHEN a screened stub round starts
+        p = self.r.round(env=env)
+        # THEN exit 4, only the subscription preflight ran, nothing started
+        self.assertEqual(p.returncode, loop.RATE_LIMITED_EXIT, p.stdout + p.stderr)
+        self.assertEqual(self.preflights(), ["subscription"])
+        self.assertEqual((self.r.history(), self.r.exam_calls()), ([], []))
+
+    def test_preflight_gets_only_the_candidate_credential(self):
+        """Each preflight sees its own credential only: Bedrock's gets no API key, the key's gets no AWS key."""
+        # GIVEN Bedrock failing so both paid candidates are tried
+        env = {**NO_TOKEN, "EXAM_PREFLIGHT_CLAUDE": self.r.preflight(fail="bedrock")}
+        # WHEN the exam route is asked for
+        p = self.r.loop("exam-route", env=env)
+        # THEN the bedrock call had no API key and the api call had no AWS key, and both ran outside the user's config
+        self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+        calls = [json.loads(line) for line in (self.r.tmp / "preflight.jsonl").read_text().splitlines()]
+        self.assertEqual([c["route"] for c in calls], ["bedrock", "api"])
+        self.assertNotIn("ANTHROPIC_API_KEY", calls[0]["env"])
+        self.assertFalse({"AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY"} & set(calls[1]["env"]))
+        self.assertTrue(all("CLAUDE_CONFIG_DIR" in c["env"] for c in calls))
+
+    def test_exam_route_command_reports_the_route_and_exits_by_outcome(self):
+        """`exam-route` prints the chosen route (exit 0) or every reason (exit 1), never a value."""
+        # GIVEN / WHEN the route is asked with Bedrock working, then with nothing working
+        ok = self.r.loop("exam-route", env=NO_TOKEN)
+        none = self.r.loop("exam-route", env={**NO_TOKEN, "EXAM_PREFLIGHT_CLAUDE": self.r.preflight(fail="bedrock,api")})
+        # THEN bedrock and exit 0, then exit 1 naming the three
+        self.assertEqual(ok.returncode, 0, ok.stdout + ok.stderr)
+        self.assertIn("exam route: bedrock", ok.stdout)
+        self.assertEqual(none.returncode, 1, none.stdout + none.stderr)
+        self.assertIn("api: preflight call failed", none.stdout + none.stderr)
+        self.assertNoPlanted(ok.stdout, ok.stderr, none.stdout, none.stderr)
+
+    def test_bedrock_route_skips_the_chain(self):
+        """HARNESS_MODEL_ACCESS=bedrock is the opt-in paid route for everything: no preflight, exam on Bedrock."""
+        # GIVEN / WHEN a screened stub round on the bedrock route (the LoopRepo default)
+        p = self.r.round()
+        # THEN no preflight ran and the exam rows are Bedrock's
+        self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+        self.assertEqual(self.preflights(), [])
+        self.assertEqual({r[3] for r in self.exam_rows()}, {"bedrock"})
+
+    def test_api_is_an_exam_only_route(self):
+        """HARNESS_MODEL_ACCESS=api is refused: the API key is an exam fallback, never the loop's own route."""
+        # GIVEN / WHEN any command under HARNESS_MODEL_ACCESS=api
+        p = self.r.loop("budget", "--est", "1", "--what", "x", env={"HARNESS_MODEL_ACCESS": "api"})
+        # THEN exit 2 naming the variable
+        self.assertEqual(p.returncode, 2, p.stdout + p.stderr)
         self.assertIn("HARNESS_MODEL_ACCESS", p.stderr)
 
 
