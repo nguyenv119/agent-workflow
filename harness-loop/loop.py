@@ -12,7 +12,7 @@
     loop.py leak [--diff <ref>] [--body <file>] [--redact]
     loop.py budget --est X --what S
     loop.py book --kind K --usd X [--note S]
-    loop.py port --from <installed .claude dir> --source-label S [--base B] [--draft]
+    loop.py port --from <installed .claude dir or its project root> --source-label S [--base B] [--draft]
 
 round: make worktree $HARNESS_LOOP_HOME/wt/<n> on branch harness-loop/<n> off origin/main;
 write rounds/<n>/message.txt (paths only; a `proposals:` line when --proposals names a file that
@@ -97,13 +97,16 @@ file; prints each hit, exits 1 on any, 3 when leak-patterns.txt is missing, 0 cl
 
 port: opens one PR on agent-workflow from the base files an installed harness edited (`agent-cli harness
 drift` base_edited, kept only where HARNESS_FILES.tsv says origin `base`: a merged base+addon settings.json carries
-project hooks and is never ported). Files whose bytes already match origin/<base> (default main) are dropped; the
-rest go on branch harness-port/<8 hex of sha256 over the sorted paths> off origin/<base>, copied when <base> still
-has the pinned HARNESS_VERSION commit's version, else merged three ways with the pinned version as base (a conflict
-skips that file and the PR body lists it). The round's leak scan and load check gate the push; an open PR for that
-branch is force-pushed and its body rewritten, never a second PR. HARNESS_PORT_TODAY (YYYY-MM-DD) sets the body's
-date. Exit 0 PR opened or updated or nothing to port, 1 a gate refused (leak, load check, every file conflicting),
-2 usage, 3 no HARNESS_FILES.tsv.
+project hooks and is never ported; nor is a file whose install-time sha256 there is not the pinned commit's bytes,
+e.g. a settings.json a .skipbase rewrote, named on a `port: skipped` line). Files whose bytes already match
+origin/<base> (default main) are dropped; the rest go on branch harness-port/<8 hex of sha256 over the sorted paths>
+off origin/<base>, copied when <base> still has the pinned HARNESS_VERSION commit's version, else merged three ways
+with the pinned version as base (a conflict skips that file and the PR body lists it). The round's leak scan and load
+check gate the push; an open PR for that branch is force-pushed and its title and body rewritten, never a second PR.
+HARNESS_PORT_TODAY (YYYY-MM-DD) sets the body's date. --from may also be the project root holding .claude. Exit 0
+PR opened or updated or nothing to port, 1 a gate refused (leak, load check, every file conflicting) or gh pr edit
+failed, 2 usage or setup error (bad --from, no pinned commit, drift failed, no leak-patterns.txt), 3 no
+HARNESS_FILES.tsv.
 
 Leak scan: /Users/ always; tool names (EXAMPLE_LEAK) unless the line has "e.g."; plus private
 names, one regex per line, from $HARNESS_LOOP_HOME/leak-patterns.txt, which must exist (an
@@ -1508,6 +1511,8 @@ def port_file(path, data, base_ref, pinned, wt, tmp):
 
 def cmd_port(args):
     src = Path(args.src)
+    if (src / ".claude/HARNESS_FILES.tsv").is_file():  # the project root given: read its .claude dir
+        src /= ".claude"
     if not src.is_dir():
         die(f"port: --from {src} is not a directory (give the installed .claude dir)")
     if not (src / "HARNESS_FILES.tsv").is_file():
@@ -1533,8 +1538,19 @@ def cmd_port(args):
         edited = None
     if not isinstance(edited, list):
         die(f"port: harness drift failed (exit {p.returncode}): {p.stderr.strip()[:300]}")
-    origin = dict(ln.split("\t")[:2] for ln in (src / "HARNESS_FILES.tsv").read_text().splitlines()[1:] if "\t" in ln)
-    paths = sorted(f for f in edited if origin.get(f) == "base")  # never base+addon: it carries project hooks
+    tsv = (src / "HARNESS_FILES.tsv").read_text().splitlines()[1:]
+    rows = {r[0]: r[1:3] for r in (ln.split("\t") for ln in tsv)}  # path -> [origin, install-time sha256]
+    # Deliberate defense in depth beside drift: port only `base` rows (never base+addon: it carries project hooks)
+    # whose install-time sha256 is the pinned commit's bytes. Any installer transform of a base file (a .skipbase
+    # rewriting settings.json) would otherwise send the project's opt-outs upstream as deletions.
+    paths = []
+    for f in sorted(f for f in edited if rows.get(f, [])[:1] == ["base"]):
+        pin = blob(pinned, f)
+        if pin is None or [hashlib.sha256(pin).hexdigest()] != rows[f][1:]:
+            print(f"port: skipped {f}: the installer changed it (not a byte copy of {pinned[:7]}), edit the add-on "
+                  "instead")
+            continue
+        paths.append(f)
     if not paths:
         print("port: nothing to port")
         return
@@ -1586,8 +1602,10 @@ def port_commit(args, branch, base_ref, pinned, private, done, wt):
     if open_prs:
         n = open_prs[0]["number"]
         push_branch(branch, force=True)
-        subprocess.run(["gh", "pr", "edit", str(n), "--repo", GH_REPO, "--body", body], capture_output=True,
-                       text=True, check=True)
+        e = subprocess.run(["gh", "pr", "edit", str(n), "--repo", GH_REPO, "--title", title, "--body", body],
+                           capture_output=True, text=True)
+        if e.returncode != 0:
+            die(f"port: gh pr edit #{n} failed: {e.stderr.strip()[:300]}", code=1)
         print(f"port: updated PR #{n} {branch} ({what})")
     else:
         _, n = open_pr(branch, args.base, title, body, draft=args.draft, force=True)

@@ -3,8 +3,8 @@
 
 `pr create` prints a PR url; `pr view` prints {"state": $FAKE_GH_STATE, "body": the last
 body sent for that PR, "headRefOid": $FAKE_GH_HEAD, "headRefName": "pr-head"}. `pr list` prints [] or, when
-$FAKE_GH_OPEN_PR is set, one open PR with that number. `pr edit` exits 1 if $FAKE_GH_FAIL_EDIT is set. Everything else
-prints nothing.
+$FAKE_GH_OPEN_PR is set, one open PR with that number. `pr edit` exits 1 (stderr "edit refused") if
+$FAKE_GH_FAIL_EDIT is set. Everything else prints nothing.
 """
 import json
 import os
@@ -25,6 +25,7 @@ if os.path.exists(log):
 with open(log, "a") as fh:
     fh.write(json.dumps(rec) + "\n")
 if args[:2] == ["pr", "edit"] and os.environ.get("FAKE_GH_FAIL_EDIT"):
+    print("edit refused", file=sys.stderr)
     sys.exit(1)
 if args[:2] == ["pr", "create"]:
     print("https://github.com/nguyenv119/agent-workflow/pull/77")

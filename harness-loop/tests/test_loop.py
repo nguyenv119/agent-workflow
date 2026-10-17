@@ -2826,13 +2826,79 @@ class Port(unittest.TestCase):
         self.assertEqual(p.returncode, 0, p.stderr)
         self.assertIn(f"port: updated PR #77 {branch} (1 file: {IMPL})", p.stdout)
         self.assertEqual(len(self.r.creates()), 1)
+        lists = [c["args"] for c in self.r.gh_calls() if c["args"][:2] == ["pr", "list"]]
+        self.assertEqual(len(lists), 2)
+        self.assertEqual(lists[-1][lists[-1].index("--head") + 1], branch)
+        self.assertEqual(lists[-1][lists[-1].index("--state") + 1], "open")
         edits = [c for c in self.r.gh_calls() if c["args"][:2] == ["pr", "edit"]]
         self.assertEqual(len(edits), 1)
         self.assertEqual(edits[0]["args"][2], "77")
         self.assertIn("2026-10-18", edits[0]["body"])
+        args = edits[0]["args"]
+        self.assertEqual(args[args.index("--title") + 1], "harness-port: 1 file(s) from test install")
         # AND the remote branch was force-pushed to the new content
         self.assertEqual(self.r.remote_ports(), [branch])
         self.assertIn("small and easy to read.", self.r.remote_file(branch, IMPL))
+
+    def test_failed_pr_edit_on_the_update_path_exits_1_with_gh_reason(self):
+        """
+        When gh refuses to update the open PR, the caller needs one line saying which PR and why, not a traceback;
+        exit 1 so a daily caller sees the update did not land.
+        """
+        # GIVEN a first port, then a second edit with gh reporting the PR open but refusing edits
+        self.r.edit(IMPL, "Keep the diff small.", "Keep the diff small and readable.")
+        self.assertEqual(self.r.port().returncode, 0)
+        self.r.edit(IMPL, "small and readable.", "small and easy to read.")
+        # WHEN port runs again
+        p = self.r.port(env={"FAKE_GH_OPEN_PR": "77", "FAKE_GH_FAIL_EDIT": "1"})
+        # THEN exit 1 naming the PR and gh's stderr, no traceback, no second create
+        self.assertEqual(p.returncode, 1, p.stdout + p.stderr)
+        self.assertIn("port: gh pr edit #77 failed: edit refused", p.stderr)
+        self.assertNotIn("Traceback", p.stderr)
+        self.assertEqual(len(self.r.creates()), 1)
+
+    def test_settings_json_the_installer_rewrote_is_never_ported(self):
+        """
+        A .skipbase deletes base hooks from settings.json at install time; the row still says origin base, but
+        the bytes are not the pinned commit's. Porting a hand edit of it would delete those hooks upstream, so it
+        is skipped and named, and a clean base edit next to it still goes up.
+        """
+        # GIVEN an add-on .skipbase deleting the base PreToolUse hook, and the installed settings.json hand-edited
+        addon = Path(self._tmp) / "addon"
+        addon.mkdir()
+        (addon / ".skipbase").write_text("hook PreToolUse Agent\n")
+        shutil.rmtree(self.r.inst)
+        self.r.install("--addon", str(addon))
+        settings = self.r.inst / ".claude/settings.json"
+        self.assertNotIn("check.sh", settings.read_text())
+        settings.write_text(json.dumps({"hooks": {}, "model": "sonnet"}) + "\n")
+        skipped = (f"port: skipped .claude/settings.json: the installer changed it (not a byte copy of "
+                   f"{self.r.base_sha[:7]}), edit the add-on instead")
+        # WHEN port runs with that the only edit
+        p = self.r.port()
+        # THEN it names the skip and pushes nothing
+        self.assertNothingPushed(p, 0)
+        self.assertIn(skipped, p.stdout)
+        self.assertIn("port: nothing to port", p.stdout)
+        # AND WHEN a clean base skill edit is added and port runs again
+        self.r.edit(IMPL, "Keep the diff small.", "Keep the diff small and readable.")
+        p = self.r.port()
+        # THEN the branch holds only the skill, the skip is named again, and the body never names settings.json
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertIn(skipped, p.stdout)
+        branch = port_branch(IMPL)
+        self.assertEqual(run(GIT + ["diff", "--name-only", "main", branch], self.r.origin).stdout.split(), [IMPL])
+        self.assertNotIn("settings.json", self.r.creates()[0]["body"])
+
+    def test_from_the_project_root_is_taken_as_its_claude_dir(self):
+        """Pointing --from at the project root instead of its .claude dir is an easy slip; port reads <root>/.claude."""
+        # GIVEN one edit
+        self.r.edit(IMPL, "Keep the diff small.", "Keep the diff small and readable.")
+        # WHEN port runs with --from the install root
+        p = self.r.loop("port", "--from", str(self.r.inst), "--source-label", "test install")
+        # THEN the PR opens as with the .claude dir
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertIn(f"port: PR #77 {port_branch(IMPL)} (1 file: {IMPL})", p.stdout)
 
     def test_private_name_in_the_change_exits_1_and_pushes_nothing(self):
         """The leak scan is what keeps a project's private names out of a public repo; a hit must stop the push."""
@@ -2850,8 +2916,10 @@ class Port(unittest.TestCase):
         self.r.edit(IMPL, "Keep the diff small.", "Keep the diff small and readable.")
         # WHEN port runs with a private label
         p = self.r.loop("port", "--from", str(self.r.inst / ".claude"), "--source-label", "secretco app")
-        # THEN exit 1, nothing pushed
+        # THEN exit 1, the hit printed, nothing pushed
         self.assertNothingPushed(p, 1)
+        self.assertIn("port: leak:", p.stdout)
+        self.assertIn("secretco app", p.stdout)
 
     def test_harness_that_fails_the_load_check_exits_1_and_pushes_nothing(self):
         """A ported change that breaks loading (a skill losing its description) must never become a PR."""
