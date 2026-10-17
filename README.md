@@ -139,3 +139,4 @@ CLAUDE.md           Your project's build, test and lint commands
 ## License
 
 MIT
+Scratch line for the CI leak-scan acceptance: zq1e6f584312fa27ae
