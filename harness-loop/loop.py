@@ -12,6 +12,7 @@
     loop.py leak [--diff <ref>] [--body <file>] [--redact]
     loop.py budget --est X --what S
     loop.py book --kind K --usd X [--note S]
+    loop.py port --from <installed .claude dir> --source-label S [--base B] [--draft]
 
 round: make worktree $HARNESS_LOOP_HOME/wt/<n> on branch harness-loop/<n> off origin/main;
 write rounds/<n>/message.txt (paths only; a `proposals:` line when --proposals names a file that
@@ -93,6 +94,16 @@ round is running: a round restores spend.jsonl from its snapshot and drops itsel
 leak: the same leak scan, free and on its own, over the lines added in <ref>...HEAD and a PR body
 file; prints each hit, exits 1 on any, 3 when leak-patterns.txt is missing, 0 clean. Run it before a push.
 --redact prints <file>:<line> (<rule>) per hit instead of the line, so a public CI log never repeats it.
+
+port: opens one PR on agent-workflow from the base files an installed harness edited (`agent-cli harness
+drift` base_edited, kept only where HARNESS_FILES.tsv says origin `base`: a merged base+addon settings.json carries
+project hooks and is never ported). Files whose bytes already match origin/<base> (default main) are dropped; the
+rest go on branch harness-port/<8 hex of sha256 over the sorted paths> off origin/<base>, copied when <base> still
+has the pinned HARNESS_VERSION commit's version, else merged three ways with the pinned version as base (a conflict
+skips that file and the PR body lists it). The round's leak scan and load check gate the push; an open PR for that
+branch is force-pushed and its body rewritten, never a second PR. HARNESS_PORT_TODAY (YYYY-MM-DD) sets the body's
+date. Exit 0 PR opened or updated or nothing to port, 1 a gate refused (leak, load check, every file conflicting),
+2 usage, 3 no HARNESS_FILES.tsv.
 
 Leak scan: /Users/ always; tool names (EXAMPLE_LEAK) unless the line has "e.g."; plus private
 names, one regex per line, from $HARNESS_LOOP_HOME/leak-patterns.txt, which must exist (an
@@ -573,6 +584,13 @@ def leak_hits(lines, private):
     return [line for line in lines if leak_rule(line, private)]
 
 
+def change_leaks(base, cand, body, private):
+    """Leak hits in the lines base..cand adds, cand's commit message and the PR body (the round's and port's scan)."""
+    files = parse_diff(git("diff", "-M", "--no-color", "--no-ext-diff", "--no-textconv", "--text", base, cand))
+    added = [t for f in files for kind, _, t in f["lines"] if kind == "+"]
+    return leak_hits(added + git("log", "-1", "--format=%B", cand).splitlines() + body.splitlines(), private)
+
+
 def section(text, title):
     lines, out, inside = text.splitlines(), [], False
     for line in lines:
@@ -678,10 +696,8 @@ def run_checks(base, cand, proposal, private, existing=None, round_n=0):
     out.append(("Exam mode section untouched", same, "" if same else "Exam mode section changed"))
     reasons, _ = guard_commits(base, cand)
     out.append(("gate guard", not reasons, "; ".join(reasons)))
-    message = git("log", "-1", "--format=%B", cand)
-    added = [t for f in files for kind, _, t in f["lines"] if kind == "+"]
     body = proposal_for_body(proposal, existing)  # what the PR shows: Evidence as masked paths, notes stay local
-    hits = leak_hits(added + message.splitlines() + body.splitlines(), private)
+    hits = change_leaks(base, cand, body, private)
     out.append(("leak scan", not hits, "leak: " + "; ".join(h.strip()[:80] for h in hits) if hits else ""))
     idea = re.search(r"^Idea:\s*\S", proposal, re.M)
     valid, invalid = try_folders(proposal, existing)
@@ -1065,6 +1081,20 @@ def side_home_ok(side_home, addon):
         die(f"side runs would land in the add-on at {rel}; list the side manifest's folder in {ignore}")
 
 
+def push_branch(branch, force=False):
+    git("-c", "core.hooksPath=/dev/null", "push", "-q", "--no-verify", *(["--force"] if force else []), "origin",
+        f"refs/heads/{branch}:refs/heads/{branch}")
+
+
+def open_pr(branch, base, title, body, label=None, draft=False, force=False):
+    """Push branch and open its PR against base (the round's and port's); returns (url, PR number)."""
+    push_branch(branch, force)
+    gh = ["gh", "pr", "create", "--repo", GH_REPO, "--head", branch, "--base", base, "--title", title, "--body", body,
+          *(["--label", label] if label else []), *(["--draft"] if draft else [])]
+    url = subprocess.run(gh, capture_output=True, text=True, check=True).stdout.strip().splitlines()[-1]
+    return url, int(url.rstrip("/").rsplit("/", 1)[1])
+
+
 def cmd_round(args):
     default = not args.improver_cmd
     if default:
@@ -1221,13 +1251,7 @@ def cmd_round(args):
         body_f = round_dir / "pr-body.md"
         body_f.write_text(body + "\n")
         title = f"harness-loop round {n}: {(row['idea'] or 'no idea line')[:70]}"
-        git("-c", "core.hooksPath=/dev/null", "push", "-q", "--no-verify", "origin",
-            f"refs/heads/{branch}:refs/heads/{branch}")
-        gh = ["gh", "pr", "create", "--repo", GH_REPO, "--head", branch, "--base", "main",
-              "--title", ("" if ready else prefix) + title,
-              "--body", body + "\n", "--label", label] + ([] if ready else ["--draft"])
-        url = subprocess.run(gh, capture_output=True, text=True, check=True).stdout.strip().splitlines()[-1]
-        row["pr"] = int(url.rstrip("/").rsplit("/", 1)[1])
+        url, row["pr"] = open_pr(branch, "main", ("" if ready else prefix) + title, body + "\n", label, draft=not ready)
         if ready:
             write_queue(read_queue() + [{"round": n, "branch": branch, "base_sha": base_sha, "cand_sha": cand,
                                          "manifest": str(manifest), "pr": row["pr"]}])
@@ -1454,6 +1478,122 @@ def cmd_leak(args):
     print(f"leak: clean ({len(lines)} lines)")
 
 
+def blob(ref, path):
+    """The raw bytes of path at ref, or None."""
+    p = subprocess.run(["git", "-C", str(AW_ROOT), "cat-file", "blob", f"{ref}:{path}"], capture_output=True)
+    return p.stdout if p.returncode == 0 else None
+
+
+def port_file(path, data, base_ref, pinned, wt, tmp):
+    """Put the installed bytes `data` of path into worktree wt (at base_ref): as they are when base_ref still has the
+    pinned version, else merged three ways with the pinned version as base. 'ported', 'same' (base_ref already has
+    the result) or 'conflict' (a conflict, a binary refusal, or a side missing the path)."""
+    ours, old = blob(base_ref, path), blob(pinned, path)
+    if ours is None or old is None:
+        return "conflict"
+    if ours != old:
+        sides = []
+        for name, b in (("ours", ours), ("pinned", old), ("installed", data)):
+            (Path(tmp) / name).write_bytes(b)
+            sides.append(str(Path(tmp) / name))
+        merged = subprocess.run(["git", "merge-file", "-p", *sides], capture_output=True)
+        if merged.returncode != 0:
+            return "conflict"
+        data = merged.stdout
+    if data == ours:
+        return "same"
+    (wt / path).write_bytes(data)  # into the existing file: keeps its mode
+    return "ported"
+
+
+def cmd_port(args):
+    src = Path(args.src)
+    if not src.is_dir():
+        die(f"port: --from {src} is not a directory (give the installed .claude dir)")
+    if not (src / "HARNESS_FILES.tsv").is_file():
+        die(f"port: no HARNESS_FILES.tsv in {src}: the install predates it; reinstall with install_harness.py --force",
+            code=3)
+    try:
+        pinned = json.loads((src / "HARNESS_VERSION").read_text())["commit"]
+    except (OSError, ValueError, KeyError, TypeError) as e:
+        die(f"port: {src / 'HARNESS_VERSION'} names no commit: {e}")
+    private = private_patterns()
+    base_ref = f"origin/{args.base}"
+    git("fetch", "-q", "origin", args.base)
+    try:
+        git("cat-file", "-e", f"{pinned}^{{commit}}")
+    except RuntimeError:
+        die(f"port: pinned commit {pinned} is not in {AW_ROOT}")
+    root = src.resolve().parent
+    p = subprocess.run([sys.executable, str(AW_ROOT / ".claude/bin/agent-cli"), "harness", "drift", "--target",
+                        str(root), "--json"], capture_output=True, text=True)
+    try:  # exit 1 = other drift (addon_edited, unowned...): base_edited is still good to port
+        edited = json.loads(p.stdout)["base_edited"] if p.returncode in (0, 1) else None
+    except (ValueError, KeyError, TypeError):
+        edited = None
+    if not isinstance(edited, list):
+        die(f"port: harness drift failed (exit {p.returncode}): {p.stderr.strip()[:300]}")
+    origin = dict(ln.split("\t")[:2] for ln in (src / "HARNESS_FILES.tsv").read_text().splitlines()[1:] if "\t" in ln)
+    paths = sorted(f for f in edited if origin.get(f) == "base")  # never base+addon: it carries project hooks
+    if not paths:
+        print("port: nothing to port")
+        return
+    installed = {f: (root / f).read_bytes() for f in paths}
+    paths = [f for f in paths if installed[f] != blob(base_ref, f)]
+    if not paths:
+        print("port: nothing to port (already upstream)")
+        return
+    branch = "harness-port/" + hashlib.sha256("\n".join(paths).encode()).hexdigest()[:8]
+    with tempfile.TemporaryDirectory(prefix="loop-port-") as tmp:
+        wt = Path(tmp) / "wt"
+        git("worktree", "add", "-q", "-B", branch, str(wt), base_ref)
+        try:  # the local branch and worktree always go; the pushed branch is the record
+            port_commit(args, branch, base_ref, pinned, private,
+                        {f: port_file(f, installed[f], base_ref, pinned, wt, tmp) for f in paths}, wt)
+        finally:
+            cleanup(wt, branch, keep_branch=False)
+
+
+def port_commit(args, branch, base_ref, pinned, private, done, wt):
+    """Commit port_file's results in wt, gate them (leak scan, load check), then push and open or update the PR."""
+    ported = [f for f, s in done.items() if s == "ported"]
+    skipped = [f for f, s in done.items() if s == "conflict"]
+    if not ported:
+        if not skipped:
+            print("port: nothing to port (already upstream)")
+            return
+        for f in skipped:
+            print(f"port: conflict, not ported: {f}")
+        sys.exit(1)
+    title = f"harness-port: {len(ported)} file(s) from {args.source_label}"
+    git("-c", "core.hooksPath=/dev/null", "commit", "-q", "--no-verify", "-a", "-m", title, cwd=wt)
+    cand = git("rev-parse", "HEAD", cwd=wt).strip()
+    body = "\n".join([
+        *(f"- {f}: installed from {pinned[:7]}" for f in ported), "",
+        f"Source: {args.source_label}", f"Date: {os.environ.get('HARNESS_PORT_TODAY') or now().date().isoformat()}",
+        *(["", "Skipped (conflict):", *(f"- {f}" for f in skipped)] if skipped else []), "",
+        "Opened by harness-loop/loop.py port from edited base files of an installed harness. The loop never merges."])
+    hits = change_leaks(base_ref, cand, body, private)
+    for h in hits:
+        print(f"port: leak: {h.strip()[:200]}")
+    reasons = [] if hits else load_check(cand)
+    for r in reasons:
+        print(f"port: load check: {r}")
+    if hits or reasons:
+        sys.exit(1)
+    what = f"{len(ported)} file{'s' if len(ported) != 1 else ''}: {', '.join(ported)}"
+    open_prs = gh_json("pr", "list", "--head", branch, "--state", "open", "--json", "number,url")
+    if open_prs:
+        n = open_prs[0]["number"]
+        push_branch(branch, force=True)
+        subprocess.run(["gh", "pr", "edit", str(n), "--repo", GH_REPO, "--body", body], capture_output=True,
+                       text=True, check=True)
+        print(f"port: updated PR #{n} {branch} ({what})")
+    else:
+        _, n = open_pr(branch, args.base, title, body, draft=args.draft, force=True)
+        print(f"port: PR #{n} {branch} ({what})")
+
+
 def usd(text):
     """argparse type: a finite dollar amount >= 0 (a negative row would hand the week money back)."""
     try:
@@ -1525,6 +1665,12 @@ def main(argv=None):
     bk.add_argument("--kind", required=True, help="the row's kind, e.g. gardener")
     bk.add_argument("--usd", type=usd, required=True, help="what the run cost, in USD")
     bk.add_argument("--note", default="", help="free text kept on the row (e.g. the report dir)")
+    pt = sub.add_parser("port", help="open one upstream PR from the base files an installed harness edited "
+                        "(exit 1 = a gate refused, 3 = no HARNESS_FILES.tsv)")
+    pt.add_argument("--from", dest="src", required=True, help="the installed .claude dir")
+    pt.add_argument("--source-label", required=True, help="free text naming the source in the PR, never a company name")
+    pt.add_argument("--base", default="main", help="branch to port onto and open the PR against (default: main)")
+    pt.add_argument("--draft", action="store_true", help="open the PR as a draft")
     args = ap.parse_args(argv)
     try:
         route()
@@ -1532,7 +1678,7 @@ def main(argv=None):
         die(str(e))
     try:
         {"round": cmd_round, "monthly": cmd_monthly, "sync": cmd_sync, "exam": cmd_exam, "exam-route": cmd_exam_route, "guard": cmd_guard,
-         "leak": cmd_leak, "budget": cmd_budget, "book": cmd_book}[args.cmd](args)
+         "leak": cmd_leak, "budget": cmd_budget, "book": cmd_book, "port": cmd_port}[args.cmd](args)
     except RateLimited as e:
         die(f"paused: {e}; nothing fell back to a paid route, run again once the limit resets", code=RATE_LIMITED_EXIT)
 

@@ -2592,6 +2592,359 @@ class ImproverEnv(unittest.TestCase):
         self.assertIs(settings["autoMemoryEnabled"], False)
 
 
+IMPL = ".claude/skills/implementer/SKILL.md"
+REVIEWER = ".claude/skills/reviewer-tests/SKILL.md"
+GIT_ID = {f"GIT_{who}_{what}": val for who in ("AUTHOR", "COMMITTER")
+          for what, val in (("NAME", "test"), ("EMAIL", "test@example.com"))}
+
+
+class PortRepo(LoopRepo):
+    """LoopRepo plus this repo's agent-cli committed in (so `harness drift` really runs) and an installed copy."""
+
+    def __init__(self, tmp):
+        super().__init__(tmp)
+        src = LOOP_DIR.parent / ".claude"
+        files = {p.relative_to(src.parent).as_posix(): p.read_text()
+                 for p in [src / "bin/agent-cli", *(src / "cli/agent_cli").rglob("*")]
+                 if p.is_file() and "__pycache__" not in p.parts}
+        _, self.base_sha = make_repo(self.aw, files)
+        run(GIT + ["push", "-q", "origin", "main"], self.aw)
+        self.inst = self.tmp / "inst"
+        self.env.update(GIT_ID, HARNESS_PORT_TODAY="2026-10-17")
+
+    def install(self, *extra):
+        """Install base_sha into inst with the real installer; returns the installed .claude dir."""
+        run([sys.executable, str(self.aw / "harness-loop/install_harness.py"), "--repo", str(self.aw),
+             "--commit", self.base_sha, "--target", str(self.inst), *extra], self.tmp)
+        return self.inst / ".claude"
+
+    def edit(self, rel, old, new):
+        f = self.inst / rel
+        text = f.read_text()
+        assert old in text, (rel, old)
+        f.write_text(text.replace(old, new))
+
+    def port(self, *extra, env=None):
+        return self.loop("port", "--from", str(self.inst / ".claude"), "--source-label", "test install", *extra,
+                         env=env)
+
+    def remote_ports(self):
+        return run(GIT + ["branch", "--list", "harness-port/*"], self.origin).stdout.split()
+
+    def remote_file(self, ref, rel):
+        return run(GIT + ["show", f"{ref}:{rel}"], self.origin).stdout
+
+    def creates(self):
+        return [c for c in self.gh_calls() if c["args"][:2] == ["pr", "create"]]
+
+
+def port_branch(*paths):
+    """The branch name port derives from the sorted path list (no date, so a daily caller reuses it)."""
+    return "harness-port/" + loop.hashlib.sha256("\n".join(sorted(paths)).encode()).hexdigest()[:8]
+
+
+class Port(unittest.TestCase):
+    def setUp(self):
+        self._tmp = os.path.realpath(tempfile.mkdtemp(prefix="loop-port-"))
+        self.addCleanup(shutil.rmtree, self._tmp, ignore_errors=True)
+        self.r = PortRepo(self._tmp)
+        self.r.install()
+
+    def assertNothingPushed(self, p, code):
+        """Exit `code`, no harness-port branch on origin or left locally, no gh call."""
+        self.assertEqual(p.returncode, code, p.stdout + p.stderr)
+        self.assertEqual(self.r.remote_ports(), [])
+        self.assertEqual(run(GIT + ["branch", "--list", "harness-port/*"], self.r.aw).stdout.strip(), "")
+        self.assertEqual(self.r.gh_calls(), [])
+
+    def test_one_edited_base_file_opens_one_pr_with_exactly_that_change(self):
+        """
+        The point of port: a generic fix made inside an installed harness reaches agent-workflow as one PR
+        holding exactly that edit, with a body naming the file, the commit it was installed from and the source.
+        If it broke, improvements made in projects would stay stranded there (or a PR would carry other changes).
+        """
+        # GIVEN an installed copy with one generic line edited in the implementer skill
+        self.r.edit(IMPL, "Keep the diff small.", "Keep the diff small and readable.")
+        # WHEN port runs
+        p = self.r.port()
+        # THEN it prints the PR line naming the derived branch and the one file
+        branch = port_branch(IMPL)
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertIn(f"port: PR #77 {branch} (1 file: {IMPL})", p.stdout)
+        # AND origin has that branch, one commit on main whose diff is exactly that line
+        self.assertEqual(self.r.remote_ports(), [branch])
+        diff = run(GIT + ["diff", "main", branch], self.r.origin).stdout
+        self.assertEqual([ln for ln in diff.splitlines() if ln[:1] in "+-" and ln[:3] not in ("+++", "---")],
+                         ["-Keep the diff small.", "+Keep the diff small and readable."])
+        self.assertEqual(run(GIT + ["rev-parse", f"{branch}^"], self.r.origin).stdout.strip(), self.r.base_sha)
+        # AND one pr create against main whose body lists the file, the pinned commit and the source label
+        creates = self.r.creates()
+        self.assertEqual(len(creates), 1)
+        args, body = creates[0]["args"], creates[0]["body"]
+        self.assertEqual(args[args.index("--base") + 1], "main")
+        self.assertEqual(args[args.index("--head") + 1], branch)
+        self.assertEqual(args[args.index("--title") + 1], "harness-port: 1 file(s) from test install")
+        self.assertNotIn("--draft", args)
+        self.assertNotIn("--label", args)
+        self.assertIn(f"{IMPL}: installed from {self.r.base_sha[:7]}", body)
+        self.assertIn("Source: test install", body)
+        self.assertIn("2026-10-17", body)
+        self.assertIn("never merges", body)
+        # AND no local branch or extra worktree is left behind (the remote branch is the record)
+        self.assertEqual(run(GIT + ["branch", "--list", "harness-port/*"], self.r.aw).stdout.strip(), "")
+        self.assertEqual(len(run(GIT + ["worktree", "list"], self.r.aw).stdout.splitlines()), 1)
+
+    def test_unedited_install_has_nothing_to_port(self):
+        """
+        A clean install must cost nothing: no branch, no gh call. Otherwise a daily caller would open empty PRs.
+        """
+        # GIVEN an installed copy nobody edited
+        # WHEN port runs
+        p = self.r.port()
+        # THEN nothing to port, exit 0, nothing pushed
+        self.assertNothingPushed(p, 0)
+        self.assertIn("port: nothing to port", p.stdout)
+
+    def test_edit_main_already_has_is_not_ported_again(self):
+        """
+        When main already holds the installed bytes (yesterday's port merged while the pin is still old), port
+        must stop: re-porting would open a PR with an empty or reverting diff every day.
+        """
+        # GIVEN an installed edit and the same edit committed on main
+        self.r.edit(IMPL, "Keep the diff small.", "Keep the diff small and readable.")
+        self.r.commit_on_main(IMPL, (self.r.inst / IMPL).read_text())
+        # WHEN port runs
+        p = self.r.port()
+        # THEN already upstream, exit 0, no branch, no gh
+        self.assertNothingPushed(p, 0)
+        self.assertIn("port: nothing to port (already upstream)", p.stdout)
+
+    def test_upstream_change_elsewhere_in_the_file_is_kept_by_the_merge(self):
+        """
+        If main moved since the install, copying the installed file would revert main's change. The port must
+        merge three ways (pinned as base) so both changes survive.
+        """
+        # GIVEN main changed the heading and the install changed a body line of the same file
+        self.r.commit_on_main(IMPL, IMPLEMENTER.replace("# Implementer\n", "# Implementer skill\n"))
+        self.r.edit(IMPL, "Keep the diff small.", "Keep the diff small and readable.")
+        # WHEN port runs
+        p = self.r.port()
+        # THEN the pushed file carries both changes
+        self.assertEqual(p.returncode, 0, p.stderr)
+        text = self.r.remote_file(port_branch(IMPL), IMPL)
+        self.assertIn("# Implementer skill\n", text)
+        self.assertIn("Keep the diff small and readable.", text)
+        self.assertEqual(len(self.r.creates()), 1)
+
+    def test_conflicting_file_is_skipped_and_listed_while_a_clean_one_ports(self):
+        """
+        A same-line conflict cannot be resolved by a script; the file is left out and named in the PR body so a
+        human sees it, while the other edited file still goes up. Silently dropping it would lose the edit unseen.
+        """
+        # GIVEN main and the install both rewrote the same line, and a second file has a clean install edit
+        self.r.commit_on_main(IMPL, IMPLEMENTER.replace("Keep the diff small.", "Keep the diff tiny."))
+        self.r.edit(IMPL, "Keep the diff small.", "Keep the diff small and readable.")
+        self.r.edit(REVIEWER, "Check every test.", "Check every test and its name.")
+        # WHEN port runs
+        p = self.r.port()
+        # THEN only the clean file is in the branch, and the body lists the conflict
+        self.assertEqual(p.returncode, 0, p.stderr)
+        branch = port_branch(IMPL, REVIEWER)
+        self.assertIn(f"port: PR #77 {branch} (1 file: {REVIEWER})", p.stdout)
+        names = run(GIT + ["diff", "--name-only", "main", branch], self.r.origin).stdout.split()
+        self.assertEqual(names, [REVIEWER])
+        body = self.r.creates()[0]["body"]
+        self.assertIn("Skipped (conflict)", body)
+        self.assertIn(IMPL, body.split("Skipped (conflict)")[1])
+
+    def test_every_file_conflicting_exits_1_and_pushes_nothing(self):
+        """An all-conflict port has nothing to offer: exit 1 naming the conflicts, no branch, no PR."""
+        # GIVEN only a same-line conflict
+        self.r.commit_on_main(IMPL, IMPLEMENTER.replace("Keep the diff small.", "Keep the diff tiny."))
+        self.r.edit(IMPL, "Keep the diff small.", "Keep the diff small and readable.")
+        # WHEN port runs
+        p = self.r.port()
+        # THEN exit 1, the conflict named, nothing pushed
+        self.assertNothingPushed(p, 1)
+        self.assertIn(IMPL, p.stdout + p.stderr)
+
+    def test_merged_settings_json_is_never_ported(self):
+        """
+        settings.json merged with an add-on's settings.add.json carries project hooks; porting it would publish
+        them upstream. Only the base file edited next to it may go up.
+        """
+        # GIVEN an install with an add-on settings.add.json, its settings.json and a base skill both hand-edited
+        addon = Path(self._tmp) / "addon"
+        addon.mkdir()
+        (addon / "settings.add.json").write_text(json.dumps(
+            {"hooks": {"Stop": [{"hooks": [{"type": "command", "command": "echo project-hook"}]}]}}))
+        shutil.rmtree(self.r.inst)
+        self.r.install("--addon", str(addon))
+        self.r.edit(".claude/settings.json", "project-hook", "project-hook-edited")
+        self.r.edit(IMPL, "Keep the diff small.", "Keep the diff small and readable.")
+        # WHEN port runs
+        p = self.r.port()
+        # THEN the branch holds only the base skill, and nothing in the PR names settings.json
+        self.assertEqual(p.returncode, 0, p.stderr)
+        branch = port_branch(IMPL)
+        self.assertEqual(self.r.remote_ports(), [branch])
+        names = run(GIT + ["diff", "--name-only", "main", branch], self.r.origin).stdout.split()
+        self.assertEqual(names, [IMPL])
+        self.assertNotIn("settings.json", self.r.creates()[0]["body"])
+
+    def test_only_the_merged_settings_json_edited_opens_nothing(self):
+        """The merged settings.json alone is never a reason for a branch or a PR."""
+        # GIVEN an add-on install whose only edit is to the merged settings.json
+        addon = Path(self._tmp) / "addon"
+        addon.mkdir()
+        (addon / "settings.add.json").write_text(json.dumps(
+            {"hooks": {"Stop": [{"hooks": [{"type": "command", "command": "echo project-hook"}]}]}}))
+        shutil.rmtree(self.r.inst)
+        self.r.install("--addon", str(addon))
+        self.r.edit(".claude/settings.json", "project-hook", "project-hook-edited")
+        # WHEN port runs
+        p = self.r.port()
+        # THEN nothing to port, nothing pushed
+        self.assertNothingPushed(p, 0)
+        self.assertIn("port: nothing to port", p.stdout)
+
+    def test_second_run_updates_the_open_pr_instead_of_opening_another(self):
+        """
+        A daily caller ports the same file set again: it must update the one open PR (force-push, new body),
+        never open a second, or the repo fills with duplicate PRs.
+        """
+        # GIVEN a first port of one file
+        self.r.edit(IMPL, "Keep the diff small.", "Keep the diff small and readable.")
+        first = self.r.port()
+        self.assertEqual(first.returncode, 0, first.stderr)
+        # AND the same file edited again, a later date, and gh reporting the PR open for that head
+        self.r.edit(IMPL, "small and readable.", "small and easy to read.")
+        # WHEN port runs again
+        p = self.r.port(env={"HARNESS_PORT_TODAY": "2026-10-18", "FAKE_GH_OPEN_PR": "77"})
+        # THEN it updated PR #77 on the same branch with one create in total
+        branch = port_branch(IMPL)
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertIn(f"port: updated PR #77 {branch} (1 file: {IMPL})", p.stdout)
+        self.assertEqual(len(self.r.creates()), 1)
+        edits = [c for c in self.r.gh_calls() if c["args"][:2] == ["pr", "edit"]]
+        self.assertEqual(len(edits), 1)
+        self.assertEqual(edits[0]["args"][2], "77")
+        self.assertIn("2026-10-18", edits[0]["body"])
+        # AND the remote branch was force-pushed to the new content
+        self.assertEqual(self.r.remote_ports(), [branch])
+        self.assertIn("small and easy to read.", self.r.remote_file(branch, IMPL))
+
+    def test_private_name_in_the_change_exits_1_and_pushes_nothing(self):
+        """The leak scan is what keeps a project's private names out of a public repo; a hit must stop the push."""
+        # GIVEN an installed edit naming a private pattern from leak-patterns.txt
+        self.r.edit(IMPL, "Keep the diff small.", "Ask secretco before merging.")
+        # WHEN port runs
+        p = self.r.port()
+        # THEN exit 1, the hit printed, nothing pushed
+        self.assertNothingPushed(p, 1)
+        self.assertIn("Ask secretco before merging.", p.stdout + p.stderr)
+
+    def test_private_name_in_the_source_label_exits_1(self):
+        """The PR body is public too: a private name passed as --source-label must also stop the port."""
+        # GIVEN a clean edit
+        self.r.edit(IMPL, "Keep the diff small.", "Keep the diff small and readable.")
+        # WHEN port runs with a private label
+        p = self.r.loop("port", "--from", str(self.r.inst / ".claude"), "--source-label", "secretco app")
+        # THEN exit 1, nothing pushed
+        self.assertNothingPushed(p, 1)
+
+    def test_harness_that_fails_the_load_check_exits_1_and_pushes_nothing(self):
+        """A ported change that breaks loading (a skill losing its description) must never become a PR."""
+        # GIVEN an installed skill whose frontmatter lost its description
+        self.r.edit(REVIEWER, "description: Reviews tests.\n", "")
+        # WHEN port runs
+        p = self.r.port()
+        # THEN exit 1 naming the load check reason, nothing pushed
+        self.assertNothingPushed(p, 1)
+        self.assertIn("frontmatter lacks description", p.stdout + p.stderr)
+
+    def test_install_without_harness_files_tsv_exits_3(self):
+        """An install older than HARNESS_FILES.tsv cannot tell base from add-on files: refuse with exit 3."""
+        # GIVEN an install whose HARNESS_FILES.tsv is gone
+        (self.r.inst / ".claude/HARNESS_FILES.tsv").unlink()
+        # WHEN port runs
+        p = self.r.port()
+        # THEN exit 3, nothing pushed
+        self.assertNothingPushed(p, 3)
+
+    def test_from_that_is_not_a_directory_exits_2(self):
+        """A mistyped --from is a usage error (exit 2), not an empty port."""
+        # GIVEN / WHEN port runs on a path that does not exist
+        p = self.r.loop("port", "--from", str(Path(self._tmp) / "nope"), "--source-label", "test install")
+        # THEN exit 2, nothing pushed
+        self.assertNothingPushed(p, 2)
+
+    def test_install_without_a_readable_pin_exits_2(self):
+        """Without the pinned commit port cannot tell an upstream move from an installed edit: refuse (exit 2)."""
+        # GIVEN an edit and an install whose HARNESS_VERSION is gone
+        self.r.edit(IMPL, "Keep the diff small.", "Keep the diff small and readable.")
+        (self.r.inst / ".claude/HARNESS_VERSION").unlink()
+        # WHEN port runs
+        p = self.r.port()
+        # THEN exit 2 naming HARNESS_VERSION, nothing pushed
+        self.assertNothingPushed(p, 2)
+        self.assertIn("HARNESS_VERSION", p.stderr)
+
+    def test_pinned_commit_unknown_to_this_checkout_exits_2_naming_it(self):
+        """A pin this checkout lacks (an install from a fork or an unfetched commit) cannot be merged against."""
+        # GIVEN an edit and a pin no repo here has
+        self.r.edit(IMPL, "Keep the diff small.", "Keep the diff small and readable.")
+        bogus = "0123456789abcdef0123456789abcdef01234567"
+        (self.r.inst / ".claude/HARNESS_VERSION").write_text(json.dumps({"commit": bogus, "addon": None}))
+        # WHEN port runs
+        p = self.r.port()
+        # THEN exit 2 naming the commit, nothing pushed
+        self.assertNothingPushed(p, 2)
+        self.assertIn(bogus, p.stderr)
+
+    def test_drift_refusing_the_install_stops_the_port_with_its_reason(self):
+        """If drift cannot read the install, port must stop with drift's reason, never guess a file list."""
+        # GIVEN an edit and a HARNESS_FILES.tsv without its header (drift refuses it)
+        self.r.edit(IMPL, "Keep the diff small.", "Keep the diff small and readable.")
+        tsv = self.r.inst / ".claude/HARNESS_FILES.tsv"
+        tsv.write_text("\n".join(tsv.read_text().splitlines()[1:]) + "\n")
+        # WHEN port runs
+        p = self.r.port()
+        # THEN exit 2 with drift's reason, nothing pushed
+        self.assertNothingPushed(p, 2)
+        self.assertIn("harness drift failed", p.stderr)
+        self.assertIn("header", p.stderr)
+
+    def test_draft_flag_opens_a_draft_pr(self):
+        """--draft lets a caller open the PR for a look before anyone reviews it."""
+        # GIVEN one edit
+        self.r.edit(IMPL, "Keep the diff small.", "Keep the diff small and readable.")
+        # WHEN port runs with --draft
+        p = self.r.port("--draft")
+        # THEN the create carries --draft
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertIn("--draft", self.r.creates()[0]["args"])
+
+    def test_base_flag_targets_another_branch(self):
+        """
+        --base lets the real acceptance run against a scratch branch: the port must start from origin/<base> and
+        open the PR against it, or a test port would land on main.
+        """
+        # GIVEN a scratch branch on origin at the install commit, and main moved past it
+        run(GIT + ["push", "-q", "origin", "main:scratch"], self.r.aw)
+        self.r.commit_on_main(REVIEWER, "---\nname: reviewer-tests\ndescription: Reviews tests.\n---\n\nMoved.\n")
+        self.r.edit(IMPL, "Keep the diff small.", "Keep the diff small and readable.")
+        # WHEN port runs with --base scratch
+        p = self.r.port("--base", "scratch")
+        # THEN the PR targets scratch and the branch sits on scratch, not main
+        self.assertEqual(p.returncode, 0, p.stderr)
+        args = self.r.creates()[0]["args"]
+        self.assertEqual(args[args.index("--base") + 1], "scratch")
+        branch = port_branch(IMPL)
+        self.assertEqual(run(GIT + ["rev-parse", f"{branch}^"], self.r.origin).stdout.strip(), self.r.base_sha)
+        self.assertEqual(run(GIT + ["diff", "--name-only", "scratch", branch], self.r.origin).stdout.split(), [IMPL])
+
+
 class LeakUnit(unittest.TestCase):
     def test_example_lines_pass_and_others_hit(self):
         """Tool names pass only on an `e.g.` line; /Users/ and private names always hit."""
