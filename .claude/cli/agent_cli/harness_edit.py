@@ -32,12 +32,13 @@ def rule(where="on <branch>"):
 
 
 def bash_targets(command):
-    """Paths command writes: the word after each >, >>, >| (any fd, &>), every operand of tee/rm/mv and of
+    """Paths command writes: the word after each >, >>, >|, >& (any fd, &>), every operand of tee/rm/mv and of
     sed -i, the last of cp/ln. Prefixes (timeout N, sudo, VAR=x, the command-prefixes seam) are skipped.
     Known gap: a word with quoted or substituted text never counts. Unbalanced quotes: no targets."""
     from . import shape  # shape imports hook, which imports this module
     # >(cmd) is a process substitution, not a file: as <(cmd) its `>` is not read as a redirect
     items = shape._tokens(command.replace(">(", "<(")) or []
+    # sudo stays local: regex rules and shapes keep it as the command word (`sudo -u x` would leave -u there)
     cmd = shape.prefix_re(tuple(core.seam_lines("command-prefixes")) + ("sudo",))
     out, seg, op = [], [], None
     for kind, text in items + [("sep", ";")]:
@@ -51,9 +52,10 @@ def bash_targets(command):
                 out += args[-1:]
             seg, op = [], None
         elif kind == "redir":
-            op = text
+            # >&N, >&-, <&N carry their fd in the token: no word follows, the next word stays an operand
+            op = None if re.search(r"[<>]&(?:\d+-?|-)$", text) else text
         elif kind == "word" and op:
-            out += [text] if op.endswith((">", ">|")) else []
+            out += [text] if op.endswith((">", ">|", ">&")) else []  # `>& file` is `&> file`
             op = None
         elif kind == "word":
             seg.append((kind, text))

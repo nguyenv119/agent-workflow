@@ -263,8 +263,8 @@ class BashWrites(HarnessCase):
         """A trailing `2>/dev/null`, `timeout N`, `sudo`, a command-prefixes seam word, or no space before
         `>>` still leaves the harness path as the write target.
 
-        `cp x <skill> 2>/dev/null` once picked `2>/dev/null` as cp's destination and allowed the write; the
-        prefixes are the ones every regex rule already sees through.
+        `cp x <skill> 2>/dev/null` once picked `2>/dev/null` as cp's destination, and `rm -rf 2>&1 .claude`
+        once read `.claude` as the redirect's word; both allowed the write.
         """
         # GIVEN a project command-prefixes seam naming `wrapx`
         seam = self.p / ".claude/agent-cli-hooks/command-prefixes"
@@ -272,7 +272,7 @@ class BashWrites(HarnessCase):
         seam.write_text("wrapx\n")
         cmds = [f"cp /tmp/x {SKILL} 2>/dev/null", f"ln -sf /tmp/x {SKILL} 2>/dev/null",
                 "timeout 5 sed -i s/a/b/ AGENTS.md", f"echo x | wrapx tee {SKILL}", f"sudo tee {SKILL} </tmp/x",
-                f"echo x>>{SKILL}"]
+                f"echo x>>{SKILL}", "rm -rf 2>&1 .claude", "tee 2>&1 AGENTS.md", f"cat /tmp/x >&2 >{SKILL}", f"echo x >& {SKILL}"]
         for c in cmds:
             with self.subTest(cmd=c):
                 # WHEN the hook reads it on main
