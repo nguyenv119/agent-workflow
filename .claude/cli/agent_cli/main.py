@@ -1,13 +1,13 @@
-"""agent-cli entry: argparse root with hook, eval, self, lib, wt, wait, lock, pr, log, page, card and repeats."""
+"""agent-cli entry: argparse root with hook, eval, self, lib, wt, wait, lock, pr, log, page, card, repeats and harness."""
 import os
 import subprocess
 from pathlib import Path
 
-from . import card, core, eval_cmd, hook, lib_cmd, lock, log, page, pr, repeats, self_cmd, wait, wt
+from . import card, core, eval_cmd, harness, hook, lib_cmd, lock, log, page, pr, repeats, self_cmd, wait, wt
 from .core import Exit
 
 # Top-level commands in help order; each module's register(sub) adds its own. A new command is one entry.
-COMMANDS = (hook, eval_cmd, self_cmd, lib_cmd, wt, wait, lock, pr, log, page, card, repeats)
+COMMANDS = (hook, eval_cmd, self_cmd, lib_cmd, wt, wait, lock, pr, log, page, card, repeats, harness)
 
 
 class Root(core.Parser):
@@ -40,7 +40,8 @@ def build():
     root = Root(prog="agent-cli",
                 summary="shared chores for agent sessions (worktrees, PR checks, waits, locks, eval verdicts, page and card checks)",
                 examples=["agent-cli hook test --cmd 'echo \"<promise>WIN</promise>\"'",
-                          'source "$(agent-cli eval lib --sh)"', "agent-cli self env"])
+                          'source "$(agent-cli eval lib --sh)"', "agent-cli self env",
+                          "agent-cli harness drift --json"])
     sub = root.add_subparsers(title="Commands", metavar="<command>", parser_class=core.Parser)
     # a bare group shows its help, never prompts (house-rules "Never prompt")
     root.set_defaults(func=lambda a: root.print_help())
