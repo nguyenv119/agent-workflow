@@ -12,9 +12,11 @@ at the same relative path). Then it writes:
   .claude/HARNESS_MANIFEST  every file this install wrote, one target-relative path per line
   .claude/HARNESS_FILES.tsv header `path\torigin\tsha256`, then one row per installed file
                             (the manifest minus these three files), sorted by path:
-                            origin `addon` if the add-on supplied the path, else `base`;
-                            sha256 of the bytes on disk after the install (so a
-                            .skipbase-edited settings.json hashes the edited bytes).
+                            origin `addon` if the add-on supplied the path,
+                            `base+addon` for settings.json when settings.add.json
+                            was merged into it, else `base`; sha256 of the bytes on
+                            disk after the install (so an edited settings.json
+                            hashes the edited bytes).
                             `agent-cli harness drift` reads it.
 
 "addon" is the add-on path relative to the target (posix, e.g.
@@ -52,6 +54,25 @@ holds `..` or matches no base file, a missing key, a hook entry matching no
 group, or a setting/hook entry with no installed settings.json (or one that
 is a symlink in the target, so it would be skipped) all exit 2
 before anything is written.
+
+An optional `<addon>/settings.add.json` ADDS to the installed settings.json
+instead of replacing it (an add-on `settings.json` replaces it wholesale). Like
+.skipbase it is never installed but IS hashed into addon_sha256 (path
+`settings.add.json`). It applies after the .skipbase deletions, and the result
+is written once:
+
+  hooks.<Event>            each group is appended to the installed event's list
+                           (the event is created when absent)
+  any other key            dicts merge recursively, lists gain the items they
+                           lack (in order), a scalar is added or replaces the
+                           installed one
+
+Fail closed, exit 2 before anything is written: an add-on shipping both
+settings.json and settings.add.json; a file that is not a JSON object; `hooks`
+that is not an object of Event -> list of groups each with a "hooks" list; a
+group identical to one already in the installed event; a dict or list meeting
+a different shape at the same key; or no installed settings.json (or one that
+is a symlink in the target).
 
 A previous manifest blocks a reinstall (exit 2) unless --force, which deletes
 ONLY the files that manifest lists. Without a manifest, files are overlaid and
@@ -96,6 +117,7 @@ def git(repo, *args):
 
 IGNORE_FILE = ".installignore"
 SKIP_FILE = ".skipbase"
+ADD_FILE = "settings.add.json"
 SETTINGS = ".claude/settings.json"
 
 
@@ -116,7 +138,7 @@ def addon_files(addon):
     for s, line in zip(skip, patterns):
         if not any(inside(r, s) for r in rels):
             die(f"{ignore}: line {line!r} matches no add-on file")
-    skip += [Path(IGNORE_FILE), Path(SKIP_FILE)]
+    skip += [Path(IGNORE_FILE), Path(SKIP_FILE), Path(ADD_FILE)]
     files = sorted((r.as_posix(), addon / r) for r in rels if not any(inside(r, s) for s in skip))
     for rel, _ in files:
         if Path(rel).name == "task.toml":
@@ -186,6 +208,57 @@ def apply_settings_ops(data, ops):
     return data
 
 
+def read_settings_add(addon):
+    """The parsed <addon>/settings.add.json, or None if absent. Dies unless it is an object whose `hooks` (if any)
+    maps each Event to a list of groups that each carry a "hooks" list."""
+    f = addon / ADD_FILE if addon else None
+    if not f or not f.is_file():
+        return None
+    try:
+        data = json.loads(f.read_text())
+    except ValueError as e:
+        die(f"{f} is not valid JSON: {e}")
+    if not isinstance(data, dict):
+        die(f"{f} is not a JSON object")
+    hooks = data.get("hooks", {})
+    if not (isinstance(hooks, dict) and all(
+            isinstance(gs, list) and all(isinstance(g, dict) and isinstance(g.get("hooks"), list) for g in gs)
+            for gs in hooks.values())):
+        die(f'{f}: hooks must map each Event to a list of groups, each with a "hooks" list')
+    return data
+
+
+def merge_settings(data, add, path=()):
+    """Merge settings.add.json into parsed settings in place (see the module doc); dies on a duplicate hook group
+    or a shape conflict."""
+    for key, value in add.items():
+        here = ".".join((*path, key))
+        if not path and key == "hooks":
+            hooks = data.setdefault("hooks", {})
+            for event, groups in value.items():
+                have = hooks.setdefault(event, []) if isinstance(hooks, dict) else None
+                if not isinstance(have, list):
+                    die(f"{ADD_FILE}: shape conflict at hooks.{event}: {SETTINGS} holds no list of groups there")
+                for g in groups:
+                    if g in have:
+                        die(f"{ADD_FILE}: hooks.{event} already has an identical group: {json.dumps(g)}")
+                    have.append(g)
+        elif key not in data:
+            data[key] = value
+        elif isinstance(data[key], dict) and isinstance(value, dict):
+            merge_settings(data[key], value, (*path, key))
+        elif isinstance(data[key], list) and isinstance(value, list):
+            for item in value:
+                if item not in data[key]:
+                    data[key].append(item)
+        elif isinstance(data[key], (dict, list)) or isinstance(value, (dict, list)):
+            die(f"{ADD_FILE}: shape conflict at {here}: {type(data[key]).__name__} in {SETTINGS}, "
+                f"{type(value).__name__} in {ADD_FILE}")
+        else:
+            data[key] = value
+    return data
+
+
 def first_symlink(target, rel):
     """The first path component of target/rel (dirs down to the file itself) that is a symlink, or None."""
     path = target
@@ -215,7 +288,9 @@ def install(argv):
             die(f"add-on dir not found: {addon}")
         files = addon_files(addon)
     skip_paths, settings_ops = read_skipbase(addon)
-    hashed = sorted([*(files or []), *([(SKIP_FILE, addon / SKIP_FILE)] if addon and (addon / SKIP_FILE).is_file() else [])])
+    settings_add = read_settings_add(addon)
+    hashed = sorted([*(files or []),
+                     *[(n, addon / n) for n in (SKIP_FILE, ADD_FILE) if addon and (addon / n).is_file()]])
 
     # Read the whole archive first: every guard runs before anything is written.
     tar = tarfile.open(fileobj=io.BytesIO(git(args.repo, "archive", sha, ".claude", "AGENTS.md")))
@@ -235,15 +310,22 @@ def install(argv):
         f = tar.extractfile(next(m for m in members if m.name == rel))
         return f.read() if f else None
 
+    if settings_add is not None and SETTINGS in addon_by_rel:
+        die(f"the add-on ships both settings.json and {ADD_FILE}; keep one (an add-on settings.json replaces "
+            f"the base one, {ADD_FILE} adds to it)")
+    edits = " and ".join([f"{SKIP_FILE} setting/hook lines"] * bool(settings_ops)
+                         + [ADD_FILE] * (settings_add is not None))
     new_settings = None
-    if settings_ops:
+    if edits:
         if SETTINGS not in addon_by_rel and SETTINGS not in {m.name for m in members}:
-            die(f"{SKIP_FILE} has setting/hook lines but no {SETTINGS} is installed")
+            die(f"{edits} need a {SETTINGS}, but no {SETTINGS} is installed")
         raw = source_bytes(SETTINGS)
         data = json.loads(raw) if raw is not None else None
         if not isinstance(data, dict):
             die(f"{SETTINGS} is not a JSON object")
         data = apply_settings_ops(data, settings_ops)
+        if settings_add is not None:
+            data = merge_settings(data, settings_add)
         new_settings = (json.dumps(data, indent=2, ensure_ascii=False) + "\n").encode()
     planned = {m.name for m in members}
     planned |= {f".claude/{rel}" for rel, _ in files or []}
@@ -272,7 +354,7 @@ def install(argv):
         if link and rel in BOOKKEEPING:
             die(f"refusing to write {rel} through a symlink: {link}")
         if link and rel == SETTINGS and new_settings is not None:
-            die(f"{SKIP_FILE} has setting/hook lines but {SETTINGS} is a symlink ({link}); they cannot be applied")
+            die(f"{edits} cannot be applied: {SETTINGS} is a symlink ({link})")
         if link:
             linked.setdefault(link, []).append(rel)
     for rel in planned:
@@ -321,7 +403,10 @@ def install(argv):
     if new_settings is not None and SETTINGS in planned:
         (target / SETTINGS).write_bytes(new_settings)
 
-    rows = "".join(f"{rel}\t{'addon' if rel in addon_by_rel else 'base'}\t"
+    def origin(rel):
+        return ("addon" if rel in addon_by_rel else
+                "base+addon" if rel == SETTINGS and settings_add is not None else "base")
+    rows = "".join(f"{rel}\t{origin(rel)}\t"
                    f"{hashlib.sha256((target / rel).read_bytes()).hexdigest()}\n"
                    for rel in sorted(planned - set(BOOKKEEPING)))
     (target / FILES).write_text("path\torigin\tsha256\n" + rows)

@@ -960,5 +960,181 @@ class SkipbaseTest(unittest.TestCase):
                 self.assertFalse(self.target.exists())
 
 
+GROUP = {"matcher": "Bash", "hooks": [{"type": "command", "command": "python3 x.py; exit 0"}]}
+
+
+class SettingsAddTest(unittest.TestCase):
+    """The add-on's settings.add.json adds to the installed settings.json after .skipbase, failing closed."""
+
+    setUp = SkipbaseTest.setUp
+    tearDown = SkipbaseTest.tearDown
+    settings = SkipbaseTest.settings
+
+    def install(self, add, skipbase=None, *extra, check=True):
+        (self.addon / "settings.add.json").write_text(add if isinstance(add, str) else json.dumps(add))
+        if skipbase is not None:
+            (self.addon / ".skipbase").write_text(skipbase)
+        cmd = [sys.executable, str(SCRIPT), "--repo", str(self.repo), "--commit", self.sha,
+               "--target", str(self.target), "--addon", str(self.addon), *extra]
+        return run(cmd, self.tmp, check=check)
+
+    def files_row(self, rel):
+        rows = (self.target / ".claude/HARNESS_FILES.tsv").read_text().splitlines()
+        return next(r.split("\t") for r in rows if r.startswith(rel + "\t"))
+
+    def test_hooks_group_is_appended_and_every_base_group_kept(self):
+        """
+        A project that needs one extra hook must not fork the whole settings
+        file (it would stop getting upstream hook changes). The add-on's group
+        is appended to the event; every base group stays, in order.
+        """
+        # GIVEN settings.add.json adding one SessionStart group
+        # WHEN installed
+        self.install({"hooks": {"SessionStart": [GROUP]}})
+        # THEN SessionStart is the base groups plus the new one; the rest is the base
+        data = self.settings()
+        self.assertEqual(data["hooks"]["SessionStart"], [*SETTINGS["hooks"]["SessionStart"], GROUP])
+        self.assertEqual(data["hooks"]["PostCompact"], SETTINGS["hooks"]["PostCompact"])
+        self.assertEqual({k: v for k, v in data.items() if k != "hooks"},
+                         {k: v for k, v in SETTINGS.items() if k != "hooks"})
+
+    def test_hooks_event_the_base_lacks_is_created(self):
+        """An event the base has no hooks for is created holding only the add-on's groups."""
+        # GIVEN settings.add.json adding a PreToolUse group the base lacks
+        # WHEN installed
+        self.install({"hooks": {"PreToolUse": [GROUP]}})
+        # THEN PreToolUse exists with that group and the base events are unchanged
+        hooks = self.settings()["hooks"]
+        self.assertEqual(hooks["PreToolUse"], [GROUP])
+        self.assertEqual({k: v for k, v in hooks.items() if k != "PreToolUse"}, SETTINGS["hooks"])
+
+    def test_other_keys_deep_merge_append_unique_and_replace_scalars(self):
+        """
+        Non-hook keys merge rather than replace: dicts recurse, lists gain only
+        the items they lack (an allow entry the base already has is not
+        doubled), new keys are added and a scalar the base has is replaced.
+        """
+        # GIVEN additions to permissions (one allow entry already in the base), a new key and a replaced scalar
+        self.install({"permissions": {"allow": ["Bash(git:*)", "Bash(ls:*)"], "defaultMode": "plan"},
+                      "env": {"X": "1"}, "autoCompactWindow": 1000})
+        # THEN the result is the documented merge
+        data = self.settings()
+        self.assertEqual(data["permissions"], {"allow": ["Bash(git:*)", "Bash(ls:*)"], "deny": ["Bash(rm:*)"],
+                                               "defaultMode": "plan"})
+        self.assertEqual(data["env"], {"X": "1"})
+        self.assertEqual(data["autoCompactWindow"], 1000)
+        self.assertEqual(data["hooks"], SETTINGS["hooks"])
+
+    def test_skipbase_deletions_apply_before_additions(self):
+        """
+        A project replaces one base hook by deleting it in .skipbase and adding
+        its own group with the same matcher. That only works if deletions run
+        first: the other order would delete the project's group too.
+        """
+        # GIVEN .skipbase deleting the `compact` SessionStart group and settings.add.json adding a new one
+        mine = {"matcher": "compact", "hooks": [{"type": "command", "command": "echo mine"}]}
+        # WHEN installed
+        self.install({"hooks": {"SessionStart": [mine]}}, "hook SessionStart compact\n")
+        # THEN SessionStart keeps the matcher-less base group and holds the project's group, not the base one
+        self.assertEqual(self.settings()["hooks"]["SessionStart"], [SETTINGS["hooks"]["SessionStart"][0], mine])
+
+    def test_add_file_is_hashed_into_the_addon_hash_and_never_installed(self):
+        """
+        The version label must change when the additions change, like
+        .skipbase; and the file is an instruction to the installer, not part
+        of the harness, so it never lands in the target.
+        """
+        # GIVEN two installs that differ only in settings.add.json
+        self.install({"env": {"X": "1"}})
+        first = json.loads((self.target / ".claude/HARNESS_VERSION").read_text())["addon_sha256"]
+        run(["rm", "-rf", str(self.target)], "/")
+        self.install({"env": {"X": "2"}})
+        second = json.loads((self.target / ".claude/HARNESS_VERSION").read_text())["addon_sha256"]
+        # THEN the hashes differ, the second equals the documented formula, and the file is not installed
+        self.assertNotEqual(first, second)
+        self.assertEqual(second, addon_hash(self.addon))
+        self.assertFalse((self.target / ".claude/settings.add.json").exists())
+        self.assertNotIn(".claude/settings.add.json",
+                         (self.target / ".claude/HARNESS_MANIFEST").read_text().splitlines())
+
+    def test_files_row_is_base_plus_addon_and_hashes_the_merged_bytes(self):
+        """
+        drift must never offer the merged settings.json as a port candidate
+        (it carries project hooks), so its row says `base+addon` and hashes
+        the merged bytes; without settings.add.json the row stays `base`.
+        """
+        # GIVEN an install with settings.add.json
+        self.install({"env": {"X": "1"}})
+        # THEN the settings row is base+addon with the sha of the bytes on disk
+        path, origin, digest = self.files_row(".claude/settings.json")
+        self.assertEqual(origin, "base+addon")
+        self.assertEqual(digest, hashlib.sha256((self.target / path).read_bytes()).hexdigest())
+        # WHEN reinstalled without settings.add.json
+        (self.addon / "settings.add.json").unlink()
+        run([sys.executable, str(SCRIPT), "--repo", str(self.repo), "--commit", self.sha, "--target",
+             str(self.target), "--addon", str(self.addon), "--force"], self.tmp)
+        # THEN the row is plain base again
+        self.assertEqual(self.files_row(".claude/settings.json")[1], "base")
+
+    def test_bad_add_files_are_refused_before_writing(self):
+        """
+        Fail closed: a malformed or conflicting addition would otherwise install
+        settings that silently miss the project's hook or run it twice. Each
+        case exits 2 naming the reason and writes nothing.
+        """
+        cases = {
+            "not json": ("{", None, "not valid JSON"),
+            "not an object": ("[1]", None, "not a JSON object"),
+            "hooks not a dict": ({"hooks": [GROUP]}, None, "hooks must map"),
+            "group without hooks list": ({"hooks": {"Stop": [{"matcher": "x"}]}}, None, "hooks must map"),
+            "duplicate group": ({"hooks": {"PostCompact": SETTINGS["hooks"]["PostCompact"]}}, None,
+                                "already has an identical group"),
+            "dict meets list": ({"permissions": {"allow": {"x": 1}}}, None, "shape conflict at permissions.allow"),
+            "list meets scalar": ({"autoCompactWindow": [1]}, None, "shape conflict at autoCompactWindow"),
+            "no settings installed": ({"env": {}}, "path .claude/settings.json\n",
+                                      "no .claude/settings.json is installed"),
+        }
+        for name, (add, skipbase, message) in cases.items():
+            with self.subTest(name):
+                # WHEN installed with the bad file / THEN exit 2 with the reason, nothing written
+                result = self.install(add, skipbase if skipbase is not None else "", check=False)
+                self.assertEqual(result.returncode, 2, result.stdout)
+                self.assertIn(message, result.stderr)
+                self.assertFalse(self.target.exists())
+
+    def test_addon_shipping_both_settings_files_is_refused(self):
+        """
+        An add-on settings.json replaces the base one, so adding to it as well
+        is ambiguous (and drift could not say where the file came from). Refuse.
+        """
+        # GIVEN an add-on with settings.json and settings.add.json
+        (self.addon / "settings.json").write_text("{}\n")
+        # WHEN installed / THEN exit 2 naming both, nothing written
+        result = self.install({"env": {"X": "1"}}, check=False)
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("ships both settings.json and settings.add.json", result.stderr)
+        self.assertFalse(self.target.exists())
+
+    def test_symlinked_settings_file_is_refused_and_left_untouched(self):
+        """
+        A symlinked settings.json is never written through, so the additions
+        could not take effect; installing anyway would report success without
+        the project's hooks. Refuse, leaving the file behind the link as it was.
+        """
+        # GIVEN target/.claude/settings.json is a symlink to a file elsewhere
+        real = self.tmp / "real-settings.json"
+        real.write_text(json.dumps(SETTINGS))
+        (self.target / ".claude").mkdir(parents=True)
+        (self.target / ".claude/settings.json").symlink_to(real)
+        before = real.read_bytes()
+        # WHEN installed with settings.add.json / THEN exit 2 naming the symlink, file unchanged
+        result = self.install({"env": {"X": "1"}}, check=False)
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("settings.add.json cannot be applied", result.stderr)
+        self.assertIn("symlink", result.stderr)
+        self.assertEqual(real.read_bytes(), before)
+        self.assertFalse((self.target / ".claude/HARNESS_MANIFEST").exists())
+
+
 if __name__ == "__main__":
     unittest.main()

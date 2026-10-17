@@ -1,9 +1,11 @@
 """`agent-cli harness`: what an installed harness changed since install (drift) and what a session loads (inventory).
 
 drift reads <root>/.claude/HARNESS_FILES.tsv (written by harness-loop/install_harness.py: `path origin sha256`, origin
-`base` or `addon`) and sorts every difference: base_edited (port upstream), addon_edited (edit the add-on instead),
-missing, and files under .claude nobody installed: owned by a line in .claude/harness-owners.txt
-(`<glob> <owner> <reason>`, owner local-data|user|addon-source|project) or unowned. With --user-dir, user-level
+`base`, `addon`, or `base+addon` for a settings.json with the add-on's settings.add.json merged in) and sorts every
+difference: base_edited (port upstream), addon_edited (edit the add-on instead; a `base+addon` row always lands here,
+never in base_edited, because its project hooks must never be ported), missing, and files under .claude nobody
+installed: owned by a line in .claude/harness-owners.txt (`<glob> <owner> <reason>`, owner
+local-data|user|addon-source|project) or unowned. With --user-dir, user-level
 skills/commands named like a project one are shadows; a shadow no owner line matches is unexplained.
 
 inventory lists skills, commands, agents, the sha256 of the instruction files and every settings.json hook with the
@@ -33,6 +35,8 @@ FIX = {"base_edited": "port upstream: loop.py port",
        "missing": "reinstall with install_harness.py --force",
        "unowned": f"add an owner line to {OWNER_FILE} (through the add-on) or remove it",
        "unexplained": "add a `user` owner line or remove the user copy"}
+MERGED_FIX = "edit the add-on's settings.add.json (or .skipbase) instead, then reinstall"
+ORIGINS = ("base", "addon", "base+addon")
 SEPARATORS = {"&&", "||", ";", "|", "&", "|&"}
 SKIP_WORDS = {"[", "test", "exit", "echo", "sleep", "cat", "true", ":"}
 GUARD_TESTS = {"-x": lambda p: os.path.isfile(p) and os.access(p, os.X_OK), "-f": os.path.isfile,
@@ -125,8 +129,8 @@ def read_tsv(root):
     rows = {}
     for n, line in enumerate(lines[1:], 2):
         parts = line.split("\t")
-        if len(parts) != 3 or parts[1] not in ("base", "addon"):
-            core.die(Exit.REFUSED, f"{f} line {n} is not `path<TAB>base|addon<TAB>sha256`; reinstall",
+        if len(parts) != 3 or parts[1] not in ORIGINS:
+            core.die(Exit.REFUSED, f"{f} line {n} is not `path<TAB>{'|'.join(ORIGINS)}<TAB>sha256`; reinstall",
                      "python3 harness-loop/install_harness.py --commit HEAD --target <project> --force")
         rows[parts[0]] = (parts[1], parts[2])
     return rows
@@ -155,7 +159,7 @@ def drift(root, user_dir=None):
         if have is None:
             out["missing"].append(path)
         elif have != want:
-            out[f"{origin}_edited"].append(path)
+            out["base_edited" if origin == "base" else "addon_edited"].append(path)
 
     def entry(path):
         owner = owner_of(rules, path)
@@ -205,11 +209,12 @@ def drift_cmd(a):
         print(json.dumps(out, sort_keys=True))
         return Exit.FAIL if bad else Exit.OK
     addon = addon_dir(root)
+    merged = {p for p, (origin, _) in read_tsv(root).items() if origin == "base+addon"}
     for key in ("base_edited", "addon_edited", "missing", "unowned", "shadow", "unexplained"):
         for path in out[key]:
             print(f"{key}: {path}")
-            fix = (f"edit {addon}/{path.removeprefix('.claude/')} instead, then reinstall"
-                   if key == "addon_edited" else FIX.get(key))
+            fix = (FIX.get(key) if key != "addon_edited" else MERGED_FIX if path in merged
+                   else f"edit {addon}/{path.removeprefix('.claude/')} instead, then reinstall")
             if fix:
                 print(f"  fix: {fix}")
     print("owned: " + (", ".join(f"{k} {v}" for k, v in sorted(out["owned"].items())) or "none"))
