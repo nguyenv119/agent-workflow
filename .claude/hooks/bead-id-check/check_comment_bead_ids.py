@@ -29,6 +29,9 @@ Modes:
   --all [paths...]  every comment line in tracked files.
 Files that cannot be read as UTF-8 are skipped in every mode.
 
+No --json: the hook and CI branch on the exit code, and stdout is already one record per line,
+`path:line: id | comment`, with paths from the repo root, for editors and grep.
+
 Exit codes:
   0  clean, or nothing to check (no bead-id-prefix)
   2  usage error, unresolvable base ref, or unreadable rules (--base/--all)
@@ -42,12 +45,14 @@ Examples:
 
 from __future__ import annotations
 
+import codecs
 import re
 import subprocess
 import sys
 from pathlib import Path
 from typing import NamedTuple
 
+sys.dont_write_bytecode = True  # agent_cli lives in the repo being committed to; leave no __pycache__ there
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "cli"))
 try:
     from agent_cli.core import names, rules_line
@@ -66,7 +71,7 @@ KW_REL = re.compile(r"\b(?:bead|epic)s?\s+\.\d+\b", re.I)
 KW_ID = re.compile(
     r"\b(?:bead|epic)s?\s+(?=[a-z0-9]{0,4}\d)(?=[a-z0-9]{0,4}[a-z])[a-z0-9]{3,5}\b", re.I
 )
-VERSION = re.compile(r"^(?:v|node|python|es|utf|web)\d+$")
+VERSION = re.compile(r"^(?:v|node|python|es|utf|web|go|php|ruby|java|perl|rust|swift|lua|tsc)\d+$")
 PLURALS = {"nodes", "items", "rows", "args"}
 
 # (line markers, block delimiters, quotes, quotes that span lines, "#" needs whitespace before)
@@ -195,34 +200,50 @@ def find_hits(path: str, text: str, rules: Rules, only: set[int] | None = None):
     ]
 
 
-def git(*args: str) -> str:
-    return subprocess.run(["git", *args], capture_output=True, text=True, check=True).stdout
+def git(*args: str, errors: str = "strict") -> str:
+    return subprocess.run(["git", *args], capture_output=True, encoding="utf-8", errors=errors,
+                          check=True).stdout
 
 
 HUNK = re.compile(r"^@@ -\S+ \+(\d+)(?:,(\d+))? @@")
 
 
+def header_path(line: str) -> str | None:
+    """The path in a `+++ b/<path>` diff header; git C-quotes odd names and tab-ends spaced ones."""
+    p = line[4:].rstrip("\t")
+    if p.startswith('"'):
+        p = codecs.decode(p[1:-1], "unicode_escape").encode("latin-1").decode("utf-8")
+    return p[2:] if p.startswith("b/") else None
+
+
 def added_lines(diff_args: list[str]) -> dict[str, set[int]]:
     out: dict[str, set[int]] = {}
     path = None
+    # added text in a non-UTF-8 file must not abort the whole diff; that file is skipped on read
     for line in git("diff", "-U0", "--no-color", "--no-ext-diff", "--diff-filter=ACMR",
-                    *diff_args).splitlines():
+                    *diff_args, errors="replace").splitlines():
         if line.startswith("+++ "):
-            path = line[6:] if line.startswith("+++ b/") else None
+            path = header_path(line)
         elif path and (m := HUNK.match(line)):
             start, count = int(m.group(1)), int(m.group(2) or 1)
             out.setdefault(path, set()).update(range(start, start + count))
     return out
 
 
-def scan(files: dict[str, set[int] | None], read, rules: Rules) -> list[tuple[str, int, str, str]]:
+def scan(files: dict[str, set[int] | None], read, rules: Rules,
+         strict: bool = False) -> list[tuple[str, int, str, str]]:
+    """Hits in each file; strict re-raises a git error reading a file instead of skipping it."""
     hits = []
     for path, only in sorted(files.items()):
         if syntax_for(path, rules) is None:
             continue
         try:
             text = read(path)
-        except (subprocess.CalledProcessError, OSError, UnicodeDecodeError):
+        except subprocess.CalledProcessError:
+            if strict:
+                raise
+            continue
+        except (OSError, UnicodeDecodeError):
             continue
         hits += [(path, n, hit, c) for n, hit, c in find_hits(path, text, rules, only)]
     return hits
@@ -238,7 +259,7 @@ def report(hits) -> int:
     return 0
 
 
-def run_mode(mode: str, argv: list[str], rules: Rules) -> int:
+def run_mode(mode: str, argv: list[str], rules: Rules, top: str) -> int:
     if mode == "--staged":
         files = added_lines(["--cached"])
         return report(scan(files, lambda p: git("show", f":{p}"), rules))
@@ -246,13 +267,14 @@ def run_mode(mode: str, argv: list[str], rules: Rules) -> int:
         ref = argv[1]
         if subprocess.run(["git", "rev-parse", "--verify", "--quiet", f"{ref}^{{commit}}"],
                           capture_output=True).returncode:
-            print(f"{NAME}: cannot resolve base ref {ref!r}", file=sys.stderr)
+            print(f"{NAME}: cannot resolve base ref {ref!r}\n"
+                  f"  e.g. {NAME}.py --base origin/main", file=sys.stderr)
             return 2
         files = added_lines([ref, "HEAD"])
-        return report(scan(files, lambda p: git("show", f"HEAD:{p}"), rules))
-    paths = git("ls-files", "-z", "--", *argv[1:]).split("\0")
+        return report(scan(files, lambda p: git("show", f"HEAD:{p}"), rules, strict=True))
+    paths = git("ls-files", "-z", "--full-name", "--", *argv[1:]).split("\0")
     files = {p: None for p in paths if p}
-    return report(scan(files, lambda p: open(p, encoding="utf-8").read(), rules))
+    return report(scan(files, lambda p: (Path(top) / p).read_text(encoding="utf-8"), rules))
 
 
 def main(argv: list[str]) -> int:
@@ -265,12 +287,13 @@ def main(argv: list[str]) -> int:
         print(__doc__, file=sys.stderr)
         return 2
     try:
-        rules = load_rules(git("rev-parse", "--show-toplevel").strip())
+        top = git("rev-parse", "--show-toplevel").strip()
+        rules = load_rules(top)
         if rules is None:
             print(f"{NAME}: no bead-id-prefix in .claude/project-rules.md, nothing to check",
                   file=sys.stderr)
             return 0
-        return run_mode(mode, argv, rules)
+        return run_mode(mode, argv, rules, top)
     except Exception as e:
         if mode != "--staged":
             print(f"{NAME}: {e}", file=sys.stderr)

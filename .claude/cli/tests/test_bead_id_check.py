@@ -67,15 +67,18 @@ class Repo:
         self.git("add", "-A")
         self.git("commit", "-q", "-m", msg)
 
-    def run(self, *args: str, script: Path = SCRIPT) -> subprocess.CompletedProcess:
-        return run([sys.executable, str(script), *args], self.root, check=False)
+    def run(self, *args: str, script: Path = SCRIPT, cwd: Path | None = None) -> subprocess.CompletedProcess:
+        return run([sys.executable, str(script), *args], cwd or self.root, check=False)
 
-    def hook(self, command: str, cwd: Path | None = None) -> subprocess.CompletedProcess:
-        """Pipe a PreToolUse payload to the exact settings.json command, as Claude Code does."""
+    def hook(self, command: str, cwd: Path | None = None, **extra_env: str) -> subprocess.CompletedProcess:
+        """Pipe a PreToolUse payload to the exact settings.json command, as Claude Code does.
+
+        The test's own interpreter comes first on PATH, so each suite run tests the hook on it.
+        """
         cwd = cwd or self.root
         payload = json.dumps({"tool_name": "Bash", "tool_input": {"command": command}, "cwd": str(cwd)})
-        env = {"PATH": "/usr/bin:/bin:/usr/local/bin:" + str(Path(sys.executable).parent),
-               "HOME": str(self.root), "CLAUDE_PROJECT_DIR": str(self.root)}
+        env = {"PATH": str(Path(sys.executable).parent) + ":/usr/bin:/bin:/usr/local/bin",
+               "HOME": str(self.root), "CLAUDE_PROJECT_DIR": str(self.root), **extra_env}
         return subprocess.run(["sh", "-c", settings_command()], cwd=cwd, input=payload, env=env,
                               text=True, capture_output=True)
 
@@ -106,8 +109,10 @@ class Positives(unittest.TestCase):
         }
         for path, text in cases.items():
             with self.subTest(path=path):
-                # WHEN scanned / THEN exactly one hit
-                self.assertEqual(len(hits(path, text)), 1, (path, hits(path, text)))
+                # WHEN scanned
+                found = hits(path, text)
+                # THEN exactly one hit
+                self.assertEqual(len(found), 1, (path, found))
 
     def test_overlapping_patterns_report_one_hit(self):
         """A keyword plus a child id is one reference, so it is counted once (no doubled report)."""
@@ -145,10 +150,14 @@ class Negatives(unittest.TestCase):
                      "utf8.0", "web3.0", "items.2.qty", "data.0.name", "rows.3", "args.0", "nodes.1",
                      "bead would", "epic win", "Epic mtu", "the 2026.10 release",
                      "see https://x.dev/abc1.2", "user@abc1.2", "a ./abc1.2 path",
+                     "go1.21", "php8.1", "ruby3.2", "java21.0", "perl5.36", "rust1.75",
+                     "swift5.9", "lua5.4", "tsc5.3",
                      "run " + PREFIX + "cli env", PREFIX + "api"):
             with self.subTest(text=text):
-                # WHEN scanned / THEN nothing
-                self.assertEqual(hits("a.ts", f"// {text}\n"), [])
+                # WHEN scanned
+                found = hits("a.ts", f"// {text}\n")
+                # THEN nothing
+                self.assertEqual(found, [])
 
     def test_tool_directive_lines_are_skipped(self):
         """Lint and type directives may carry any reason text; they are not prose."""
@@ -160,8 +169,10 @@ class Negatives(unittest.TestCase):
                      f"// biome-ignore lint: {FULL}",
                      f"/* istanbul ignore next {FULL} */"):
             with self.subTest(line=line):
-                # WHEN scanned / THEN nothing
-                self.assertEqual(hits("a.ts", line + "\n"), [])
+                # WHEN scanned
+                found = hits("a.ts", line + "\n")
+                # THEN nothing
+                self.assertEqual(found, [])
         self.assertEqual(hits("a.py", f"import x  # noqa: F401 {FULL}\n"), [])
 
     def test_ids_in_code_and_strings_are_not_comments(self):
@@ -177,8 +188,10 @@ class Negatives(unittest.TestCase):
         }
         for path, text in cases.items():
             with self.subTest(path=path):
-                # WHEN scanned / THEN nothing
-                self.assertEqual(hits(path, text), [])
+                # WHEN scanned
+                found = hits(path, text)
+                # THEN nothing
+                self.assertEqual(found, [])
 
     def test_excluded_and_unknown_files_are_not_scanned(self):
         """Snapshots, fixtures and markdown (the default exclude) and unknown types are out of scope."""
@@ -187,8 +200,10 @@ class Negatives(unittest.TestCase):
         for path in ("a/__snapshots__/x.ts", "a/x.snap", "a/fixtures/x.ts",
                      "README.md", "a.json", "a.txt"):
             with self.subTest(path=path):
-                # WHEN scanned / THEN nothing
-                self.assertEqual(hits(path, text), [])
+                # WHEN scanned
+                found = hits(path, text)
+                # THEN nothing
+                self.assertEqual(found, [])
 
 
 class RulesFile(TmpCase):
@@ -212,8 +227,10 @@ class RulesFile(TmpCase):
         for text in ("## beads\n- bead-id-allow: api\n", "## repeats\n- commands: x\n", None):
             with self.subTest(text=text):
                 repo = self.write(text) if text is not None else self.tmp
-                # WHEN loaded / THEN None
-                self.assertIsNone(guard.load_rules(repo))
+                # WHEN loaded
+                rules = guard.load_rules(repo)
+                # THEN None
+                self.assertIsNone(rules)
                 if text is not None:
                     (self.tmp / ".claude/project-rules.md").unlink()
                     (self.tmp / ".claude").rmdir()
@@ -222,7 +239,8 @@ class RulesFile(TmpCase):
         """A broken exclude must be reported, not silently widen or narrow what gets scanned."""
         # GIVEN an exclude that does not compile
         repo = self.write(RULES_TEXT + "- bead-id-exclude: (\n")
-        # WHEN loaded / THEN ValueError naming the key
+        # WHEN loaded
+        # THEN ValueError naming the key
         with self.assertRaisesRegex(ValueError, "bead-id-exclude"):
             guard.load_rules(repo)
 
@@ -237,7 +255,11 @@ class Modes(TmpCase):
         self.repo.commit("base")
 
     def test_staged_blocks_an_added_comment_with_exit_9(self):
-        """Pre-commit refuses a newly added id comment and names it."""
+        """Pre-commit refuses a newly added id comment and names it.
+
+        Why: the hook branches on exit 9 and shows stdout to the agent; without file:line:id the
+        agent cannot find the comment to fix, and without 9 the commit goes through.
+        """
         # GIVEN a staged new comment line carrying an id
         self.repo.write("new.ts", f"export const b = 2; // {SHORT_A}\n")
         self.repo.git("add", "new.ts")
@@ -252,8 +274,10 @@ class Modes(TmpCase):
         # GIVEN an edit to old.ts that adds a clean comment below the legacy one
         self.repo.write("old.ts", f"// legacy {FULL}\nexport const a = 1;\n// tidy\n")
         self.repo.git("add", "old.ts")
-        # WHEN the staged check runs / THEN it passes
-        self.assertEqual(self.repo.run("--staged").returncode, 0)
+        # WHEN the staged check runs
+        r = self.repo.run("--staged")
+        # THEN it passes
+        self.assertEqual(r.returncode, 0, r.stdout)
 
     def test_staged_reads_the_index_not_the_working_tree(self):
         """The commit is what gets checked, so unstaged edits neither block nor pass it."""
@@ -261,8 +285,10 @@ class Modes(TmpCase):
         self.repo.write("new.ts", "export const b = 2; // plain\n")
         self.repo.git("add", "new.ts")
         self.repo.write("new.ts", f"export const b = 2; // {SHORT_A}\n")
-        # WHEN the staged check runs / THEN it passes
-        self.assertEqual(self.repo.run("--staged").returncode, 0)
+        # WHEN the staged check runs
+        r = self.repo.run("--staged")
+        # THEN it passes
+        self.assertEqual(r.returncode, 0, r.stdout)
 
     def test_staged_fails_open_outside_a_repo(self):
         """A broken environment must never wedge commits."""
@@ -288,39 +314,164 @@ class Modes(TmpCase):
         self.assertNotIn("old.ts", r.stdout)
 
     def test_base_passes_a_clean_change(self):
-        """A PR with no id comments passes."""
+        """A PR with no id comments passes.
+
+        Why: CI runs this on every PR; a false failure on clean code would block every merge
+        and teach people to skip the check.
+        """
         # GIVEN a clean commit
         base = self.repo.git("rev-parse", "HEAD").strip()
         self.repo.write("new.py", "x = 1  # plain\n")
         self.repo.commit("add")
-        # WHEN checked / THEN exit 0
-        self.assertEqual(self.repo.run("--base", base).returncode, 0)
+        # WHEN checked
+        r = self.repo.run("--base", base)
+        # THEN exit 0
+        self.assertEqual(r.returncode, 0, r.stdout)
+
+    ODD_NAMES = ("plain.ts", "a b.ts", "caf" + "é" + ".ts")
+
+    def stage_odd_names(self) -> str:
+        """Stage the same id comment under each of ODD_NAMES; return the commit before them."""
+        base = self.repo.git("rev-parse", "HEAD").strip()
+        for name in self.ODD_NAMES:
+            self.repo.write(name, f"// {FULL}\n")
+        self.repo.git("add", "-A")
+        return base
+
+    def assert_all_odd_names(self, r):
+        self.assertEqual(r.returncode, 9, r.stderr)
+        for name in self.ODD_NAMES:
+            self.assertIn(f"{name}:1: {FULL}", r.stdout)
+
+    def test_staged_reports_files_with_spaces_and_non_ascii_names(self):
+        """git tab-terminates a header path with a space and C-quotes a non-ASCII one; both are read.
+
+        Why: a header parsed wrong drops that file's hunks, so its id comments pass silently.
+        """
+        # GIVEN the same id comment in a plain name, a name with a space and a non-ASCII name
+        self.stage_odd_names()
+        # WHEN the staged check runs
+        r = self.repo.run("--staged")
+        # THEN all three files are reported
+        self.assert_all_odd_names(r)
+
+    def test_base_reports_files_with_spaces_and_non_ascii_names(self):
+        """CI reads the same quoted and tab-terminated headers; a dropped file is an unchecked file."""
+        # GIVEN a commit adding the id comment under all three names
+        base = self.stage_odd_names()
+        self.repo.git("commit", "-q", "-m", "add")
+        # WHEN checked against the base
+        r = self.repo.run("--base", base)
+        # THEN all three files are reported
+        self.assert_all_odd_names(r)
+
+    def test_staged_still_checks_utf8_files_next_to_a_non_utf8_one(self):
+        """A Latin-1 file in the same commit is skipped, not a reason to skip the whole diff.
+
+        Why: decoding the whole diff strictly would raise on that one file and fail the check open.
+        """
+        # GIVEN a staged Latin-1 file and a staged UTF-8 file with an id comment
+        (self.repo.root / "latin.ts").write_bytes(b"// caf\xe9\n")
+        self.repo.write("new.ts", f"// {FULL}\n")
+        self.repo.git("add", "-A")
+        # WHEN the staged check runs
+        r = self.repo.run("--staged")
+        # THEN the UTF-8 file is reported
+        self.assertEqual(r.returncode, 9, r.stderr)
+        self.assertIn(f"new.ts:1: {FULL}", r.stdout)
+
+    def test_strict_scan_raises_when_git_cannot_show_a_file(self):
+        """--base scans strictly: a git error reading a file must surface, not drop that file.
+
+        Why: CI that skips a file it could not read passes a PR it never checked.
+        """
+        # GIVEN a reader that fails like git show does
+        def read(path):
+            raise subprocess.CalledProcessError(128, ["git", "show", path])
+        # WHEN scanned strictly
+        # THEN the error propagates
+        with self.assertRaises(subprocess.CalledProcessError):
+            guard.scan({"a.ts": None}, read, RULES, strict=True)
+
+    def test_lenient_scan_skips_a_file_git_cannot_show(self):
+        """--staged scans leniently: one unreadable file must not wedge a commit.
+
+        Why: the pre-commit check fails open by design; a raise here would surface as exit 0 for
+        every file, so skipping just the one keeps the rest checked.
+        """
+        # GIVEN a reader that fails like git show does
+        def read(path):
+            raise subprocess.CalledProcessError(128, ["git", "show", path])
+        # WHEN scanned leniently
+        result = guard.scan({"a.ts": None}, read, RULES)
+        # THEN nothing is reported and nothing raises
+        self.assertEqual(result, [])
 
     def test_base_fails_closed_on_an_unknown_ref(self):
         """In CI, a base it cannot resolve must fail the job, not pass it."""
         # GIVEN a ref that does not exist
         # WHEN checked
         r = self.repo.run("--base", "no-such-ref")
-        # THEN it exits non-zero and says why
-        self.assertNotEqual(r.returncode, 0)
+        # THEN it exits 2, names the ref and shows a correct invocation
+        self.assertEqual(r.returncode, 2)
         self.assertIn("no-such-ref", r.stderr)
+        self.assertIn("--base origin/main", r.stderr)
 
-    def test_all_reports_every_tracked_id_comment_and_honours_paths(self):
-        """--all is the full-tree scan; paths narrow it; excluded paths stay out."""
-        # GIVEN a second tracked file with an id comment and an excluded fixture
+    def add_more(self):
         self.repo.write("pkg/b.sql", f"-- {FULL}\nSELECT 1;\n")
         self.repo.write("a/fixtures/x.ts", f"// {FULL}\n")
         self.repo.commit("more")
-        # WHEN scanning everything / one path
-        everything = self.repo.run("--all")
-        narrowed = self.repo.run("--all", "pkg")
-        # THEN both files are found in the full scan, only one in the narrowed scan
-        self.assertEqual(everything.returncode, 9)
-        self.assertIn("old.ts:1:", everything.stdout)
-        self.assertIn("pkg/b.sql:1:", everything.stdout)
-        self.assertNotIn("fixtures", everything.stdout)
-        self.assertNotIn("old.ts", narrowed.stdout)
-        self.assertIn("pkg/b.sql:1:", narrowed.stdout)
+
+    def test_all_reports_every_tracked_id_comment(self):
+        """--all is the full-tree scan: old ids anywhere are reported, excluded paths stay out."""
+        # GIVEN a second tracked file with an id comment and an excluded fixture
+        self.add_more()
+        # WHEN scanning everything
+        r = self.repo.run("--all")
+        # THEN both files are found and the fixture is not
+        self.assertEqual(r.returncode, 9)
+        self.assertIn("old.ts:1:", r.stdout)
+        self.assertIn("pkg/b.sql:1:", r.stdout)
+        self.assertNotIn("fixtures", r.stdout)
+
+    def test_all_with_a_path_scans_only_that_path(self):
+        """Paths narrow --all, so a cleanup can go one directory at a time."""
+        # GIVEN id comments in old.ts and pkg/b.sql
+        self.add_more()
+        # WHEN scanning only pkg
+        r = self.repo.run("--all", "pkg")
+        # THEN only pkg/b.sql is reported
+        self.assertNotIn("old.ts", r.stdout)
+        self.assertIn("pkg/b.sql:1:", r.stdout)
+
+    def test_all_from_a_subdirectory_reports_and_excludes_by_root_paths(self):
+        """--all names files from the repo root, as --staged and --base do.
+
+        Why: bead-id-exclude is matched against the path; a cwd-relative path would make the
+        same exclude skip a file in one mode and not in another.
+        """
+        # GIVEN an id comment in sub/x.py
+        self.repo.write("sub/x.py", f"# {FULL}\n")
+        self.repo.commit("sub")
+        # WHEN --all runs from sub/
+        r = self.repo.run("--all", cwd=self.repo.root / "sub")
+        # THEN the path is root-relative
+        self.assertEqual(r.returncode, 9, r.stderr)
+        self.assertIn("sub/x.py:1:", r.stdout)
+
+    def test_all_from_a_subdirectory_honours_a_root_anchored_exclude(self):
+        """An exclude of ^sub/ skips sub/ when --all runs from inside it.
+
+        Why: with cwd-relative paths the anchor never matched there and excluded files got reported.
+        """
+        # GIVEN an exclude of ^sub/ and an id comment in sub/x.py
+        self.repo.write(".claude/project-rules.md", RULES_TEXT + "- bead-id-exclude: ^sub/\n")
+        self.repo.write("sub/x.py", f"# {FULL}\n")
+        self.repo.commit("sub")
+        # WHEN --all runs from sub/
+        r = self.repo.run("--all", cwd=self.repo.root / "sub")
+        # THEN nothing is reported
+        self.assertEqual(r.returncode, 0, r.stdout)
 
     def test_exclude_line_replaces_the_default_paths(self):
         """bead-id-exclude lets a project skip its own generated dirs while the rest stays checked."""
@@ -337,34 +488,57 @@ class Modes(TmpCase):
         self.assertIn("src/x.py:1:", r.stdout)
         self.assertNotIn("generated/", r.stdout)
 
-    def test_bad_exclude_fails_open_staged_and_closed_base(self):
-        """A broken rules line never wedges a commit, but CI must not pass a scan it could not run."""
-        # GIVEN an exclude that does not compile and a staged violation
+    def stage_bad_exclude(self):
         self.repo.write(".claude/project-rules.md", RULES_TEXT + "- bead-id-exclude: (\n")
         self.repo.write("new.py", f"# {FULL}\n")
         self.repo.git("add", "-A")
-        # WHEN both modes run
-        staged, base = self.repo.run("--staged"), self.repo.run("--base", "HEAD")
-        # THEN staged exits 0, base exits 2, both say which line is wrong
-        self.assertEqual((staged.returncode, base.returncode), (0, 2), (staged.stderr, base.stderr))
-        self.assertIn("bead-id-exclude", staged.stderr)
-        self.assertIn("bead-id-exclude", base.stderr)
 
-    def test_without_the_rules_parser_staged_passes_and_base_fails(self):
-        """A copy of the hook installed without agent-cli cannot read rules: commits pass, CI fails loudly."""
-        # GIVEN a repo with only the hook dir installed (no .claude/cli) and a staged violation
+    def test_bad_exclude_fails_open_in_staged_mode(self):
+        """A broken rules line never wedges a commit, and the skip names the line to fix."""
+        # GIVEN an exclude that does not compile and a staged violation
+        self.stage_bad_exclude()
+        # WHEN the staged check runs
+        r = self.repo.run("--staged")
+        # THEN exit 0, naming the bad line
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("bead-id-exclude", r.stderr)
+
+    def test_bad_exclude_fails_closed_in_base_mode(self):
+        """CI must not pass a scan it could not run, and must say which line is wrong."""
+        # GIVEN an exclude that does not compile
+        self.stage_bad_exclude()
+        # WHEN the base check runs
+        r = self.repo.run("--base", "HEAD")
+        # THEN exit 2, naming the bad line
+        self.assertEqual(r.returncode, 2, r.stderr)
+        self.assertIn("bead-id-exclude", r.stderr)
+
+    def bare_copy(self) -> tuple[Path, Path]:
+        """A repo with only the hook dir installed (no .claude/cli) and a staged violation."""
         bare = make_project(self.tmp / "bare", install=False, hooks=("bead-id-check",))
         (bare / ".claude/project-rules.md").write_text(RULES_TEXT)
         (bare / "new.py").write_text(f"# {FULL}\n")
         run(GIT + ["add", "-A"], bare)
-        script = bare / ".claude/hooks/bead-id-check/check_comment_bead_ids.py"
-        # WHEN both modes run with that copy
-        staged = run([sys.executable, str(script), "--staged"], bare, check=False)
-        base = run([sys.executable, str(script), "--base", "HEAD"], bare, check=False)
-        # THEN staged exits 0 and base exits 2 naming the missing parser
-        self.assertEqual(staged.returncode, 0, staged.stderr)
-        self.assertEqual(base.returncode, 2, base.stderr)
-        self.assertIn("agent_cli", base.stderr)
+        return bare, bare / ".claude/hooks/bead-id-check/check_comment_bead_ids.py"
+
+    def test_without_the_rules_parser_staged_passes(self):
+        """A copy of the hook installed without agent-cli cannot read rules, so commits pass."""
+        # GIVEN the hook copied without agent-cli
+        bare, script = self.bare_copy()
+        # WHEN the staged check runs with that copy
+        r = run([sys.executable, str(script), "--staged"], bare, check=False)
+        # THEN exit 0
+        self.assertEqual(r.returncode, 0, r.stderr)
+
+    def test_without_the_rules_parser_base_fails(self):
+        """Without agent-cli, CI fails loudly naming the missing parser rather than passing unchecked."""
+        # GIVEN the hook copied without agent-cli
+        bare, script = self.bare_copy()
+        # WHEN the base check runs with that copy
+        r = run([sys.executable, str(script), "--base", "HEAD"], bare, check=False)
+        # THEN exit 2 naming the parser
+        self.assertEqual(r.returncode, 2, r.stderr)
+        self.assertIn("agent_cli", r.stderr)
 
 
 class NoRules(TmpCase):
@@ -388,7 +562,11 @@ class NoRules(TmpCase):
         self.assertIn("no bead-id-prefix", staged.stderr)
 
     def test_no_rules_file_turns_the_check_off(self):
-        """A project with no project-rules.md at all is untouched by the hook."""
+        """A project with no project-rules.md at all is untouched by the hook.
+
+        Why: the hook ships in the shared settings.json of every installed repo; blocking where
+        no prefix was set would refuse commits in projects that never opted in.
+        """
         # GIVEN no rules file and a staged id comment
         # WHEN the checker and the hook run
         staged, hook = self.check_off(None)
@@ -417,13 +595,46 @@ class Hook(TmpCase):
 
     def test_bypass_comment_lets_the_commit_through(self):
         """An agent with a real reason can say so in the command instead of being wedged."""
-        # WHEN the commit carries the bypass comment / THEN exit 0
-        self.assertEqual(self.repo.hook("git commit -m x" + BYPASS).returncode, 0)
+        # WHEN the commit carries the bypass comment, spaced or not
+        for bypass in (BYPASS, "  #agent-cli:allow bead-id-comment"):
+            with self.subTest(bypass=bypass):
+                r = self.repo.hook("git commit -m x" + bypass)
+                # THEN exit 0
+                self.assertEqual(r.returncode, 0, r.stderr)
+
+    def test_bypass_without_a_hash_is_not_a_bypass(self):
+        """The bypass is a shell comment, as for every agent-cli rule; bare text in a message is not.
+
+        Why: a commit message quoting the bypass words would otherwise switch the check off.
+        """
+        # WHEN the bypass words appear without a leading #
+        r = self.repo.hook("git commit -m 'agent-cli: allow bead-id-comment'")
+        # THEN the commit is still blocked
+        self.assertEqual(r.returncode, 2, r.stderr)
+
+    def test_hooks_off_lets_the_commit_through(self):
+        """AGENT_CLI_HOOKS=off turns every agent-cli rule off, this one included, as AGENTS.md says."""
+        # WHEN git commit goes through the hook with hooks off
+        r = self.repo.hook("git commit -m x", AGENT_CLI_HOOKS="off")
+        # THEN exit 0
+        self.assertEqual(r.returncode, 0, r.stderr)
+
+    def test_hook_writes_no_bytecode_into_the_repo(self):
+        """The check runs inside the repo being committed to; a __pycache__ there is an untracked mess.
+
+        Why: importing agent_cli from that repo's .claude/cli would leave compiled files behind on
+        every commit, which then show up in git status and trip stale-artifact gates.
+        """
+        # WHEN the hook runs a check that imports agent_cli
+        self.repo.hook("git commit -m x")
+        # THEN no __pycache__ exists under the repo's .claude/
+        self.assertEqual(list((self.repo.root / ".claude").rglob("__pycache__")), [])
 
     def test_non_commit_commands_are_ignored(self):
         """Only git commit is gated; every other command runs untouched."""
-        # WHEN git status goes through the hook / THEN exit 0, nothing said
+        # WHEN git status goes through the hook
         r = self.repo.hook("git status")
+        # THEN exit 0, nothing said
         self.assertEqual((r.returncode, r.stderr), (0, ""))
 
     def test_git_dash_c_commit_from_another_dir_is_checked_in_that_repo(self):
