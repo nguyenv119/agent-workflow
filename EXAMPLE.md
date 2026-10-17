@@ -26,7 +26,7 @@ Each finding is saved to the knowledge base with the files it depends on, so the
 
 You answer the open question, correct anything it got wrong, and go again. Stop when the agent's "could not confirm" list is empty or something you have chosen to defer. The agent is working from two kinds of understanding at this point: what the task is, and how the code is laid out.
 
-If you want a record you can read later, ask for the `document` skill. It writes a page in `~/Downloads` with short plain-language sections for you (why, how it works, backlog) and a collapsed "For agents" section that holds the long notes. That section mostly links: to the knowledge-base notes, to file paths, to the tracker. The page stays short enough to read, and an agent that opens it follows the links it needs and ignores the rest.
+If you want a record you can read later, ask for the `document` skill. It writes a page in your pages folder (`~/.claude/pages` unless a `## document` section in project-rules.md says otherwise) with short plain-language sections for you (why, how it works layer by layer, open questions) and a collapsed "For agents" section that holds the long notes. That section mostly links: to the knowledge-base notes, to file paths, to the tracker. The page stays short enough to read, and an agent that opens it follows the links it needs and ignores the rest.
 
 ---
 

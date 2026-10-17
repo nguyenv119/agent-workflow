@@ -3,8 +3,8 @@ want by command (mark the latest update, add a layer skeleton, start a page from
 
 A page is plain HTML: an optional hero with a kicker line and a legend, sections, layers (one wrapper element
 each, holding a heading, a pain point, a diagram and a done line), and one collapsed section for agents.
-Every selector and pattern comes from the rules (see agent_cli/rules.py); the defaults below match the
-document skill shipped in this repo. Stdlib only.
+Every selector and pattern comes from the rules (see agent_cli/rules.py); the defaults below are the loose
+floor, and the document skill's `.claude/skills/document/page-rules.json` tightens them. Stdlib only.
 """
 import datetime
 import html as htmllib
@@ -53,7 +53,7 @@ DEFAULTS = {
     "require_source": [],              # [{"pattern", "why"}] the raw HTML must match
     "template": None,                  # page new: default template path
 }
-CHECK = "agent-cli page check docs/cache-2026-01-01.html --rules .claude/page-rules.json"
+CHECK = "agent-cli page check docs/cache-2026-01-01.html --rules .claude/skills/document/page-rules.json"
 MARK = 'agent-cli page mark-update docs/cache-2026-01-01.html --note "layer 2 now covers eviction"'
 LAYER = 'agent-cli page new-layer docs/cache-2026-01-01.html --title "Layer 3. Misses go to the database"'
 NEW = "agent-cli page new cache --template .claude/skills/document/template.html --dir docs"
