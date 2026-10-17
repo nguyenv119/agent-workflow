@@ -80,6 +80,16 @@
         ]
       },
       {
+        "matcher": "Edit|Write|MultiEdit|NotebookEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "timeout": 5,
+            "command": "[ -x \"$CLAUDE_PROJECT_DIR/.claude/bin/agent-cli\" ] && \"$CLAUDE_PROJECT_DIR/.claude/bin/agent-cli\" hook pretooluse 2>/dev/null; exit 0"
+          }
+        ]
+      },
+      {
         "matcher": "Agent",
         "hooks": [
           {

@@ -86,9 +86,21 @@ def agent_cli(project, *args, stdin=None, env=None, cwd=None):
                           cwd=str(cwd or project), input=stdin, env=e, text=True, capture_output=True)
 
 
-def bash_event(command, tool="Bash"):
-    """A PreToolUse payload as Claude Code sends it on stdin."""
-    return json.dumps({"hook_event_name": "PreToolUse", "tool_name": tool, "tool_input": {"command": command}})
+def bash_event(command, tool="Bash", cwd=None):
+    """A PreToolUse payload as Claude Code sends it on stdin (cwd: the session's, left out when None)."""
+    e = {"hook_event_name": "PreToolUse", "tool_name": tool, "tool_input": {"command": command}}
+    if cwd is not None:
+        e["cwd"] = str(cwd)
+    return json.dumps(e)
+
+
+def edit_event(path, tool="Edit", cwd=None):
+    """A PreToolUse payload for an edit tool; NotebookEdit carries notebook_path, the others file_path."""
+    key = "notebook_path" if tool == "NotebookEdit" else "file_path"
+    e = {"hook_event_name": "PreToolUse", "tool_name": tool, "tool_input": {key: str(path)}}
+    if cwd is not None:
+        e["cwd"] = str(cwd)
+    return json.dumps(e)
 
 
 def corpus_entries(path=CORPUS):

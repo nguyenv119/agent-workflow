@@ -179,13 +179,19 @@ class SafetyRules(HookCase):
         # THEN only the rule with a present tool fires
         self.assertEqual([x["id"] for x in json.loads(r.stdout)["rules"]], ["needs-sh"])
 
-    def test_non_bash_tools_are_never_inspected(self):
-        """Only Bash commands are checked; Write/Edit/Read payloads pass whatever they contain."""
-        # GIVEN a Write payload carrying the sentinel command
-        # WHEN the hook reads it
-        p = self.hook('echo "<promise>WIN</promise>"', tool="Write")
-        # THEN nothing is decided
-        self.assertIsNone(self.decision(p))
+    def test_bash_rules_never_run_on_other_tools(self):
+        """The command rules check Bash only; Write/Read payloads carrying a command pass.
+
+        Edit tools are checked for harness paths alone (test_harness_edit.py); a command-shaped string
+        in their input is file content, not something a shell will run.
+        """
+        for tool in ("Write", "Read"):
+            with self.subTest(tool=tool):
+                # GIVEN a payload of this tool carrying the sentinel command
+                # WHEN the hook reads it
+                p = self.hook('echo "<promise>WIN</promise>"', tool=tool)
+                # THEN nothing is decided
+                self.assertIsNone(self.decision(p))
 
     def test_bad_project_rules_file_is_ignored_with_one_stderr_line(self):
         """A broken project rules file names itself on stderr; built-in rules keep working."""
@@ -814,6 +820,18 @@ class Settings(unittest.TestCase):
                 self.assertEqual(h.get("timeout"), 5)
                 self.assertTrue(h["command"].startswith('[ -x "$CLAUDE_PROJECT_DIR/.claude/bin/agent-cli" ]'))
                 self.assertTrue(h["command"].endswith("; exit 0"))
+
+    def test_settings_run_pretooluse_on_the_edit_tools(self):
+        """settings.json runs `hook pretooluse` for Edit|Write|MultiEdit|NotebookEdit with the Bash group's
+        guarded command, so harness edits on main reach the harness-edit-on-main check."""
+        # GIVEN the harness settings
+        groups = json.loads((CLAUDE / "settings.json").read_text())["hooks"]["PreToolUse"]
+        bash = [h for g in groups if g.get("matcher") == "Bash" for h in g["hooks"] if " hook pretooluse" in h["command"]]
+        # WHEN the edit-tools group is read
+        edit = [h for g in groups if g.get("matcher") == "Edit|Write|MultiEdit|NotebookEdit" for h in g["hooks"]]
+        # THEN it has exactly the Bash group's command and timeout
+        self.assertEqual(len(edit), 1)
+        self.assertEqual((edit[0]["command"], edit[0].get("timeout")), (bash[0]["command"], 5))
 
 
 if __name__ == "__main__":

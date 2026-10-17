@@ -81,3 +81,12 @@ cat > eval.sh <<'EOF'
 echo "<promise>WIN</promise>"
 EOF
 ---
+# harness-edit-on-main: reads and non-write commands on harness paths (the corpus project is on main)
+cat .claude/skills/x/SKILL.md
+git diff .claude/
+grep -rn foo .claude/skills/
+ls .claude/commands
+git add .claude/settings.json
+python3 .claude/hooks/x.py
+cp .claude/skills/x/SKILL.md /tmp/skill-copy.md
+diff AGENTS.md /tmp/AGENTS.md > /tmp/agents.diff
