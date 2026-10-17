@@ -3,16 +3,18 @@ warning, the UserPromptSubmit phrase hook and the `hook` verbs (posttooluse/post
 recorder, live in record.py).
 
 Safety: fails open (any error prints nothing, exit 0); AGENT_CLI_HOOKS=off disables every rule and both
-warnings; `# agent-cli: allow <id>` skips one rule (`repeated-shape` for the repeat warning); only Bash is
-inspected; commands over 20 KB are not matched.
+warnings; `# agent-cli: allow <id>` skips one rule (`repeated-shape` for the repeat warning); Bash commands meet
+every rule, Edit/Write/MultiEdit/NotebookEdit only harness-edit-on-main (harness_edit.py); commands over
+20 KB are not matched.
 """
 import json
 import os
 import re
 import shutil
+import subprocess
 import sys
 
-from . import core, hook_rules
+from . import core, harness_edit, hook_rules
 
 MAX_CMD = 20 * 1024
 BYPASS = re.compile(r"#\s*agent-cli:\s*allow\s+([\w.-]+)")
@@ -176,6 +178,21 @@ def evaluate(command, rules, honor_bypass=True):
     return [r for r in rules if r["id"] not in bypass and match(r, command, code) and active(r)]
 
 
+def check(command, cwd):
+    """evaluate() with every rule, then, when nothing denies, harness-edit-on-main on the files the
+    command writes (relative paths resolved against cwd)."""
+    hits = evaluate(command, load_rules())
+    if (not any(r["mode"] == "deny" for r in hits) and os.environ.get("AGENT_CLI_HOOKS") != "off"
+            and len(command) <= MAX_CMD and harness_edit.RULE_ID not in BYPASS.findall(command)):
+        try:
+            written, removed = harness_edit.bash_targets(command)
+            w = harness_edit.first(written, cwd, removed)
+        except (OSError, subprocess.TimeoutExpired):  # git missing or slow: fail open, as pretooluse does
+            w = None
+        hits += [harness_edit.rule(w)] if w else []
+    return hits
+
+
 def match(rule, raw, code):
     """The rule's match object in its view (code, or raw when on == "raw"), or None when its `needs`
     misses raw, `match` misses, or `unless` hits. Ignores `requires` and bypass comments."""
@@ -204,24 +221,33 @@ def pretooluse():
     With no rule firing, a shape on the repeats cache adds the repeated-shape warning (_repeat_rule)."""
     try:
         data = json.loads(sys.stdin.read())
-        if data.get("tool_name") != "Bash":
+        tool, cwd = data.get("tool_name"), data.get("cwd") or os.getcwd()
+        if tool in harness_edit.EDIT_TOOLS:
+            path = data["tool_input"].get(harness_edit.EDIT_TOOLS[tool])
+            w = os.environ.get("AGENT_CLI_HOOKS") != "off" and isinstance(path, str) and harness_edit.first([path], cwd)
+            if w:
+                _deny(_shim(harness_edit.rule(w)["message"]) + "  (bypass: AGENT_CLI_HOOKS=off)")
+            return
+        if tool != "Bash":
             return
         command = data["tool_input"]["command"]
-        hits = evaluate(command, load_rules())
+        hits = check(command, cwd)
         deny = [r for r in hits if r["mode"] == "deny"]
-        out = {"hookEventName": "PreToolUse"}
         if deny:
-            out.update(permissionDecision="deny", permissionDecisionReason=message(deny[0]))
-        else:
-            # a rule that fires already names the command for this chore, so the repeat warning is only
-            # for commands no rule matches
-            hits = hits or [r for r in [_repeat_rule(command, data)] if r]
-            if not hits:
-                return
-            out["additionalContext"] = "\n".join(message(r) for r in hits)
-        print(json.dumps({"hookSpecificOutput": out}))
+            return _deny(message(deny[0]))
+        # a rule that fires already names the command for this chore, so the repeat warning is only
+        # for commands no rule matches
+        hits = hits or [r for r in [_repeat_rule(command, data)] if r]
+        if hits:
+            print(json.dumps({"hookSpecificOutput": {"hookEventName": "PreToolUse",
+                                                     "additionalContext": "\n".join(message(r) for r in hits)}}))
     except Exception:  # fail open: a broken hook must never block a session
         return
+
+
+def _deny(reason):
+    print(json.dumps({"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "deny",
+                                             "permissionDecisionReason": reason}}))
 
 
 REPEAT_ID = "repeated-shape"
@@ -327,7 +353,7 @@ def userpromptsubmit():
 
 def test(command, json_mode):
     """Exit 2 when a rule denies command, else 0; prints the decision and the rules that fired."""
-    hits = evaluate(command, load_rules())
+    hits = check(command, os.getcwd())
     decision = "deny" if any(r["mode"] == "deny" for r in hits) else "warn" if hits else "allow"
     rows = [{"id": r["id"], "mode": r["mode"], "message": message(r)} for r in hits]
     if json_mode:
@@ -340,7 +366,9 @@ def test(command, json_mode):
 
 
 def list_rules(json_mode):
-    for r in load_rules():
+    # harness-edit-on-main has no regex and reads branch state, so it lives outside load_rules(), which
+    # hook scan, record and repeats call with no cwd and must not spawn git; it is listed by hand here
+    for r in load_rules() + [harness_edit.rule()]:
         row = {"id": r["id"], "mode": r["mode"], "source": r["source"], "active": active(r),
                "requires": r.get("requires")}
         if json_mode:
