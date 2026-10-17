@@ -25,8 +25,8 @@ DEFAULT = {"required": None, "advisory": [], "preview": None}
 
 # REVIEW: mocking core dependency (gh / the GitHub API, which has no local or test-mode equivalent).
 # It replays $FAKE_GH/view.json and checks.json (no checks.json = gh's "no checks reported", exit 1;
-# view.err = a failing gh pr view; a `slow` file = sleep that many seconds first), appends every argv to
-# calls.log and each `gh pr merge` argv to merge.log.
+# view.err = a failing gh pr view; a `slow` file = sleep that many seconds first; `gh repo view` prints the
+# `repo` file, no file = a failing call), appends every argv to calls.log and each `gh pr merge` argv to merge.log.
 FAKE_GH = r'''#!/usr/bin/env python3
 import json, os, sys, time
 d, a = os.environ["FAKE_GH"], sys.argv[1:]
@@ -43,6 +43,10 @@ elif a[:2] == ["pr", "checks"]:
     print(open(f"{d}/checks.json").read())
 elif a[:2] == ["pr", "merge"]:
     open(f"{d}/merge.log", "a").write(json.dumps(a) + "\n")
+elif a[:2] == ["repo", "view"]:
+    if not os.path.exists(f"{d}/repo"):
+        sys.stderr.write("no git remotes found\n"); sys.exit(1)
+    print(open(f"{d}/repo").read())
 else:
     sys.exit(2)
 '''
@@ -299,6 +303,53 @@ class Config(unittest.TestCase):
         # THEN both give the default
         self.assertEqual(pr.config("## coordinator\nprose\n"), DEFAULT)
         self.assertEqual(pr.config(""), DEFAULT)
+
+    KEYED = ("## coordinator\nrequired-checks: test, quality\nadvisory-checks: bot-review\npreview-check: Vercel\n"
+             "- `required-checks[acme/infra]:` unit, leak\n## reviewer\nrequired-checks[acme/other]: wrong\n")
+
+    def test_keyed_required_line_for_the_target_repo_wins(self):
+        """For a PR in acme/infra, `required-checks[acme/infra]:` replaces the plain required-checks line.
+
+        Another repo's CI has other job names; judged by the plain list its PR never goes READY and wait runs to the cap.
+        """
+        # GIVEN a plain required line and one keyed to acme/infra
+        # WHEN parsed for acme/infra
+        cfg = pr.config(self.KEYED, "acme/infra")
+        # THEN the keyed list is required
+        self.assertEqual(cfg["required"], ["unit", "leak"])
+
+    def test_keyed_line_for_another_repo_is_ignored(self):
+        """A keyed line for a different repo leaves the plain line in force, so every other repo behaves as before."""
+        # GIVEN lines keyed to acme/infra (coordinator) and acme/other (another section)
+        # WHEN parsed for acme/web and for acme/other
+        web, other = pr.config(self.KEYED, "acme/web"), pr.config(self.KEYED, "acme/other")
+        # THEN both get the plain coordinator lines
+        plain = {"required": ["test", "quality"], "advisory": ["bot-review"], "preview": "Vercel"}
+        self.assertEqual(web, plain)
+        self.assertEqual(other, plain)
+
+    def test_slug_match_ignores_case(self):
+        """GitHub slugs are case-insensitive, so `--repo Acme/Infra` matches a line keyed `[ACME/infra]`."""
+        # GIVEN a keyed line written in mixed case
+        text = "## coordinator\nrequired-checks: test\nrequired-checks[ACME/infra]: unit\n"
+        # WHEN parsed for the same slug in another case
+        cfg = pr.config(text, "Acme/Infra")
+        # THEN the keyed line applies
+        self.assertEqual(cfg["required"], ["unit"])
+
+    def test_each_key_resolves_on_its_own(self):
+        """A keyed required line does not drop the plain advisory or preview line, and a keyed preview line
+        leaves the plain required line in force.
+
+        Repos often share a bot reviewer; suppressing it would make its failures block the keyed repo's PRs.
+        """
+        # GIVEN only required keyed to acme/infra, and only preview keyed to acme/docs
+        docs = "## coordinator\nrequired-checks: test\nadvisory-checks: bot\npreview-check[acme/docs]: pages\n"
+        # WHEN parsed for each repo
+        infra, d = pr.config(self.KEYED, "acme/infra"), pr.config(docs, "acme/docs")
+        # THEN the unkeyed lines still apply
+        self.assertEqual(infra, {"required": ["unit", "leak"], "advisory": ["bot-review"], "preview": "Vercel"})
+        self.assertEqual(d, {"required": ["test"], "advisory": ["bot"], "preview": "pages"})
 
 
 class Wait(unittest.TestCase):
@@ -564,6 +615,78 @@ class StatusCli(CliCase):
                 self.assertEqual(r.returncode, 0)
                 self.assertIn("Examples:\n  agent-cli pr " + verb, r.stdout)
         self.assertIn("status", self.cli().stdout)
+
+
+class RepoKeyedCli(CliCase):
+    """Repo-keyed check lines through the CLI: which repo a PR is in decides which list judges it."""
+
+    RULES = "## coordinator\nrequired-checks: test, quality\nrequired-checks[acme/infra]: unit, leak\n"
+    INFRA = [check("unit", "pass"), check("leak", "pass"), check("reinstall-diff", "pass")]
+
+    def test_wait_with_repo_on_a_green_pr_of_that_repo_exits_0(self):
+        """`pr wait --repo acme/infra` judges by acme/infra's keyed list: green on its own checks, without a
+        `gh repo view` (the --repo flag already names the repo).
+
+        Before keyed lines, missing_required held the cwd repo's names and wait ran to its cap (exit 4).
+        """
+        # GIVEN the keyed line and a PR whose checks are acme/infra's, all passing
+        self.rules(self.RULES)
+        self.set_pr(view(), self.INFRA)
+        # WHEN waited with --repo
+        r = self.cli("wait", "42", "--cap", "0s", "--json", "--repo", "acme/infra")
+        # THEN READY, exit 0, judged by the keyed list, and only the two pr calls were made
+        self.assertEqual(r.returncode, Exit.OK, r.stderr)
+        s = json.loads(r.stdout)
+        self.assertEqual((s["verdict"], s["missing_required"]), ("READY", []))
+        self.assertEqual(sorted(c["name"] for c in s["required"]), ["leak", "unit"])
+        self.assertEqual([c[:2] for c in self.calls()], [["pr", "view"], ["pr", "checks"]])
+
+    def test_a_failed_keyed_required_check_is_failed(self):
+        """One keyed required check red is FAILED (exit 1), so a red PR in the other repo is never landed."""
+        # GIVEN the keyed line and leak failing
+        self.rules(self.RULES)
+        self.set_pr(view(), [check("unit", "pass"), check("leak", "fail")])
+        # WHEN status runs with --repo
+        r = self.cli("status", "42", "--json", "--repo", "acme/infra")
+        # THEN FAILED
+        self.assertEqual(r.returncode, Exit.FAIL, r.stderr)
+        self.assertEqual(json.loads(r.stdout)["verdict"], "FAILED")
+
+    def test_without_repo_the_cwd_repo_picks_the_keyed_line(self):
+        """Without --repo, the PR is in the repo gh targets from the cwd, so `gh repo view` names the keyed line."""
+        # GIVEN the keyed line and gh reporting the cwd repo as acme/infra
+        self.rules(self.RULES)
+        (self.gh / "repo").write_text("acme/infra")
+        self.set_pr(view(), self.INFRA)
+        # WHEN status runs without --repo
+        r = self.cli("status", "42", "--json")
+        # THEN READY by the keyed list, after one gh repo view
+        self.assertEqual(r.returncode, Exit.OK, r.stderr)
+        self.assertEqual(json.loads(r.stdout)["verdict"], "READY")
+        self.assertEqual(sorted(c[:2] for c in self.calls()), [["pr", "checks"], ["pr", "view"], ["repo", "view"]])
+
+    def test_without_a_keyed_line_gh_repo_view_is_never_called(self):
+        """With no keyed line in the rules, no `gh repo view` is made: the common case spends no extra API call."""
+        # GIVEN plain lines only
+        self.rules("## coordinator\nrequired-checks: unit\n")
+        (self.gh / "repo").write_text("acme/infra")
+        self.set_pr(view(), self.INFRA)
+        # WHEN status runs without --repo
+        r = self.cli("status", "42", "--json")
+        # THEN READY with exactly the two pr calls
+        self.assertEqual(r.returncode, Exit.OK, r.stderr)
+        self.assertEqual([c[:2] for c in self.calls()], [["pr", "view"], ["pr", "checks"]])
+
+    def test_a_failing_gh_repo_view_falls_back_to_the_plain_line(self):
+        """When `gh repo view` fails, the plain line judges the PR (gh pr view surfaces any real error itself)."""
+        # GIVEN the keyed line and gh unable to name the cwd repo
+        self.rules(self.RULES)
+        self.set_pr(view(), self.INFRA)
+        # WHEN status runs without --repo
+        r = self.cli("status", "42", "--json")
+        # THEN judged by the plain list: WAITING on its missing names
+        self.assertEqual(r.returncode, Exit.PARTIAL, r.stderr)
+        self.assertEqual(json.loads(r.stdout)["missing_required"], ["test", "quality"])
 
 
 class WaitCli(CliCase):
