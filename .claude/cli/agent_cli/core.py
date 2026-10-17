@@ -221,15 +221,34 @@ def seam_lines(name):
     return [s.strip() for s in lines if s.strip() and not s.lstrip().startswith("#")]
 
 
-def rules_line(section, key, text=None):
-    """The value of a `key: value` line under `## <section>` in project-rules.md (text, or the file
-    find_project_file finds), stripped of backticks; None when the section or line is missing."""
+def _scope(text):
+    return re.sub(r"\s", "", text).lower()
+
+
+def _rules_lines(section, key, text):
+    """{scope: value} of the `key:` (scope None) and `key[scope]:` lines under `## <section>`; first line wins."""
     if text is None:
         f = find_project_file("project-rules.md")
         text = f.read_text() if f else ""
     m = re.search(rf"^##[ \t]+{re.escape(section)}[ \t]*$(.*?)(?=^##[ \t]|\Z)", text, re.M | re.S)
-    v = re.search(rf"^[ \t]*(?:[-*][ \t]+)?`?{re.escape(key)}:`?[ \t]*(.*)$", m[1], re.M) if m else None
-    return v[1].strip().strip("`").strip() if v else None
+    out = {}
+    for v in re.finditer(rf"^[ \t]*(?:[-*][ \t]+)?`?{re.escape(key)}(?:\[([^\]\n]*)\])?:`?[ \t]*(.*)$",
+                         m[1] if m else "", re.M):
+        out.setdefault(None if v[1] is None else _scope(v[1]), v[2].strip().strip("`").strip())
+    return out
+
+
+def rules_line(section, key, text=None, scope=None):
+    """The value of a `key: value` line under `## <section>` in project-rules.md (text, or the file
+    find_project_file finds), stripped of backticks; None when the section or line is missing.
+    With scope, a `key[scope]: value` line wins (case and whitespace in the brackets ignored)."""
+    lines = _rules_lines(section, key, text)
+    return lines.get(_scope(scope) if scope else None, lines.get(None))
+
+
+def rules_scopes(section, key, text=None):
+    """The scopes of the `key[scope]:` lines under `## <section>`, normalised as rules_line compares them."""
+    return set(_rules_lines(section, key, text)) - {None}
 
 
 def names(value):
