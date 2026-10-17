@@ -6,8 +6,11 @@
                   [--sidecheck-env docker|daytona] [--sidecheck-budget-usd Z]]
     loop.py monthly [--budget-usd X]
     loop.py exam --pr N --tasks <manifest> [--budget-usd X] [--check-only]
+                 [--subscription-only [--rerun-on-fail 1] [--post-status [--status-repo R]]]
+    loop.py exam --candidate-installed DIR --baseline-installed DIR --tasks <manifest> --subscription-only
+                 [--rerun-on-fail 1] [--post-status --status-repo owner/name --status-sha SHA]
     loop.py sync
-    loop.py exam-route
+    loop.py exam-route [--subscription-only]
     loop.py guard <commit> [--base <ref>]
     loop.py leak [--diff <ref>] [--body <file>] [--redact]
     loop.py budget --est X --what S
@@ -55,6 +58,32 @@ made, and the restacked commit is screened with early stop like a round's; the b
 PR body. Spend is booked as round pr-<N>. The restack ref is deleted once the exam is done (monthly too).
 The exam never pushes or merges.
 
+Canary (exam --subscription-only; agent-cli `harness canary` runs it with tasks/canary-2026-10.json): the exam on the
+plan token only, never a paid route. In order: CLAUDE_CODE_REMOTE set -> exit 5 "could not run: the canary is
+laptop-only" before any gh, git or preflight call; with --pr, a fork PR (gh isCrossRepository) -> exit 5 "could not run:
+fork PR, not run with the plan token" (the sandbox holds the token and runs the PR's harness); neither posts a status.
+Then the path gate ("not needed" posts success, makes no run), the free checks, the subscription preflight ALONE (no
+working token: exit 4 naming the credential, never a value; EXAM_ROUTES is never walked), `docker info` (via
+EXAM_DOCKER; down: exit 5), the task fetch (tasks/fetch_cache.py <manifest>, or LOOP_FETCH_CACHE; only now, so a "not
+needed" PR downloads nothing; failed: exit 5), the screen and, on a screen fail, --rerun-on-fail more candidate runs
+(each a fresh run dir; the verdict is the last compare; a rerun whose tries all errored: exit 5). --post-status writes
+commit status `harness-canary` on the PR head (or --status-sha) of GH_REPO (or --status-repo): "not needed (no loaded
+file)", "pass solved B/n vs main A/n", "fail (rerun) solved B/n vs main A/n", or state error "could not run: <reason>".
+A failed `gh pr edit` of the score block still posts the status, then exits 5 naming the kept body file.
+Installed mode (--candidate-installed/--baseline-installed: two installed .claude + AGENTS.md trees, run with
+run_exam.py --installed) has no PR and no path gate (agent-cli gates first): a tree holding a .env, .env.*, *.bak or
+settings.local.json under .claude, or no file under .claude, exits 2 (install_harness.installed_files; in a git
+work tree only files git does not ignore count); identical trees (same installed_sha256) post "not needed (installed trees identical)"; the candidate tree's
+free checks (tree_problems) fail as "dry run fail (...)", exit 1. main's run is reused when a booked, sealed baseline
+has the same installed_sha256 (a --pr exam never reuses an installed-tree run). A tree with an add-on refuses the
+default ~/.harness-loop (exit 2); agent-cli sets HARNESS_LOOP_HOME=~/.harness-loop-private/<repo> for every installing
+repo. The token: CLAUDE_CODE_OAUTH_TOKEN, else the file HARNESS_EXAM_ENV_FILE names (exam/envfile.py; only the
+preflight and run_exam subprocesses get it).
+Canary exit codes (exam --subscription-only and agent-cli harness canary): 0 pass or not needed; 1 fail (after the
+rerun), stale, or a free check failed; 2 usage error or refused config; 3 (agent-cli only) gh could not read the PR;
+4 paused (usage limit) or no subscription credential; 5 could not run (laptop-only, fork PR, gh or git failed, the PR
+moved, Docker down, the fetch failed, both runs or the rerun errored, the exam crashed, the PR body edit failed).
+
 Outcomes in history.jsonl: queued (screen pass, PR open), screen-fail (draft PR), side-fail
 (screen pass, side check guard fail, draft PR), dropped (a
 check failed), rejected (the gate guard: the change weakens a gate, reviewer or test),
@@ -72,7 +101,8 @@ no screen verdict, no PR, exit 4; exam and monthly exit 4 the same way. Run it a
 
 Exam route (owner decision, 16 Oct 2026): the exam's sandboxes cannot read the keychain login, so on the
 subscription route the exam takes the first credential that answers a one-call Haiku preflight (run with a
-fresh CLAUDE_CONFIG_DIR and only that credential): CLAUDE_CODE_OAUTH_TOKEN (from `claude setup-token`, booked
+fresh CLAUDE_CONFIG_DIR and only that credential; --subscription-only: the token alone, exit 4 without it):
+CLAUDE_CODE_OAUTH_TOKEN (from `claude setup-token`, booked
 notional), then Bedrock (AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY, real money), then ANTHROPIC_API_KEY (real
 money). Only the exam moves: the improver and the project check stay on the subscription. A paid exam's budget
 counts against the weekly cap, and its ledger rows carry its route. A token that hits a usage limit, times out or
@@ -145,7 +175,10 @@ AW_ROOT = LOOP_DIR.parent
 sys.dont_write_bytecode = True  # hash_tree(LOOP_DIR) must not see an exam/__pycache__ this import left
 sys.path.insert(0, str(LOOP_DIR / "exam"))
 from trial_export import EXAM_ROUTES, OAUTH_TOKEN, json_events, model_route, rate_limit_reason, sandbox_env  # noqa: E402
-HOME = Path(os.environ.get("HARNESS_LOOP_HOME") or Path.home() / ".harness-loop")
+import envfile  # noqa: E402
+import install_harness  # noqa: E402
+DEFAULT_HOME = Path.home() / ".harness-loop"
+HOME = Path(os.environ.get("HARNESS_LOOP_HOME") or DEFAULT_HOME)
 TRIES = Path.home() / ".claude/tries"  # every repo's /work tries: <repo>/<bead>/try-<n>
 GH_REPO = "nguyenv119/agent-workflow"
 
@@ -182,6 +215,9 @@ BEDROCK_ENV = {"AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN"
 NOT_SUBSCRIPTION = re.compile(r"^(CLAUDE_CODE_USE_(BEDROCK|VERTEX|FOUNDRY)|ANTHROPIC_(MODEL|SMALL_FAST_MODEL"
                               r"|DEFAULT_\w+_MODEL))$")
 RATE_LIMITED_EXIT = 4  # a usage limit paused the run: not a failure, run again once it resets
+COULD_NOT_RUN_EXIT = 5  # the canary could not start or finish (not a fail): leave the PR open, retry later
+CANARY_CONTEXT = "harness-canary"
+SUBSCRIPTION_ONLY = False  # --subscription-only: the exam route is the plan token or nothing (main sets it)
 
 # Gate guard (Long, 12 Oct): a change may add or sharpen checks, never remove or weaken one.
 GATE_WORDS = re.compile(r"\b(tests?|testing|test-runner|test-first|gates?|reviews?|reviewers?|reviewing"
@@ -643,19 +679,26 @@ def load_check(cand):
                            env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"})
         if p.returncode != 0:
             return [f"install_harness failed: {p.stderr.strip()[:200]}"]
-        bad = [f"bash -n {h.name}" for h in sorted((target / ".claude/hooks").glob("*.sh"))
-               if subprocess.run(["bash", "-n", str(h)], capture_output=True).returncode != 0]
-        settings = target / ".claude/settings.json"
-        if settings.is_file():
-            try:
-                json.loads(settings.read_text())
-            except ValueError as e:
-                bad.append(f"settings.json does not parse: {e}")
-        for skill in sorted((target / ".claude/skills").glob("*/SKILL.md")):
-            missing = frontmatter_ok(skill.read_text())
-            if missing:
-                bad.append(f"{skill.parent.name}/SKILL.md frontmatter lacks {', '.join(sorted(missing))}")
-        return bad
+        return tree_problems(target)
+
+
+def tree_problems(target):
+    """[] or why the installed .claude + AGENTS.md tree at target would not load: a hook that is not valid
+    bash, a settings.json that does not parse, a SKILL.md frontmatter without name or description."""
+    target = Path(target)
+    bad = [f"bash -n {h.name}" for h in sorted((target / ".claude/hooks").glob("*.sh"))
+           if subprocess.run(["bash", "-n", str(h)], capture_output=True).returncode != 0]
+    settings = target / ".claude/settings.json"
+    if settings.is_file():
+        try:
+            json.loads(settings.read_text())
+        except ValueError as e:
+            bad.append(f"settings.json does not parse: {e}")
+    for skill in sorted((target / ".claude/skills").glob("*/SKILL.md")):
+        missing = frontmatter_ok(skill.read_text())
+        if missing:
+            bad.append(f"{skill.parent.name}/SKILL.md frontmatter lacks {', '.join(sorted(missing))}")
+    return bad
 
 
 def project_check(base, cand, body, round_n):
@@ -727,16 +770,18 @@ def exam_env():
 
 
 def run_exam(sha, manifest, kind, budget, round_n, screen=True, tries=1, extra=(), side_home=None):
-    """Run one exam, book its cost, return the run dir.
+    """Run one exam, book its cost, return the run dir. sha: a commit, or a Path of an installed tree (--installed).
 
     side_home: a private side check. Its run goes under side_home/runs, never HOME/runs (which the
     improver reads), and its ledger row names neither the run nor its set."""
-    cmd = tool("LOOP_RUN_EXAM", "run_exam.py") + ["--harness", sha, "--tasks", str(manifest),
+    harness = ["--installed", str(sha)] if isinstance(sha, Path) else ["--harness", sha]
+    cmd = tool("LOOP_RUN_EXAM", "run_exam.py") + [*harness, "--tasks", str(manifest),
                                                    "--budget-usd", f"{budget:.2f}", "--kind", kind,
                                                    "--tries", str(tries)] + (["--screen"] if screen else []) + list(extra)
     label = f"sidecheck-{kind}" if side_home else f"exam-{kind}"
     via = exam_route()[0]
-    env = {**exam_env(), "HARNESS_MODEL_ACCESS": via, **({"HARNESS_LOOP_HOME": str(side_home)} if side_home else {})}
+    env = envfile.with_token({**exam_env(), "HARNESS_MODEL_ACCESS": via,
+                              **({"HARNESS_LOOP_HOME": str(side_home)} if side_home else {})})
     try:
         p = subprocess.run(cmd, capture_output=True, text=True, env=env)
     except BaseException:
@@ -777,13 +822,15 @@ def find_base_run(base_sha, manifest):
     hashed and restored every round), so a run dir the improver forged is never reused. Matching on
     the installed tree, not the commit, lets a run survive main commits that only touch harness-loop/.
     The exam's own settings (model, per-try cap) are checked against the candidate run once it
-    exists (screen_against_main); the sandbox (docker or daytona) is deliberately not part of the key."""
+    exists (screen_against_main); the sandbox (docker or daytona) is deliberately not part of the key.
+    base_sha a Path (an installed tree): the key is its installed_sha256 instead."""
     rows = read_jsonl(HOME / "spend.jsonl")
     booked = ({r.get("note") for r in rows if r.get("kind") == "exam-baseline"}
               - {r.get("note") for r in rows if r.get("kind") == "exam-baseline-stale"})
     data = json.loads(Path(manifest).read_text())
     want = sorted(t["id"] for t in data.get("tasks", []) if t.get("screen"))
-    tree = harness_tree(base_sha)
+    installed = install_harness.installed_sha256(base_sha) if isinstance(base_sha, Path) else None
+    tree = None if installed else harness_tree(base_sha)
     found = []
     for meta_f in (HOME / "runs").glob("*/run.json"):
         try:
@@ -795,7 +842,10 @@ def find_base_run(base_sha, manifest):
         if (meta.get("set") == data.get("set") and meta.get("tasks") == want and meta.get("screen")
                 and meta.get("agent") == "workflow" and meta.get("kind") == "baseline"
                 and meta.get("status") == "complete" and meta.get("model_access", "bedrock") == exam_route()[0] and (meta_f.parent / "summary.sha256").is_file()
-                and meta_f.parent.name in booked and tree and harness_tree(str(meta.get("harness_commit"))) == tree):
+                and meta_f.parent.name in booked
+                and (meta.get("installed_sha256") == installed if installed
+                     else tree and not meta.get("installed_sha256")
+                     and harness_tree(str(meta.get("harness_commit"))) == tree)):
             found.append((meta_f.stat().st_mtime, meta_f.parent))
     return max(found)[1] if found else None
 
@@ -945,8 +995,8 @@ def preflight(via):
     (AUTH_FAIL) falls through to the next, paid, credential; a usage limit, a timeout or any other failure
     raises RateLimited, so a busy subscription pauses and never moves the exam to a paid route."""
     try:
-        cred = sandbox_env(os.environ, via, tries_dir="/")
-    except RuntimeError as e:  # "<VAR> is not set on the host; ..."
+        cred = sandbox_env(envfile.with_token(os.environ), via, tries_dir="/")
+    except RuntimeError as e:  # "<VAR> is not set on the host; ..." or an unreadable HARNESS_EXAM_ENV_FILE
         return str(e).split(";")[0]
     secrets = [v for k, v in cred.items() if SCRUB_ENV.match(k) and v]
     cmd = shlex.split(os.environ.get("EXAM_PREFLIGHT_CLAUDE") or "claude") + [
@@ -977,7 +1027,11 @@ def exam_route():
     """(route, reasons) for the exam's sandboxed /work runs, decided once per process. On HARNESS_MODEL_ACCESS=bedrock:
     bedrock (run_exam.py checks the keys). On the subscription (owner decision, 16 Oct 2026) the first of
     EXAM_ROUTES whose one-call preflight answers: the CLAUDE_CODE_OAUTH_TOKEN, then Bedrock (paid), then
-    ANTHROPIC_API_KEY (paid); route None when none does. reasons: why each earlier one was passed over."""
+    ANTHROPIC_API_KEY (paid); route None when none does. reasons: why each earlier one was passed over.
+    SUBSCRIPTION_ONLY: the subscription's preflight alone, whatever the model route."""
+    if SUBSCRIPTION_ONLY:
+        why = preflight("subscription")
+        return ("subscription", ()) if not why else (None, (f"subscription: {why}",))
     if route() == "bedrock":
         return "bedrock", ()
     reasons = []
@@ -994,7 +1048,7 @@ def exam_problem():
     via, reasons = exam_route()
     if via is None:
         return ("no exam credential works (" + "; ".join(reasons) + "); for the subscription run "
-                f"`claude setup-token` once and export {OAUTH_TOKEN}")
+                f"`claude setup-token` once and export {OAUTH_TOKEN} (or name a file holding it in {envfile.ENV_FILE})")
     print(f"exam route: {via}" + (f" (passed over: {'; '.join(reasons)})" if reasons else ""))
     return ""
 
@@ -1377,35 +1431,176 @@ def cmd_sync(_args):
     write_queue([q for q in read_queue() if q["round"] not in closed])
 
 
+def post_status(target, state, desc):
+    """Commit status harness-canary on target (repo, sha); None (no --post-status) posts nothing."""
+    if not target:
+        return
+    repo, sha = target
+    p = subprocess.run(["gh", "api", f"repos/{repo}/statuses/{sha}", "-f", f"state={state}",
+                        "-f", f"context={CANARY_CONTEXT}", "-f", f"description={desc[:140]}"],
+                       capture_output=True, text=True)
+    if p.returncode:
+        die(f"could not post status {CANARY_CONTEXT} on {repo}@{sha[:7]}: {p.stderr.strip()[-200:]}",
+            code=COULD_NOT_RUN_EXIT)
+    print(f"canary: status {CANARY_CONTEXT}={state} on {sha[:7]}")
+
+
+def could_not_run(target, reason):
+    """Not a fail: status error with the reason (public: no paths, no names), exit 5."""
+    post_status(target, "error", f"could not run: {reason}")
+    die(f"could not run: {reason}", code=COULD_NOT_RUN_EXIT)
+
+
+def docker_problem():
+    """Why `docker info` (EXAM_DOCKER) fails, or ''."""
+    try:
+        p = subprocess.run([*shlex.split(os.environ.get("EXAM_DOCKER", "docker")), "info"],
+                           capture_output=True, text=True, timeout=60)
+    except (OSError, subprocess.TimeoutExpired) as e:
+        return f"Docker is not reachable ({e.__class__.__name__})"
+    return "" if p.returncode == 0 else "Docker is not running"
+
+
+def canary_screen(base, cand, manifest, budget, round_n, reruns, target):
+    """The canary's screen of cand against base (commits or installed-tree Paths): the subscription preflight
+    alone (exit 4), Docker (exit 5), the task fetch (exit 5), main's run reused or made, the candidate, and on a
+    screen fail up to `reruns` fresh candidate runs. Returns (stats of the last compare, last candidate run, reran).
+    A RuntimeError (a run_exam or compare crash) is main()'s: could not run."""
+    via, reasons = exam_route()
+    if via is None:
+        die(f"subscription-only: no plan credential works ({'; '.join(reasons)}); run `claude setup-token` once and "
+            f"export {OAUTH_TOKEN}, or name a file holding it in {envfile.ENV_FILE}", code=RATE_LIMITED_EXIT)
+    print(f"exam route: {via}")
+    if why := docker_problem():
+        could_not_run(target, why)
+    fetch = shlex.split(os.environ.get("LOOP_FETCH_CACHE") or f"{sys.executable} {LOOP_DIR / 'tasks/fetch_cache.py'}")
+    if subprocess.run([*fetch, str(manifest)], stdout=sys.stderr).returncode:  # exam setup: only once it is needed
+        could_not_run(target, "task fetch failed")
+    base_run = find_base_run(base, manifest)
+    check_screen_budget(budget, base_run)
+    per_run, reran = (budget if base_run else budget / 2), False
+    base_run, cand_run, stop, stats = screen_against_main(base, cand, manifest, budget, round_n, base_run)
+    if not stop and run_broken(base_run) and run_broken(cand_run):
+        could_not_run(target, "main's and the candidate's runs both errored or stopped")
+    for _ in range(0 if stop else reruns):
+        if stats["screen"] == "pass":
+            break
+        print("canary: screen fail, rerunning the candidate once more")
+        cand_run = run_exam(cand, manifest, "candidate", per_run, round_n, extra=("--early-stop-vs", str(base_run)))
+        if run_broken(cand_run):
+            could_not_run(target, "the candidate's rerun errored")
+        stats, reran = compare(base_run, cand_run, "--screen-rule"), True
+    if stop:
+        print(f"loop: {stop}", file=sys.stderr)
+        could_not_run(target, "main's run settings differ from the candidate's; run again")
+    return stats, cand_run, reran
+
+
+def run_broken(run):
+    """True when a run says nothing about the harness: every try errored (a Docker or image build failure, not a
+    score), or it stopped incomplete without an early stop (an early stop is a verdict: it can no longer pass)."""
+    tries = [json.loads(p.read_text()).get("status") for p in Path(run).glob("*/try-*/result.json")]
+    meta = json.loads((Path(run) / "run.json").read_text())
+    return (meta.get("status") != "complete" and not meta.get("early_stop")) or all(t == "error" for t in tries)
+
+
+def canary_verdict(stats, reran, target):
+    """Post and print the canary verdict; exit 1 on a fail."""
+    n, ok = int(stats["n"]), stats["screen"] == "pass"
+    desc = (f"{'pass' if ok else 'fail'}{' (rerun)' if reran else ''} solved {stats['solvedB']}/{n} "
+            f"vs main {stats['solvedA']}/{n}")
+    post_status(target, "success" if ok else "failure", desc)
+    print(f"canary: {desc}")
+    if not ok:
+        sys.exit(1)
+
+
+def exam_installed(args):
+    """exam --candidate-installed C --baseline-installed B: the canary on two installed trees (no PR, no gate)."""
+    trees = [Path(d).resolve() for d in (args.candidate_installed, args.baseline_installed)]
+    for d in trees:
+        if not (d / ".claude").is_dir():
+            die(f"{d} has no .claude dir (pass an installed .claude + AGENTS.md tree)")
+        if ((install_harness.installed_version(d) or {}).get("addon")
+                and HOME.resolve() == DEFAULT_HOME.resolve()):
+            die("an installed tree with an add-on is private: set HARNESS_LOOP_HOME to a private dir, "
+                "never ~/.harness-loop (the improver reads its runs/)")
+    if args.post_status and not (args.status_repo and args.status_sha):
+        die("--post-status with installed trees needs --status-repo owner/name and --status-sha SHA")
+    target = args.target = (args.status_repo, args.status_sha) if args.post_status else None
+    try:
+        same = install_harness.installed_sha256(trees[0]) == install_harness.installed_sha256(trees[1])
+    except ValueError as e:  # a .env or other local file: never packed into a sandbox
+        die(str(e))
+    if same:  # the gate may count paths (hook-seam link targets) the installed trees cannot hold
+        post_status(target, "success", "not needed (installed trees identical)")
+        print("canary: not needed (installed trees identical)")
+        return
+    if bad := tree_problems(trees[0]):  # the free dry run, as exam_restacked's load_check
+        free = f"dry run fail ({'; '.join(bad)})"
+        post_status(target, "failure", free)
+        die(f"candidate {trees[0]}: {free}", code=1)
+    stats, _, reran = canary_screen(trees[1], trees[0], Path(args.tasks).resolve(), args.budget_usd, "canary",
+                                    args.rerun_on_fail, target)
+    canary_verdict(stats, reran, target)
+
+
 def cmd_exam(args):
-    pr = gh_json("pr", "view", str(args.pr), "--json", "state,headRefOid,headRefName,body")
+    installed = args.candidate_installed or args.baseline_installed
+    if (args.pr is None) == (not installed) or (installed and not (args.candidate_installed and args.baseline_installed)):
+        die("exam: give --pr N, or --candidate-installed DIR and --baseline-installed DIR")
+    if (installed or args.rerun_on_fail or args.post_status) and not args.subscription_only:
+        die("exam: --candidate-installed, --rerun-on-fail and --post-status need --subscription-only (the canary)")
+    if args.subscription_only and os.environ.get("CLAUDE_CODE_REMOTE"):
+        die("could not run: the canary is laptop-only (CLAUDE_CODE_REMOTE is set); nothing posted",
+            code=COULD_NOT_RUN_EXIT)
+    if installed:
+        return exam_installed(args)
+    pr = gh_json("pr", "view", str(args.pr), "--json", "state,headRefOid,headRefName,body"
+                 + (",isCrossRepository,headRepositoryOwner" if args.subscription_only else ""))
+    if args.subscription_only and pr.get("isCrossRepository"):
+        die("could not run: fork PR, not run with the plan token; nothing posted", code=COULD_NOT_RUN_EXIT)
     if pr["state"] != "OPEN":
         die(f"PR #{args.pr} is {pr['state']}, not OPEN")
+    # the PR head gh named: where the status goes (a git failure from here on posts error there, see main)
+    args.target = (args.status_repo or GH_REPO, pr["headRefOid"]) if args.post_status and not args.check_only else None
     git("fetch", "-q", "origin", "main")
     git("fetch", "-q", "origin", f"pull/{args.pr}/head")
     head = git("rev-parse", "FETCH_HEAD").strip()
     if head != pr["headRefOid"]:
-        die(f"PR #{args.pr} moved while fetching ({pr['headRefOid'][:7]} -> {head[:7]}); run again")
+        moved = f"PR #{args.pr} moved while fetching ({pr['headRefOid'][:7]} -> {head[:7]}); run again"
+        if args.subscription_only:
+            could_not_run(args.target, moved)
+        die(moved)
     main_sha = git("rev-parse", "origin/main").strip()
     needs, reason = path_gate(main_sha, head)
     print(f"exam: PR #{args.pr} ({pr['headRefName']} {head[:7]}): "
           f"{'exam needed' if needs else 'no exam needed'}: {reason}")
     body_f = HOME / "exams" / f"pr-{args.pr}" / "pr-body.md"
 
+    edit_failed = []
+
     def post(*lines):
         if not edit_pr_body(args.pr, lines, body_f):
-            die(f"gh pr edit failed; body kept at {body_f}", code=1)
+            if not args.subscription_only:
+                die(f"gh pr edit failed; body kept at {body_f}", code=1)
+            edit_failed.append(body_f)  # the canary posts its status first (the merge gate reads it), then exits 5
         print("\n".join(lines))
 
-    if not needs:
-        if not args.check_only:
-            post(f"exam: not needed ({reason})")
-        return
-    cand = restack(head, main_sha)  # score the change as it would land on today's main
     try:
-        exam_restacked(args, main_sha, head, cand, post)
+        if not needs:
+            if not args.check_only:
+                post(f"exam: not needed ({reason})")
+                post_status(args.target, "success", "not needed (no loaded file)")
+            return
+        cand = restack(head, main_sha)  # score the change as it would land on today's main
+        try:
+            exam_restacked(args, main_sha, head, cand, post)
+        finally:
+            unstack(head)
     finally:
-        unstack(head)
+        if edit_failed:  # replaces the verdict's exit (0 or 1): the score block never reached the PR
+            die(f"gh pr edit failed; body kept at {edit_failed[0]}", code=COULD_NOT_RUN_EXIT)
 
 
 def exam_restacked(args, main_sha, head, cand, post):
@@ -1426,9 +1621,17 @@ def exam_restacked(args, main_sha, head, cand, post):
             print(free)
         else:
             post(free)
+            post_status(args.target, "failure", free.removeprefix("exam: "))
         die(f"PR #{args.pr}: {free.removeprefix('exam: ')} (main {main_sha[:7]})", code=1)
     if args.check_only:
         return
+    if args.subscription_only:
+        stats, cand_run, reran = canary_screen(main_sha, cand, Path(args.tasks).resolve(), args.budget_usd,
+                                               f"pr-{args.pr}", args.rerun_on_fail, args.target)
+        post(score_line("screen", stats, main_sha, cand, tries_of(cand_run),
+                        f"screen={stats['screen']}" + (" (rerun)" if reran else "")),
+             *early_stop_line(cand_run), *([f"gate guard (advisory): {'; '.join(guard)}"] if guard else []))
+        return canary_verdict(stats, reran, args.target)
     if why := bedrock_problem(os.environ) or exam_problem():
         die(f"the exam: {why}")
     n, manifest = f"pr-{args.pr}", Path(args.tasks).resolve()
@@ -1442,10 +1645,11 @@ def exam_restacked(args, main_sha, head, cand, post):
          *early_stop_line(cand_run), *([f"gate guard (advisory): {'; '.join(guard)}"] if guard else []))
 
 
-def cmd_exam_route(_args):
-    """Print the exam's route and what was passed over (one preflight call per credential tried); exit 1 if none."""
+def cmd_exam_route(args):
+    """Print the exam's route and what was passed over (one preflight call per credential tried); exit 1 if none
+    (--subscription-only: the subscription's preflight alone, exit 4 if it fails)."""
     if why := exam_problem():
-        die(why, code=1)
+        die(why, code=RATE_LIMITED_EXIT if args.subscription_only else 1)
 
 
 def cmd_guard(args):
@@ -1661,13 +1865,26 @@ def main(argv=None):
     m = sub.add_parser("monthly")
     m.add_argument("--budget-usd", type=float, default=DEFAULT_EXAM_BUDGET_USD)
     sub.add_parser("sync")
-    e = sub.add_parser("exam", help="screen one open PR against main and write its score block")
-    e.add_argument("--pr", type=int, required=True)
+    e = sub.add_parser("exam", help="screen one open PR (or two installed trees) against main; canary exit codes: "
+                       "0 pass/not needed, 1 fail, 2 usage, 4 paused/no plan token, 5 could not run")
+    e.add_argument("--pr", type=int)
     e.add_argument("--tasks", required=True)
     e.add_argument("--budget-usd", type=float, default=DEFAULT_EXAM_BUDGET_USD)
     e.add_argument("--check-only", action="store_true", help="path gate and free checks only: no spend, no PR edit")
-    sub.add_parser("exam-route", help="which credential the exam would run on (one cheap preflight call each); "
-                   "exit 1 if none works")
+    e.add_argument("--subscription-only", action="store_true",
+                   help="the canary: plan token only (CLAUDE_CODE_OAUTH_TOKEN or HARNESS_EXAM_ENV_FILE), Docker "
+                   "running, laptop only, no fork PRs")
+    e.add_argument("--rerun-on-fail", type=int, default=0, metavar="N", help="rerun the candidate up to N times "
+                   "on a screen fail; the verdict is the last compare")
+    e.add_argument("--post-status", action="store_true", help=f"post commit status {CANARY_CONTEXT}")
+    e.add_argument("--status-repo", metavar="OWNER/NAME", help=f"repo of the status (default {GH_REPO})")
+    e.add_argument("--status-sha", metavar="SHA", help="commit of the status (installed mode)")
+    e.add_argument("--candidate-installed", metavar="DIR", help="an installed .claude + AGENTS.md tree (no --pr)")
+    e.add_argument("--baseline-installed", metavar="DIR", help="main's installed tree (no --pr)")
+    er = sub.add_parser("exam-route", help="which credential the exam would run on (one cheap preflight call each); "
+                        "exit 1 if none works")
+    er.add_argument("--subscription-only", action="store_true",
+                    help="preflight the subscription token alone; exit 4 if it does not answer")
     g = sub.add_parser("guard", help="run the round's gate guard on one commit (exit 1 = rejected)")
     g.add_argument("commit")
     g.add_argument("--base", help="diff base (default: <commit>^)")
@@ -1694,11 +1911,20 @@ def main(argv=None):
         route()
     except ValueError as e:
         die(str(e))
+    global SUBSCRIPTION_ONLY
+    SUBSCRIPTION_ONLY = getattr(args, "subscription_only", False)
+    if SUBSCRIPTION_ONLY:  # every call this process makes stays on the plan, never Bedrock or the API
+        os.environ["HARNESS_MODEL_ACCESS"] = "subscription"
     try:
         {"round": cmd_round, "monthly": cmd_monthly, "sync": cmd_sync, "exam": cmd_exam, "exam-route": cmd_exam_route, "guard": cmd_guard,
          "leak": cmd_leak, "budget": cmd_budget, "book": cmd_book, "port": cmd_port}[args.cmd](args)
     except RateLimited as e:
         die(f"paused: {e}; nothing fell back to a paid route, run again once the limit resets", code=RATE_LIMITED_EXIT)
+    except (RuntimeError, subprocess.CalledProcessError) as e:
+        if not SUBSCRIPTION_ONLY:
+            raise
+        print(f"loop: {e}", file=sys.stderr)  # local only: the status gets no paths or names
+        could_not_run(getattr(args, "target", None), "the exam stopped on an error (see the local log)")
 
 
 if __name__ == "__main__":

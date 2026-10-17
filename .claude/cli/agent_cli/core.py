@@ -34,7 +34,8 @@ class Exit(enum.IntEnum):
 EXIT_MEANING = {Exit.OK: "done, or the check passed", Exit.FAIL: "checked and failed",
                 Exit.REFUSED: "usage error or refused; the error names a correct invocation",
                 Exit.BLOCKED: "blocked by something outside the command (a lock holder, gh, a setup hook)",
-                Exit.TIMEOUT: "the --cap ran out first", Exit.PARTIAL: "not finished: still waiting, or partly done"}
+                Exit.TIMEOUT: "the --cap ran out first, or paused: a usage limit or no plan token (harness canary)",
+                Exit.PARTIAL: "not finished: still waiting, partly done, or could not run (harness canary); retry"}
 
 
 def die(code, msg, example):

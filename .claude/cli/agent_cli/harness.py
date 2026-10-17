@@ -22,7 +22,7 @@ import shlex
 import shutil
 from pathlib import Path
 
-from . import core
+from . import canary, core
 from .core import Exit
 
 FILES = "HARNESS_FILES.tsv"
@@ -45,7 +45,7 @@ GUARD_TESTS = {"-x": lambda p: os.path.isfile(p) and os.access(p, os.X_OK), "-f"
 
 def register(sub):
     _, hs = core.group(sub, "harness", "an installed harness: drift since install, and what a session loads",
-                       [DRIFT, INVENTORY])
+                       [DRIFT, INVENTORY, canary.EXAMPLE])
     p = core.subcommand(hs, "drift", "compare installed files with HARNESS_FILES.tsv and sort every difference "
                         "(exit 1 on unowned, addon_edited, missing or unexplained)",
                         [DRIFT, "agent-cli harness drift --target ../app/.claude --user-dir ~/.claude",
@@ -61,6 +61,7 @@ def register(sub):
     p.add_argument("--target", default=".", help="project root, its .claude dir, or $HOME for the user layer")
     p.add_argument("--json", action="store_true", help="one JSON object")
     p.set_defaults(func=inventory_cmd)
+    canary.register(hs)
 
 
 def sha256(path):

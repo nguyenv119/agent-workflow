@@ -8,7 +8,10 @@ Logs its argv to $FAKE_EXAM_LOG and prints run_exam's last line. $FAKE_EXAM_INCO
 (space-separated kinds) marks those runs incomplete, as a budget stop would; $FAKE_EXAM_EARLY_STOP (a
 reason) does that to a run given --early-stop-vs and records the reason as run.json early_stop;
 $FAKE_EXAM_RATE_LIMITED (space-separated kinds) marks those runs incomplete with run.json rate_limited,
-as a usage limit would.
+as a usage limit would. "<kind>-<k>" in the spec, when present, replaces "<kind>" on the k-th run of that kind
+(a canary rerun). --installed <dir> stands in for --harness: run.json gets its installed_sha256
+(install_harness's recipe) and harness_commit = its HARNESS_VERSION commit. $FAKE_EXAM_ERRORED (kinds, or "<kind>-<k>"
+for the k-th run of a kind) writes every try with status error. $FAKE_EXAM_TOKEN_LOG: append the CLAUDE_CODE_OAUTH_TOKEN this process got.
 """
 import argparse
 import json
@@ -18,12 +21,20 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "exam"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 import compare  # noqa: E402
+import install_harness  # noqa: E402
 
-with open(os.environ["FAKE_EXAM_LOG"], "a") as fh:
+log = Path(os.environ["FAKE_EXAM_LOG"])
+prior = [json.loads(line) for line in log.read_text().splitlines()] if log.is_file() else []
+with log.open("a") as fh:
     fh.write(json.dumps(sys.argv[1:]) + "\n")
+if os.environ.get("FAKE_EXAM_TOKEN_LOG"):
+    with open(os.environ["FAKE_EXAM_TOKEN_LOG"], "a") as fh:
+        fh.write(os.environ.get("CLAUDE_CODE_OAUTH_TOKEN", "") + "\n")
 ap = argparse.ArgumentParser()
-ap.add_argument("--harness", required=True)
+ap.add_argument("--harness")
+ap.add_argument("--installed")
 ap.add_argument("--tasks", required=True)
 ap.add_argument("--budget-usd", type=float, required=True)
 ap.add_argument("--screen", action="store_true")
@@ -36,11 +47,17 @@ args = ap.parse_args()
 
 # A side check (run with --addon) reads "side-<kind>" from the spec and $FAKE_EXAM_INCOMPLETE.
 key = f"side-{args.kind}" if args.addon else args.kind
-spec = json.loads(os.environ["FAKE_EXAM_SPEC"])[key]
+specs = json.loads(os.environ["FAKE_EXAM_SPEC"])
+nth = 1 + sum(1 for a in prior if a[a.index("--kind") + 1] == args.kind) if prior else 1
+spec = specs.get(f"{key}-{nth}", specs[key])
+installed_sha = install_harness.installed_sha256(args.installed) if args.installed else None
+commit = (args.harness if args.harness
+          else (install_harness.installed_version(args.installed) or {}).get("commit"))
+label = args.harness or installed_sha
 runs = Path(os.environ["HARNESS_LOOP_HOME"]) / "runs"
 runs.mkdir(parents=True, exist_ok=True)
 set_name = json.loads(Path(args.tasks).read_text()).get("set")  # run_exam names runs after the set
-base = f"fake-{args.harness[:7]}{'-' + set_name if set_name else ''}{'-screen' if args.screen else ''}"
+base = f"fake-{label[:7]}{'-' + set_name if set_name else ''}{'-screen' if args.screen else ''}"
 n = 1
 while (runs / (base if n == 1 else f"{base}-{n}")).exists():
     n += 1
@@ -55,12 +72,15 @@ for task, (reward, cost) in spec.items():
     for t in range(1, args.tries + 1):
         d = run / task / f"try-{t}"
         d.mkdir(parents=True)
-        (d / "result.json").write_text(json.dumps({"task": task, "try": t, "agent": "workflow", "status": "ok",
+        errored = bool({key, f"{key}-{nth}"} & set(os.environ.get("FAKE_EXAM_ERRORED", "").split()))
+        (d / "result.json").write_text(json.dumps({"task": task, "try": t, "agent": "workflow",
+                                                   "status": "error" if errored else "ok",
                                                    "reward": reward, "cost_usd": cost}))
         total += cost
 manifest = json.loads(Path(args.tasks).read_text())
 (run / "run.json").write_text(json.dumps({
-    "run_id": run.name, "kind": args.kind, "harness_commit": args.harness, "screen": args.screen,
+    "run_id": run.name, "kind": args.kind, "harness_commit": commit,
+    **({"installed_sha256": installed_sha} if installed_sha else {}), "screen": args.screen,
     "set": manifest.get("set"), "model": os.environ.get("FAKE_EXAM_MODEL", "m"), "tasks": sorted(t["id"] for t in manifest.get("tasks", []) if t["screen"] or not args.screen),
     "manifest": str(Path(args.tasks).resolve()), "agent": "workflow", "tries": args.tries,
     "model_access": os.environ.get("HARNESS_MODEL_ACCESS") or "subscription",

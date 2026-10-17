@@ -130,6 +130,50 @@ or the Bedrock keys) only for WorkflowAgent runs
 (oracle and nop never call a model), plus `DAYTONA_*` on daytona or `DOCKER_HOST` /
 `DOCKER_CONTEXT` / `DOCKER_CONFIG` on docker. Nothing else from the host reaches Harbor.
 
+## Canary (a short exam for harness PRs)
+
+`agent-cli harness canary --pr N` screens one harness PR on three cheap tasks
+(`tasks/canary-2026-10.json`) against main on the plan token only, reruns the candidate once on a screen
+fail, and posts commit status `harness-canary` on the PR head: success "not needed (no loaded file)" when
+the path gate finds nothing /work loads, success "pass solved B/n vs main A/n", failure "fail (rerun)
+solved B/n vs main A/n", or error "could not run: <reason>". In agent-workflow it runs
+`loop.py exam --pr N --tasks tasks/canary-2026-10.json --subscription-only --rerun-on-fail 1
+--post-status`; in a repo that installs the harness it builds the candidate as the PR would land on main
+(`git merge-tree`; a conflict is failure "stale, rebase the PR onto main", exit 1), clones agent-workflow
+at that tree's pinned commit (`HARNESS_CANARY_SOURCE` / `HARNESS_CANARY_REF` override where and which),
+and runs `loop.py exam --candidate-installed <merged tree> --baseline-installed <main tree>`
+(`run_exam.py --installed`) with `HARNESS_LOOP_HOME` defaulting to `~/.harness-loop-private/<repo>` (an
+inherited value wins). `--candidate DIR --baseline DIR` compares two installed trees and posts nothing.
+Identical trees are "not needed (installed trees identical)"; a candidate tree that fails the free checks
+is failure "dry run fail (...)"; a tree holding a `.env`, `.env.*`, `*.bak` or `settings.local.json` under
+`.claude` is refused (exit 2), and in a git work tree only tracked files are packed. loop.py runs
+`tasks/fetch_cache.py` (task folders and `.venv`) only after the gate, the token check and Docker, so a
+"not needed" PR downloads nothing.
+
+Before it starts:
+
+1. Docker running (`docker info`; down is exit 5 with status error).
+2. The plan token: export `CLAUDE_CODE_OAUTH_TOKEN` (from `claude setup-token`, a human step), or put
+   it in a file such as `~/.config/harness/exam.env` and name that file in `HARNESS_EXAM_ENV_FILE` or in
+   an `exam-env-file: <path>` line under `## harness` in the installing repo's project-rules.md. Only that
+   one line is read, and the value goes to the preflight and run_exam subprocesses, never to a log.
+   Without a working token the canary exits 4; it never falls back to Bedrock or an API key.
+
+It refuses two cases outright, posting no status and starting nothing (exit 5): a cloud session
+(`CLAUDE_CODE_REMOTE` set: the canary is laptop-only, so a laptop picks the PR up later) and a fork PR
+(the sandbox holds the plan token and runs the PR's harness, so a fork's head could read it).
+
+| exit | meaning |
+|------|---------|
+| 0 | pass, or not needed |
+| 1 | fail after the one rerun, stale, or a free check failed |
+| 2 | usage error or refused config (e.g. an installed tree with an add-on and the default `~/.harness-loop`) |
+| 3 | `agent-cli harness canary` only: gh could not read the PR |
+| 4 | paused: usage limit, or no working plan token |
+| 5 | could not run: laptop-only, fork PR, gh or git failed, the PR moved, Docker down, clone or task fetch failed, both runs (or the rerun) errored, the exam crashed, the PR body edit failed (the status is still posted) |
+
+Callers treat 5 like 4: leave the PR open and retry later.
+
 ## Run the exam
 
 `run_exam.py` runs a manifest's tasks through Harbor at one harness sha and seals the results under

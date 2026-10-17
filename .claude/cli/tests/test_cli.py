@@ -29,7 +29,8 @@ NOT_READ = {"hook pretooluse": "a hook: stdout is Claude Code's hook protocol, n
             "hook posttooluse": "a hook: records a command shape, prints nothing",
             "hook posttoolusefailure": "a hook: records a command shape, prints nothing",
             "hook userpromptsubmit": "a hook: stdout is Claude Code's hook protocol, not ours",
-            "eval init": "writes a scaffold", "pr land": "merges a PR"}
+            "eval init": "writes a scaffold", "pr land": "merges a PR",
+            "harness canary": "runs an exam and posts a commit status; streams loop.py's output"}
 
 
 def leaves(parser, path=()):

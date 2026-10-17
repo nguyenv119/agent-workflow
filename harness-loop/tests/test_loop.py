@@ -98,7 +98,8 @@ class LoopRepo:
         self.origin = self.tmp / "origin.git"
         run(GIT + ["init", "-q", "--bare", str(self.origin)], self.tmp)
         files = dict(BASE_FILES)
-        for rel in ("loop.py", "install_harness.py", "project_check.py", "exam/compare.py", "exam/trial_export.py"):
+        for rel in ("loop.py", "install_harness.py", "project_check.py", "exam/compare.py", "exam/trial_export.py",
+                    "exam/envfile.py"):
             files[f"harness-loop/{rel}"] = (LOOP_DIR / rel).read_text()
         self.aw, self.base_sha = make_repo(self.tmp / "aw", files)
         run(GIT + ["remote", "add", "origin", str(self.origin)], self.aw)
@@ -169,9 +170,11 @@ class LoopRepo:
     def exam_calls(self):
         return [json.loads(line) for line in self.exam_log.read_text().splitlines()] if self.exam_log.is_file() else []
 
-    def base_run(self, booked=True, env=None):
-        """A sealed main screen run at base_sha; the round reuses it only if booked in spend.jsonl."""
-        p = subprocess.run([sys.executable, str(FIXTURES / "fake_run_exam.py"), "--harness", self.base_sha,
+    def base_run(self, booked=True, env=None, harness=None):
+        """A sealed main screen run at base_sha (or of harness: e.g. ("--installed", dir)); the round reuses it
+        only if booked in spend.jsonl."""
+        harness = harness or ("--harness", self.base_sha)
+        p = subprocess.run([sys.executable, str(FIXTURES / "fake_run_exam.py"), *harness,
                             "--tasks", str(self.manifest), "--budget-usd", "9", "--screen", "--kind", "baseline"],
                            env={**self.env, **(env or {})}, capture_output=True, text=True, check=True)
         self.exam_log.unlink()

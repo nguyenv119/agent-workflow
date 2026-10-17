@@ -1,5 +1,6 @@
 """Shared test helpers for harness-loop tests (stdlib only)."""
 import hashlib
+import json
 import os
 import subprocess
 from pathlib import Path
@@ -44,3 +45,16 @@ def tree_hashes(root):
             p = Path(dirpath) / n
             out[p.relative_to(root).as_posix()] = hashlib.sha256(p.read_bytes()).hexdigest()
     return out
+
+
+def installed_tree(root, version=None, skill="Builds one bead.\n"):
+    """A minimal installed harness tree at root (.claude/skills/implementer/SKILL.md + AGENTS.md), with
+    .claude/HARNESS_VERSION = version when given. Returns root."""
+    root = Path(root)
+    (root / ".claude/skills/implementer").mkdir(parents=True, exist_ok=True)
+    (root / ".claude/skills/implementer/SKILL.md").write_text(
+        "---\nname: implementer\ndescription: Builds one bead.\n---\n\n" + skill)
+    (root / "AGENTS.md").write_text("# Agents\n")
+    if version is not None:
+        (root / ".claude/HARNESS_VERSION").write_text(json.dumps(version) + "\n")
+    return root

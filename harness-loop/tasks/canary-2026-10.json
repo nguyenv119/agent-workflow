@@ -1,0 +1,45 @@
+{
+  "set": "canary-2026-10",
+  "source": "huggingface:UnipatAI/Monthly-SWEBench-2026-05@47393eb5b1e73711c33fb6c6da39f3a1197d932e (difficulty hard)",
+  "tasks": [
+    {
+      "id": "apple__foundationdb_c7c2af54_9ea25b11",
+      "harbor_path": "cache/monthly-swebench-2026-05/bugfix/apple__foundationdb_c7c2af54_9ea25b11",
+      "repo": "apple/foundationdb",
+      "pr": null,
+      "merged_at": null,
+      "language": "cpp",
+      "kind": "bugfix",
+      "workdir": "/app/foundationdb",
+      "test_command": null,
+      "title": "Apply removeOldDestinations range updates for one destination in order",
+      "screen": true
+    },
+    {
+      "id": "open-telemetry__opentelemetry-collector-contrib_1c91b6eb_feaaf147",
+      "harbor_path": "cache/monthly-swebench-2026-05/non_bugfix/open-telemetry__opentelemetry-collector-contrib_1c91b6eb_feaaf147",
+      "repo": "open-telemetry/opentelemetry-collector-contrib",
+      "pr": null,
+      "merged_at": null,
+      "language": "go",
+      "kind": "feature",
+      "workdir": "/app/opentelemetry-collector-contrib",
+      "test_command": null,
+      "title": "Report httpcheck request phase timings as nanosecond metrics",
+      "screen": true
+    },
+    {
+      "id": "kenn-io__roborev_f3b0b432_a7078db6",
+      "harbor_path": "cache/monthly-swebench-2026-05/bugfix/kenn-io__roborev_f3b0b432_a7078db6",
+      "repo": "kenn-io/roborev",
+      "pr": null,
+      "merged_at": null,
+      "language": "go",
+      "kind": "bugfix",
+      "workdir": "/app/roborev",
+      "test_command": "go test ./internal/daemon",
+      "title": "Finalize CI review batches on permanent GitHub access errors",
+      "screen": true
+    }
+  ]
+}

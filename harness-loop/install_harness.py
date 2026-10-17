@@ -90,6 +90,7 @@ import argparse
 import hashlib
 import io
 import json
+import re
 import shutil
 import subprocess
 import sys
@@ -152,6 +153,46 @@ def addon_sha256(files):
         data = p.read_bytes()
         h.update(rel.encode() + b"\0" + str(len(data)).encode() + b"\0" + data)
     return h.hexdigest()
+
+
+LOCAL_FILE = re.compile(r"(^|/)(\.env(\.[^/]*)?|[^/]*\.bak|settings\.local\.json)$")
+
+
+def installed_files(root):
+    """Sorted (posix relpath, Path) of an already-installed harness tree at root: its .claude files plus
+    AGENTS.md; in a git work tree the tracked and untracked ones git does not ignore (a working checkout's
+    .gitignore keeps its local secrets and worktrees out), else every file (no __pycache__). run_exam.py
+    --installed packs and hashes exactly these. ValueError naming the path (never the contents) when one is a
+    .env / .env.* / *.bak / settings.local.json under .claude, and "no harness files under <root>" when none is
+    under .claude (an empty listing would hash the same for every tree)."""
+    root = Path(root)
+    tracked = subprocess.run(["git", "-C", str(root), "ls-files", "-z", "--cached", "--others", "--exclude-standard",
+                              "--", ".claude", "AGENTS.md"], capture_output=True, text=True)
+    if tracked.returncode == 0:
+        files = [root / rel for rel in tracked.stdout.split("\0") if rel]
+    else:
+        files = [p for p in (root / ".claude").rglob("*") if "__pycache__" not in p.relative_to(root).parts]
+        files.append(root / "AGENTS.md")
+    out = sorted((p.relative_to(root).as_posix(), p) for p in files if p.is_file())
+    if not any(rel.startswith(".claude/") for rel, _ in out):
+        raise ValueError(f"no harness files under {root}: pass an installed .claude + AGENTS.md tree (in a git "
+                         "work tree, .claude must not be ignored)")
+    for rel, p in out:
+        if rel.startswith(".claude/") and LOCAL_FILE.search(rel):
+            raise ValueError(f"{p} is a local or secret file; an installed tree must not hold it (it would be "
+                             "packed into the sandbox): remove it or pass a clean tree")
+    return out
+
+
+def installed_sha256(root):
+    """addon_sha256's recipe over installed_files(root): the label of an installed tree."""
+    return addon_sha256(installed_files(root))
+
+
+def installed_version(root):
+    """root/.claude/HARNESS_VERSION as a dict, or None when the tree has none (an agent-workflow checkout)."""
+    f = Path(root) / VERSION
+    return json.loads(f.read_text()) if f.is_file() else None
 
 
 def inside(path, root):
