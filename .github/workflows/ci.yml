@@ -2,6 +2,8 @@ name: ci
 
 on:
   pull_request:
+    # edited: a body rewritten after the last push (gh pr edit) is public too, so it is rescanned
+    types: [opened, synchronize, reopened, edited]
   push:
     branches: [main]
 
@@ -10,6 +12,8 @@ permissions:
 
 jobs:
   unit:
+    # a body edit changes no code, so the suites do not rerun for it
+    if: github.event.action != 'edited'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

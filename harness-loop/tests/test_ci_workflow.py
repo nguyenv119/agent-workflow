@@ -1,5 +1,9 @@
-"""Text checks over .github/workflows/ci.yml (stdlib only, no yaml parser)."""
+"""Checks over .github/workflows/ci.yml: text rules (stdlib only, no yaml parser) and the secret step run under bash."""
+import os
 import re
+import shutil
+import subprocess
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -19,9 +23,8 @@ def run_lines(text):
                 continue
         m = re.match(r"\s*(?:- )?run:\s*(.*)$", line)
         if m:
-            if m[1].strip() in ("|", ">", "|-", ">-"):
-                block = indent
-            else:
+            block = indent  # an inline value may continue on deeper-indented lines; sweep those too
+            if m[1].strip() not in ("|", ">", "|-", ">-"):
                 out.append(m[1])
     return out
 
@@ -59,15 +62,39 @@ class CIWorkflow(unittest.TestCase):
         for c in cmds:
             self.assertIn("--redact", c)
 
+    def secret_step(self):
+        """The leak job's secret-writing script, from its `if [ -z` line to the printf that writes the file."""
+        lines = run_lines(job(self.text, "leak"))
+        start = next(i for i, l in enumerate(lines) if '-z "$LEAK_PATTERNS"' in l)
+        end = next(i for i, l in enumerate(lines) if "leak-patterns.txt" in l and i > start)
+        return "\n".join(lines[start:end + 1])
+
+    def run_secret_step(self, value):
+        """Run that script under bash with LEAK_PATTERNS=value; returns (exit code, patterns file or None)."""
+        home = Path(tempfile.mkdtemp(prefix="ci-wf-"))
+        self.addCleanup(shutil.rmtree, home, ignore_errors=True)
+        env = {"PATH": os.environ["PATH"], "LEAK_PATTERNS": value, "HARNESS_LOOP_HOME": str(home)}
+        r = subprocess.run(["bash", "-e", "-c", self.secret_step()], env=env, text=True, capture_output=True)
+        f = home / "leak-patterns.txt"
+        return r.returncode, f.read_text() if f.is_file() else None
+
     def test_missing_secret_fails_closed(self):
-        """An empty LEAK_PATTERNS would make the scan silently weaker; the step must exit non-zero instead."""
-        # GIVEN the leak job's run scripts
-        script = "\n".join(run_lines(job(self.text, "leak")))
-        # WHEN checking the empty-secret branch
-        m = re.search(r'-z "\$LEAK_PATTERNS"(.*?)\bfi\b', script, re.S)
-        # THEN it exists and exits 1 before the fi
-        self.assertIsNotNone(m)
-        self.assertIn("exit 1", m[1])
+        """An empty LEAK_PATTERNS would make the scan silently weaker; the step must exit non-zero and write no file."""
+        # GIVEN the real secret step run with an empty secret
+        # WHEN it runs under bash
+        code, written = self.run_secret_step("")
+        # THEN it fails and the scan has no patterns file to fall back on
+        self.assertEqual(code, 1)
+        self.assertIsNone(written)
+
+    def test_present_secret_is_written_as_the_patterns_file(self):
+        """The secret is the only source of private patterns; if the step dropped it the scan would run with none."""
+        # GIVEN the real secret step run with a two-line secret
+        # WHEN it runs under bash
+        code, written = self.run_secret_step("alpha\nbeta")
+        # THEN it succeeds and the file holds the secret, one pattern per line
+        self.assertEqual(code, 0)
+        self.assertEqual(written, "alpha\nbeta\n")
 
     def test_leak_job_runs_on_pull_request_only(self):
         """On push github.base_ref is empty, so the leak diff ref would be `origin/` and the job would break."""

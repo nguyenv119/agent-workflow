@@ -9,7 +9,7 @@
     loop.py sync
     loop.py exam-route
     loop.py guard <commit> [--base <ref>]
-    loop.py leak [--diff <ref>] [--body <file>]
+    loop.py leak [--diff <ref>] [--body <file>] [--redact]
     loop.py budget --est X --what S
     loop.py book --kind K --usd X [--note S]
 

@@ -84,13 +84,15 @@ class LeakCLI(unittest.TestCase):
 
     def test_redact_clean_diff_still_reports_clean(self):
         """--redact must not change a clean verdict: CI passes on a clean PR only if the clean line is printed and exit is 0."""
-        # GIVEN a branch commit adding only clean lines
+        # GIVEN a branch commit adding two clean lines and a three-line clean body (the shape CI runs)
         make_repo(self.repo, {"c.txt": "fine\nalso fine\n"})
-        # WHEN scanned with --redact
-        r = self.leak("--redact", "--diff", "base")
-        # THEN exit 0 and the clean line
+        body = self.tmp / "body.md"
+        body.write_text("## Summary\nclean\nstill clean\n")
+        # WHEN scanned with --redact over both
+        r = self.leak("--redact", "--diff", "base", "--body", str(body))
+        # THEN exit 0 and the clean line counts diff and body lines together
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
-        self.assertIn("leak: clean (2 lines)", r.stdout)
+        self.assertIn("leak: clean (5 lines)", r.stdout)
 
     def test_redact_tool_word_without_eg_reports_example_word(self):
         """A tool word without "e.g." is named by its rule, so a CI reader knows which rule fired without the line."""
