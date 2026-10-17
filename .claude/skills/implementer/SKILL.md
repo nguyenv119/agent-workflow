@@ -17,7 +17,7 @@ Read these files before writing any code:
 - `.claude/skills/standards/quality.md` — test structure, mock discipline, refactor audit
 - `.claude/skills/standards/correctness-patterns.md` — known bug patterns to avoid while coding
 
-Prevention is better than detection — knowing these patterns avoids creating the bugs reviewers would later catch.
+Prevention beats detection — knowing these patterns avoids creating the bugs reviewers would later catch.
 
 **When the prompt names a `PREVIOUS TRY: <folder>`:** read its `note.md` and `gates.txt` first. They say what the last attempt changed, what failed and why; do not repeat it.
 
