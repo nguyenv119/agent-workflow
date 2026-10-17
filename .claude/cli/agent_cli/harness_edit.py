@@ -34,17 +34,18 @@ def rule(where="on <branch>"):
 
 
 def bash_targets(command):
-    """Paths command writes: the word after each >, >>, >|, >& (any fd, &>), every operand of tee/rm/mv and of
-    sed -i, the last of cp/ln. Prefixes (timeout N, sudo, VAR=x, the command-prefixes seam) are skipped.
-    A cd/pushd moves later relative targets into its dir; after one to an unreadable dir ("$X", ~, -) they
-    are dropped. Known gap: a word with quoted or substituted text never counts; a cd inside ( ) still
-    applies after it. Unbalanced quotes: no targets."""
+    """(written, removed): paths command writes (the word after each >, >>, >|, >& (any fd, &>), every operand
+    of tee/rm/mv and of sed -i, the last of cp/ln), and those it removes (rm operands, mv sources). Prefixes
+    (timeout N, sudo, VAR=x, the command-prefixes seam) are skipped. A cd/pushd moves later relative targets
+    into its dir; after one to an unreadable dir ("$X", ~, -, a +N/-N stack entry) they are dropped. Known gap:
+    a word with quoted or substituted text never counts; a cd inside ( ) still applies after it. Unbalanced
+    quotes: no targets."""
     from . import shape  # shape imports hook, which imports this module
     # >(cmd) is a process substitution, not a file: as <(cmd) its `>` is not read as a redirect
     items = shape._tokens(command.replace(">(", "<(")) or []
     # sudo stays local: regex rules and shapes keep it as the command word (`sudo -u x` would leave -u there)
     cmd = shape.prefix_re(tuple(core.seam_lines("command-prefixes")) + ("sudo",))
-    out, seg, op, base = [], [], None, ""  # base: the dir relative targets sit in ("" the cwd, None unknown)
+    out, gone, seg, op, base = [], [], [], None, ""  # base: dir relative targets sit in ("" the cwd, None unknown)
 
     def at(ts):
         return [t if t.startswith(ANCHORED) else os.path.join(base, t) for t in ts
@@ -56,10 +57,11 @@ def bash_targets(command):
             name = words[0].rsplit("/", 1)[-1] if words else ""
             if name in ALL_ARGS or name == "sed" and any(w.startswith(("-i", "--in-place")) for w in words):
                 out += at(args)
+                gone += at(args if name == "rm" else args[:-1] if name == "mv" else [])
             elif name in LAST_ARG:
                 out += at(args[-1:])
             elif name in ("cd", "pushd"):
-                d = args[0] if len(args) == 1 and not re.search(r"^~|[$%s]" % shape.Q, args[0]) else ""
+                d = args[0] if len(args) == 1 and not re.search(r"^[~+]|[$%s]" % shape.Q, args[0]) else ""
                 base = os.path.join(base or "", d) if d and (base is not None or d.startswith("/")) else None
             seg, op = [], None
         elif kind == "redir":
@@ -70,7 +72,7 @@ def bash_targets(command):
             op = None
         elif kind == "word":
             seg.append((kind, text))
-    return [t for t in out if shape.Q not in t]
+    return [t for t in out if shape.Q not in t], [t for t in gone if shape.Q not in t]
 
 
 def _git(d, *args):
@@ -97,22 +99,25 @@ def _branch(top):
     return f"on {branch}" if branch == default.removeprefix("origin/") else None
 
 
-def first(paths, cwd):
+def first(paths, cwd, removed=()):
     """Why writing one of paths breaks the rule, for the first that does, or None to allow.
 
     A path is a harness write when a harness-paths glob matches it or it is a dir above one (`.claude`,
-    the checkout root, or a dir above the checkout of cwd or $CLAUDE_PROJECT_DIR, judged by that checkout):
-    removing or replacing that dir rewrites the harness files under it. On macOS names compare case-folded."""
+    the checkout root, or, for one of removed, a dir above the checkout of cwd or $CLAUDE_PROJECT_DIR, judged by
+    that checkout): removing or replacing that dir rewrites the harness files under it, while a write into a
+    dir above the checkout (`cp x ..`) does not. On macOS names compare case-folded."""
     fold = str.lower if sys.platform == "darwin" else str  # its default file system ignores case
     value = core.rules_line("harness", "harness-paths")
     globs = [fold(g) for g in (core.names(value) if value else DEFAULT_PATHS)]
     fixed = [re.split(r"[*?[]", g)[0] for g in globs]  # each glob's text before its first wildcard
     base, verdicts = os.environ.get("CLAUDE_PROJECT_DIR"), {}
     tops = {_top(os.path.realpath(d)) for d in (cwd, base) if d} - {None}
-    todo = list(dict.fromkeys(os.path.realpath(os.path.join(cwd, os.path.expandvars(os.path.expanduser(t))))
-                              for t in paths))
-    for p in todo:  # a dir above a known checkout's root also writes that root
-        todo += [k for k in tops if k.startswith(os.path.join(p, "")) and k not in todo]
+    def real(t):
+        return os.path.realpath(os.path.join(cwd, os.path.expandvars(os.path.expanduser(t))))
+    todo, gone = list(dict.fromkeys(map(real, paths))), set(map(real, removed))
+    for p in todo:  # removing a dir above a known checkout's root also removes that root
+        if p in gone:
+            todo += [k for k in tops if fold(k).startswith(fold(os.path.join(p, ""))) and k not in todo]
         top = _top(p)
         root = top or (os.path.realpath(base) if base else None)
         rel = fold(os.path.relpath(p, root)) if root else None

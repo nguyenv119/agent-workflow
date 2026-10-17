@@ -370,9 +370,9 @@ class BashCwd(HarnessCase):
         self.assertIsNone(self.decision(p))
 
     def test_cd_to_an_unreadable_dir_skips_later_relative_targets(self):
-        """After `cd "$X"` (or `cd ~`, `cd -`, bare `cd`) a relative AGENTS.md is not judged: its checkout is
-        unknown, so it is not guessed from the session cwd."""
-        for c in ['cd "$X"', "cd ~/x", "cd -", "cd", "pushd $X"]:
+        """After `cd "$X"` (or `cd ~`, `cd -`, bare `cd`, a `pushd +1` stack rotation) a relative AGENTS.md is not
+        judged: its checkout is unknown, so it is not guessed from the session cwd."""
+        for c in ['cd "$X"', "cd ~/x", "cd -", "cd", "pushd $X", "pushd +1 && cd .."]:
             with self.subTest(cd=c):
                 # GIVEN the session cwd at main
                 # WHEN the hook reads an unreadable cd followed by a relative append
@@ -437,20 +437,35 @@ class BashCwd(HarnessCase):
         # GIVEN a lone feature worktree as cwd and CLAUDE_PROJECT_DIR at main
         wt = self.worktree(wt=self.tmp / "nest/wt")
         env = {"CLAUDE_PROJECT_DIR": str(self.p)}
-        # WHEN the hook reads rm of the dir holding main
-        p = self.bash(f"rm -rf {self.tmp}", env=env, cwd=wt)
-        # THEN it is denied as on main
-        self.assert_denied(p)
+        for c in [f"rm -rf {self.tmp}", f"mv {self.tmp} {self.tmp}-old"]:
+            with self.subTest(cmd=c):
+                # WHEN the hook reads rm (or mv away) of the dir holding main
+                # THEN it is denied as on main
+                self.assert_denied(self.bash(c, env=env, cwd=wt))
+
+    def test_copying_or_moving_into_the_dir_above_the_project_dir_checkout_is_allowed(self):
+        """`cp out.txt ..` and `mv build.log ..` from a worktree next to main (CLAUDE_PROJECT_DIR) pass.
+
+        They write a new file into the dir holding main; only removing that dir rewrites main's harness.
+        """
+        # GIVEN a feature worktree next to the main checkout, CLAUDE_PROJECT_DIR at main
+        wt = self.worktree()
+        env = {"CLAUDE_PROJECT_DIR": str(self.p)}
+        for c in ["cp out.txt ..", "mv build.log ..", "ln -s out.txt ..", "echo x > .."]:
+            with self.subTest(cmd=c):
+                # WHEN the hook reads a write into the parent dir
+                # THEN nothing is decided
+                self.assertIsNone(self.decision(self.bash(c, env=env, cwd=wt)))
 
 
 @unittest.skipUnless(sys.platform == "darwin", "macOS file systems are case-insensitive by default")
 class CaseFolding(HarnessCase):
     def test_case_variant_names_are_denied_on_main(self):
-        """`echo x >> agents.md` and `rm -rf .CLAUDE` on main are denied.
+        """`echo x >> agents.md`, `rm -rf .CLAUDE` and rm of the upper-cased dir above main, on main, are denied.
 
         On a case-insensitive file system these write AGENTS.md and .claude; an exact-case compare let them by.
         """
-        for c in ["echo x >> agents.md", "rm -rf .CLAUDE"]:
+        for c in ["echo x >> agents.md", "rm -rf .CLAUDE", f"rm -rf {str(self.tmp).upper()}"]:
             with self.subTest(cmd=c):
                 # GIVEN the session cwd at main
                 # WHEN the hook reads it

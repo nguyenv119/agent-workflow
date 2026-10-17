@@ -185,7 +185,8 @@ def check(command, cwd):
     if (not any(r["mode"] == "deny" for r in hits) and os.environ.get("AGENT_CLI_HOOKS") != "off"
             and len(command) <= MAX_CMD and harness_edit.RULE_ID not in BYPASS.findall(command)):
         try:
-            w = harness_edit.first(harness_edit.bash_targets(command), cwd)
+            written, removed = harness_edit.bash_targets(command)
+            w = harness_edit.first(written, cwd, removed)
         except (OSError, subprocess.TimeoutExpired):  # git missing or slow: fail open, as pretooluse does
             w = None
         hits += [harness_edit.rule(w)] if w else []
