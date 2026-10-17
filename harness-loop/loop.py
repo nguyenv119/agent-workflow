@@ -92,6 +92,7 @@ round is running: a round restores spend.jsonl from its snapshot and drops itsel
 
 leak: the same leak scan, free and on its own, over the lines added in <ref>...HEAD and a PR body
 file; prints each hit, exits 1 on any, 3 when leak-patterns.txt is missing, 0 clean. Run it before a push.
+--redact prints <file>:<line> (<rule>) per hit instead of the line, so a public CI log never repeats it.
 
 Leak scan: /Users/ always; tool names (EXAMPLE_LEAK) unless the line has "e.g."; plus private
 names, one regex per line, from $HARNESS_LOOP_HOME/leak-patterns.txt, which must exist (an
@@ -555,10 +556,21 @@ def private_patterns():
     return re.compile("|".join(f"(?:{p})" for p in pats), re.I) if pats else None
 
 
+def leak_rule(line, private):
+    """The first leak rule the line breaks (users-path, private, tries, example-word), or None."""
+    if "/" "Users/" in line:  # split so this line does not trip the scan it implements
+        return "users-path"
+    if private and private.search(line):
+        return "private"
+    if TRIES_NAME.search(line):
+        return "tries"
+    if EXAMPLE_LEAK.search(line) and "e.g." not in line:
+        return "example-word"
+    return None
+
+
 def leak_hits(lines, private):
-    return [line for line in lines
-            if "/Users/" in line or (private and private.search(line)) or TRIES_NAME.search(line)
-            or (EXAMPLE_LEAK.search(line) and "e.g." not in line)]
+    return [line for line in lines if leak_rule(line, private)]
 
 
 def section(text, title):
@@ -1425,16 +1437,18 @@ def cmd_leak(args):
     if not (HOME / "leak-patterns.txt").is_file():
         die(f"{HOME / 'leak-patterns.txt'} is missing: put private names there, one regex per line "
             "(an empty file means none)", code=3)
-    lines = []
+    lines = []  # (file, line number, text)
     if args.diff:
         diff = git("diff", "-M", "--no-color", "--no-ext-diff", "--no-textconv", "--text", f"{args.diff}...HEAD",
                    cwd=Path.cwd())
-        lines += [t for f in parse_diff(diff) for kind, _, t in f["lines"] if kind == "+"]
+        lines += [(f["new"], n, t) for f in parse_diff(diff) for kind, n, t in f["lines"] if kind == "+"]
     if args.body:
-        lines += Path(args.body).read_text().splitlines()
-    hits = leak_hits(lines, private_patterns())
-    for h in hits:
-        print(f"leak: {h.strip()[:200]}")
+        body = Path(args.body)
+        lines += [(body.name, n, t) for n, t in enumerate(body.read_text().splitlines(), 1)]
+    private = private_patterns()
+    hits = [(f, n, t, rule) for f, n, t in lines if (rule := leak_rule(t, private))]
+    for f, n, t, rule in hits:
+        print(f"leak: {f}:{n} ({rule})" if args.redact else f"leak: {t.strip()[:200]}")
     if hits:
         sys.exit(1)
     print(f"leak: clean ({len(lines)} lines)")
@@ -1502,6 +1516,8 @@ def main(argv=None):
     lk = sub.add_parser("leak", help="free leak scan of a branch's added lines and a PR body (exit 1 = hits)")
     lk.add_argument("--diff", metavar="REF", help="scan lines added in REF...HEAD")
     lk.add_argument("--body", help="PR body file to scan")
+    lk.add_argument("--redact", action="store_true",
+                    help="print each hit as <file>:<line> (<rule>) without the line text (for public CI logs)")
     bu = sub.add_parser("budget", help="exit 0 if a run of --est USD fits the weekly cap, 1 (with the reason) if not")
     bu.add_argument("--est", type=usd, required=True, help="most the run may spend, in USD")
     bu.add_argument("--what", required=True, help="what is asking, named in the refusal (e.g. gardener)")
