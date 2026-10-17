@@ -88,6 +88,16 @@
             "timeout": 10
           }
         ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "timeout": 60,
+            "command": "f=\"$CLAUDE_PROJECT_DIR/.claude/hooks/bead-id-check/hook.py\"; command -v python3 >/dev/null && [ -f \"$f\" ] || exit 0; exec python3 \"$f\""
+          }
+        ]
       }
     ],
     "PostToolUse": [

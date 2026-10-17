@@ -49,10 +49,11 @@ def run(cmd, cwd, check=True):
     return subprocess.run(cmd, cwd=cwd, check=check, text=True, capture_output=True)
 
 
-def make_project(root, seams=None, install=True):
+def make_project(root, seams=None, install=True, hooks=()):
     """A git repo at root, agent-cli installed in root/.claude unless install=False.
 
-    seams: {name: text} written under root/.claude/agent-cli-hooks/. Returns root as a Path.
+    seams: {name: text} written under root/.claude/agent-cli-hooks/. hooks: dir names under this
+    checkout's .claude/hooks/ copied into root/.claude/hooks/. Returns root as a Path.
     """
     root = Path(root)
     (root / ".claude").mkdir(parents=True, exist_ok=True)
@@ -62,6 +63,9 @@ def make_project(root, seams=None, install=True):
         (root / ".claude/bin").mkdir(exist_ok=True)
         shutil.copy2(CLAUDE / "bin/agent-cli", root / ".claude/bin/agent-cli")
         shutil.copytree(CLAUDE / "cli/agent_cli", root / ".claude/cli/agent_cli",
+                        ignore=shutil.ignore_patterns("__pycache__"), dirs_exist_ok=True)
+    for name in hooks:
+        shutil.copytree(CLAUDE / "hooks" / name, root / ".claude/hooks" / name,
                         ignore=shutil.ignore_patterns("__pycache__"), dirs_exist_ok=True)
     for name, text in (seams or {}).items():
         f = root / ".claude/agent-cli-hooks" / name
