@@ -310,7 +310,8 @@ class Config(unittest.TestCase):
     def test_keyed_required_line_for_the_target_repo_wins(self):
         """For a PR in acme/infra, `required-checks[acme/infra]:` replaces the plain required-checks line.
 
-        Another repo's CI has other job names; judged by the plain list its PR never goes READY and wait runs to the cap.
+        Another repo's CI has other job names; judged by the plain list its PR never goes READY and wait
+        runs to the cap.
         """
         # GIVEN a plain required line and one keyed to acme/infra
         # WHEN parsed for acme/infra
@@ -336,6 +337,14 @@ class Config(unittest.TestCase):
         cfg = pr.config(text, "Acme/Infra")
         # THEN the keyed line applies
         self.assertEqual(cfg["required"], ["unit"])
+
+    def test_a_host_qualified_repo_matches_its_owner_and_name(self):
+        """`--repo github.com/acme/infra` (gh's HOST/OWNER/REPO form) matches a line keyed `[acme/infra]`."""
+        # GIVEN the keyed fixture
+        # WHEN parsed for the host-qualified slug, with stray whitespace
+        cfg = pr.config(self.KEYED, " github.com/Acme/infra ")
+        # THEN the keyed line applies
+        self.assertEqual(cfg["required"], ["unit", "leak"])
 
     def test_each_key_resolves_on_its_own(self):
         """A keyed required line does not drop the plain advisory or preview line, and a keyed preview line
@@ -653,7 +662,10 @@ class RepoKeyedCli(CliCase):
         self.assertEqual(json.loads(r.stdout)["verdict"], "FAILED")
 
     def test_without_repo_the_cwd_repo_picks_the_keyed_line(self):
-        """Without --repo, the PR is in the repo gh targets from the cwd, so `gh repo view` names the keyed line."""
+        """Without --repo, the PR is in the repo gh targets from the cwd, so `gh repo view` names the keyed line.
+
+        Otherwise a session inside a checkout of the keyed repo is judged by the plain list and waits out the cap.
+        """
         # GIVEN the keyed line and gh reporting the cwd repo as acme/infra
         self.rules(self.RULES)
         (self.gh / "repo").write_text("acme/infra")
@@ -687,6 +699,47 @@ class RepoKeyedCli(CliCase):
         # THEN judged by the plain list: WAITING on its missing names
         self.assertEqual(r.returncode, Exit.PARTIAL, r.stderr)
         self.assertEqual(json.loads(r.stdout)["missing_required"], ["test", "quality"])
+
+    def test_a_failing_gh_repo_view_warns_on_stderr_only(self):
+        """The fallback says so on stderr (keyed lines ignored, pass --repo); stdout stays one JSON line.
+
+        A silent fallback looks like the keyed line is broken; a warning on stdout would break --json readers.
+        """
+        # GIVEN the keyed line and gh unable to name the cwd repo
+        self.rules(self.RULES)
+        self.set_pr(view(), self.INFRA)
+        # WHEN status runs without --repo
+        r = self.cli("status", "42", "--json")
+        # THEN one warning line naming --repo, and clean JSON on stdout
+        self.assertEqual(len(r.stderr.splitlines()), 1, r.stderr)
+        self.assertIn("keyed check lines are ignored", r.stderr)
+        self.assertIn("--repo <owner>/<repo>", r.stderr)
+        self.assertEqual(len(r.stdout.splitlines()), 1)
+        json.loads(r.stdout)
+
+    def test_a_keyed_line_in_another_section_makes_no_gh_repo_view(self):
+        """Only keyed lines under ## coordinator matter to pr, so one elsewhere spends no API call."""
+        # GIVEN a keyed required-checks line under another section only
+        self.rules("## coordinator\nrequired-checks: unit\n## reviewer\nrequired-checks[acme/infra]: x\n")
+        (self.gh / "repo").write_text("acme/infra")
+        self.set_pr(view(), self.INFRA)
+        # WHEN status runs without --repo
+        r = self.cli("status", "42", "--json")
+        # THEN READY by the plain line, with exactly the two pr calls
+        self.assertEqual(r.returncode, Exit.OK, r.stderr)
+        self.assertEqual([c[:2] for c in self.calls()], [["pr", "view"], ["pr", "checks"]])
+
+    def test_land_dry_run_with_repo_uses_the_keyed_list(self):
+        """`land --dry-run --repo acme/infra` sees READY by the keyed list, so a green PR in that repo can land."""
+        # GIVEN the keyed line and a green PR on acme/infra's own checks
+        self.rules(self.RULES)
+        self.set_pr(view(), self.INFRA)
+        # WHEN landed as a dry run
+        r = self.cli("land", "42", "--dry-run", "--repo", "acme/infra")
+        # THEN it would merge, and nothing was merged
+        self.assertEqual(r.returncode, Exit.OK, r.stderr)
+        self.assertIn("would merge", r.stdout)
+        self.assertEqual(self.merges(), [])
 
 
 class WaitCli(CliCase):

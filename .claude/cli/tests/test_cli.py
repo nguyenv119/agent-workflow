@@ -408,6 +408,46 @@ class Core(unittest.TestCase):
         self.assertIn("error: git rev-parse HEAD: ", err.getvalue())
         self.assertIn("  example: agent-cli wt list", err.getvalue())
 
+    RULES = ("## coordinator\nrequired-checks: test\n- `required-checks[ Acme / Infra ]:` unit, leak\n"
+             "## reviewer\nrequired-checks[acme/web]: wrong\n")
+
+    def test_rules_line_scope_prefers_the_keyed_line_and_falls_back_to_the_plain_one(self):
+        """With a scope, `key[scope]:` beats `key:` under the section; another scope gets the plain line.
+
+        This lets one rules file carry per-repo values (e.g. CI check names) while every other repo keeps its default.
+        """
+        # GIVEN a plain line and one keyed to acme/infra
+        # WHEN read for acme/infra and for acme/docs
+        infra = core.rules_line("coordinator", "required-checks", self.RULES, scope="acme/infra")
+        docs = core.rules_line("coordinator", "required-checks", self.RULES, scope="acme/docs")
+        # THEN the keyed value, then the plain one
+        self.assertEqual((infra, docs), ("unit, leak", "test"))
+
+    def test_rules_line_scope_ignores_case_and_whitespace_in_the_brackets(self):
+        """`[ Acme / Infra ]` matches scope `ACME/infra`: slugs are case-insensitive and hand-typed brackets vary."""
+        # GIVEN the keyed line written with spaces and mixed case
+        # WHEN read with the scope in another case
+        got = core.rules_line("coordinator", "required-checks", self.RULES, scope="ACME/infra")
+        # THEN it matches
+        self.assertEqual(got, "unit, leak")
+
+    def test_rules_line_without_scope_never_returns_a_keyed_line(self):
+        """Callers that pass no scope see exactly the plain lines, as before keyed lines existed."""
+        # GIVEN a section holding only a keyed line
+        # WHEN read without a scope
+        got = core.rules_line("coordinator", "required-checks", "## coordinator\nrequired-checks[acme/infra]: unit\n")
+        # THEN missing
+        self.assertIsNone(got)
+
+    def test_rules_scopes_lists_keyed_lines_of_that_section_only(self):
+        """rules_scopes names the scopes keyed under `## <section>` only, so a keyed line elsewhere costs no lookup."""
+        # GIVEN keyed lines under coordinator and under reviewer
+        # WHEN listed for each section
+        # THEN each sees its own, normalised
+        self.assertEqual(core.rules_scopes("coordinator", "required-checks", self.RULES), {"acme/infra"})
+        self.assertEqual(core.rules_scopes("reviewer", "required-checks", self.RULES), {"acme/web"})
+        self.assertEqual(core.rules_scopes("coordinator", "advisory-checks", self.RULES), set())
+
     def test_child_env_drops_names_and_puts_bin_first_on_path(self):
         """core.child_env is os.environ minus the dropped names, with agent-cli's bin ahead of $PATH."""
         # GIVEN a variable to drop and one to keep

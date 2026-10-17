@@ -21,7 +21,7 @@ advisory-checks: <bot reviewer check>
 preview-check: <preview deploy check>
 ```
 
-For PRs `agent-cli pr --repo` reads in another repo whose CI jobs have other names, a line keyed by that repo's slug replaces the plain one, e.g. `required-checks[<owner>/<repo>]: <its test check>` (same form for the other two keys).
+If PRs in another repo have different check names, add a line keyed by that repo's slug, e.g. `required-checks[<owner>/<repo>]: <its test check>` (same form for the other two keys). It replaces the plain line for PRs in that repo, whether `--repo` names it or the command runs in a checkout of it.
 
 One more optional line under `## coordinator` widens what counts as a CLI bead (the coordinator then loads the cli-for-agents skill and gives reviewers its checklist). Without it, only beads touching agent-cli's own code (`cli/` or `bin/agent-cli` under `.claude`) count:
 

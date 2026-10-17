@@ -7,7 +7,8 @@ path-filtered required check never hangs a wait until the cap.
 Check names come from optional lines under `## coordinator` in .claude/project-rules.md:
 `required-checks: a, b`, `advisory-checks: c` and `preview-check: <name>`.
 A line keyed by repo, e.g. `required-checks[<owner>/<repo>]: x, y`, replaces the plain line of the same key
-for PRs in that repo (--repo, else the repo gh targets from the cwd; slug case ignored).
+for PRs in that repo (--repo, else the repo gh targets from the cwd; slug case ignored); when gh cannot name
+the cwd's repo, a stderr warning says so and the plain lines apply.
 """
 import json
 import re
@@ -31,13 +32,13 @@ class GhError(Exception):
     pass
 
 
-KEYED = re.compile(r"^([ \t]*(?:[-*][ \t]+)?`?(?:required-checks|advisory-checks|preview-check))\[([^]]*)\]", re.M)
+KEYS = ("required-checks", "advisory-checks", "preview-check")
 
 
 def cwd_repo():
     """owner/name of the repo gh targets from the cwd, None when gh cannot tell."""
     try:
-        r = gh(["repo", "view", "--json", "nameWithOwner", "--jq", ".nameWithOwner"], None)
+        r = gh(["repo", "view", "--json", "nameWithOwner", "--jq", ".nameWithOwner"], None, timeout=15)
     except GhError:
         return None
     return None if r.returncode else r.stdout.strip() or None
@@ -46,16 +47,15 @@ def cwd_repo():
 def config(text=None, repo=None):
     """{required: [names] or None (= every non-skipped check), advisory: [names], preview: name or None}.
 
-    For a PR in repo (None: the cwd's, asked of gh only when a keyed line exists), `key[repo]:` beats `key:`."""
-    if text is None:
-        f = core.find_project_file("project-rules.md")
-        text = f.read_text() if f else ""
-    text, keyed = KEYED.subn(lambda m: f"{m[1]}[{m[2].strip().lower()}]", text)
-    repo = (repo or (cwd_repo() if keyed else None) or "").lower()
-
-    def line(key):
-        v = core.rules_line("coordinator", f"{key}[{repo}]", text) if repo and keyed else None
-        return v if v is not None else core.rules_line("coordinator", key, text)
+    For a PR in repo (None: the cwd's, asked of gh only when ## coordinator has a keyed line), `key[repo]:` beats
+    `key:`; when gh cannot name the cwd's repo, a stderr warning says so and the plain lines apply."""
+    if not repo and any(core.rules_scopes("coordinator", k, text) for k in KEYS):
+        repo = cwd_repo()
+        if not repo:
+            sys.stderr.write("warning: gh repo view could not name the cwd's repo, so keyed check lines are "
+                             f"ignored; pass --repo, e.g. {EX_STATUS}\n")
+    repo = "/".join((repo or "").strip().strip("/").split("/")[-2:]) or None  # HOST/OWNER/REPO -> OWNER/REPO
+    line = lambda key: core.rules_line("coordinator", key, text, scope=repo)  # noqa: E731
     req, adv = line("required-checks"), line("advisory-checks")
     return {"required": core.names(req) if req is not None else None, "advisory": core.names(adv or ""),
             "preview": line("preview-check") or None}
@@ -293,4 +293,5 @@ def register(sub):
         q.add_argument("pr", type=int, metavar="<n>", help="the PR number")
         q.add_argument("--repo", metavar="OWNER/NAME", help="the GitHub repo, when not the cwd's; a "
                        "`required-checks[OWNER/NAME]:` line under ## coordinator in project-rules.md (likewise "
-                       "advisory-checks, preview-check) replaces the plain line for PRs in that repo")
+                       "advisory-checks, preview-check) replaces the plain line for PRs in that repo (without "
+                       "--repo, the cwd's repo per gh; plain lines if gh cannot tell)")
