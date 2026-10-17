@@ -15,7 +15,7 @@ for resolving larger issues in follow-on work.
 | Close bead and clean up after merge | `/merged [branch-name]` |
 | End a session before `/clear` | `/handoff` |
 
-Before writing a script for a chore (worktree, PR checks, waiting, locks, eval verdicts), run `agent-cli --help`; project CLIs are listed at its end.
+Before writing a script for a chore (worktree, PR checks, waiting, locks, eval verdicts, harness drift since install and what a session loads: `agent-cli harness drift|inventory`), run `agent-cli --help`; project CLIs are listed at its end.
 
 `/plan` explores the codebase, discusses tradeoffs with you, files beads issues, and runs an architectural plan review. Use it before `/work` for new epics.
 

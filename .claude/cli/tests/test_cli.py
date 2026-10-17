@@ -21,7 +21,8 @@ LEAVES = [[], ["hook"], ["hook", "pretooluse"], ["hook", "test"], ["hook", "rule
           ["self"], ["self", "env"], ["self", "install"], ["lib"], ["lib", "path"],
           ["wt"], ["wt", "new"], ["wt", "list"], ["wt", "audit"], ["wt", "rm"],
           ["wait"], ["lock"], ["lock", "acquire"], ["lock", "release"], ["lock", "status"],
-          ["pr"], ["pr", "status"], ["pr", "wait"], ["pr", "land"]]
+          ["pr"], ["pr", "status"], ["pr", "wait"], ["pr", "land"],
+          ["harness"], ["harness", "drift"], ["harness", "inventory"]]
 EXIT_HEADER = "Exit codes (every agent-cli command):"
 # Leaf commands that are not read commands, so house-rules "--json" does not ask them for --json.
 NOT_READ = {"hook pretooluse": "a hook: stdout is Claude Code's hook protocol, not ours",
@@ -97,7 +98,8 @@ class Help(TmpCase):
         names = list(next(a for a in root._actions if isinstance(a, argparse._SubParsersAction)).choices)
         # THEN every module registered exactly the commands the root lists, in list order
         self.assertTrue(all(callable(getattr(m, "register", None)) for m in main.COMMANDS))
-        self.assertEqual(names, ["hook", "eval", "self", "lib", "wt", "wait", "lock", "pr", "log", "page", "card", "repeats"])
+        self.assertEqual(names, ["hook", "eval", "self", "lib", "wt", "wait", "lock", "pr", "log", "page", "card", "repeats",
+                                 "harness"])
 
     def test_group_prints_its_help_when_called_bare(self):
         """core.group: a command group whose bare call prints its own help (house-rules "Never prompt"), with a

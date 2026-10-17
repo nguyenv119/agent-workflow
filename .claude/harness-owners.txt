@@ -1,0 +1,29 @@
+# Owners of files under .claude/ that the harness install did not write.
+#
+# `agent-cli harness drift` reports every file under .claude/ that is neither
+# installed (listed in HARNESS_FILES.tsv) nor matched by a line here as
+# `unowned`. With --user-dir, a user-level skill or command that shadows a
+# project one is `unexplained` unless a line here matches it.
+#
+# Ship your own copy through the add-on (<addon>/harness-owners.txt); it
+# replaces this template on install.
+#
+# One rule per line; blank lines and lines starting with # are ignored:
+#
+#   <glob> <owner> <reason>
+#
+# owner is one of: local-data, user, addon-source, project.
+# reason is the rest of the line (one pair of surrounding double quotes is
+# stripped).
+#
+# Globs are relative to the project root for project files, and relative to
+# the user dir for shadows. `**` matches zero or more whole path segments;
+# `*` and `?` match within one segment. A `<prefix>/**` glob also stops the
+# walk at that directory, so data dirs with many files stay cheap.
+#
+# Examples:
+#   .claude/harness-addon/** addon-source "the add-on this install comes from"
+#   .claude/.env* local-data "secrets, never committed"
+#   **/__pycache__/** local-data "python bytecode"
+#   .claude/skills/deploy/** project "a project-only skill"
+#   skills/document user "my newer copy in the user dir"

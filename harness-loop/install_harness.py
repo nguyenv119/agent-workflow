@@ -8,8 +8,19 @@ from <ref> via `git archive`, so a dirty worktree never leaks in. An optional
 add-on dir is copied over `<target>/.claude/` (add-on files replace core files
 at the same relative path). Then it writes:
 
-  .claude/HARNESS_VERSION   {"commit": sha, "addon": abs path|null, "addon_sha256": hex|null}
+  .claude/HARNESS_VERSION   {"commit": sha, "addon": path|null, "addon_sha256": hex|null}
   .claude/HARNESS_MANIFEST  every file this install wrote, one target-relative path per line
+  .claude/HARNESS_FILES.tsv header `path\torigin\tsha256`, then one row per installed file
+                            (the manifest minus these three files), sorted by path:
+                            origin `addon` if the add-on supplied the path, else `base`;
+                            sha256 of the bytes on disk after the install (so a
+                            .skipbase-edited settings.json hashes the edited bytes).
+                            `agent-cli harness drift` reads it.
+
+"addon" is the add-on path relative to the target (posix, e.g.
+`.claude/harness-addon`) when the add-on dir is inside the target, else the
+path as given on the command line, so a committed HARNESS_VERSION carries no
+machine-specific path.
 
 addon_sha256 = sha256 over the add-on's files sorted by posix relpath, each fed
 as `relpath \\0 len(bytes) \\0 bytes`.
@@ -49,8 +60,8 @@ target (e.g. a skill dir linked into a nested repo) is skipped and left alone:
 it is not written and not listed in the manifest, and a note names the link
 and says whether the skipped content is identical to what is behind it (any
 differing file is listed). Before touching anything it refuses if any
-component of a path it would DELETE is a symlink, if HARNESS_VERSION or
-HARNESS_MANIFEST would be written through one, or if a path lies under a
+component of a path it would DELETE is a symlink, if HARNESS_VERSION,
+HARNESS_MANIFEST or HARNESS_FILES.tsv would be written through one, or if a path lies under a
 symlink shipped in the harness commit. Every refusal or failure exits 2 with
 a message.
 """
@@ -66,6 +77,8 @@ from pathlib import Path
 
 VERSION = ".claude/HARNESS_VERSION"
 MANIFEST = ".claude/HARNESS_MANIFEST"
+FILES = ".claude/HARNESS_FILES.tsv"
+BOOKKEEPING = (VERSION, MANIFEST, FILES)
 EXCLUDED = (".claude/loop-evals", ".claude/cli/tests")  # local eval data; agent-cli's own tests + corpus
 
 
@@ -234,7 +247,7 @@ def install(argv):
         new_settings = (json.dumps(data, indent=2, ensure_ascii=False) + "\n").encode()
     planned = {m.name for m in members}
     planned |= {f".claude/{rel}" for rel, _ in files or []}
-    planned |= {VERSION, MANIFEST}
+    planned |= set(BOOKKEEPING)
 
     old_manifest = target / MANIFEST
     previous = []
@@ -256,7 +269,7 @@ def install(argv):
     linked = {}  # symlink in the target -> planned paths under it, left alone
     for rel in sorted(planned):
         link = first_symlink(target, rel)
-        if link and rel in (VERSION, MANIFEST):
+        if link and rel in BOOKKEEPING:
             die(f"refusing to write {rel} through a symlink: {link}")
         if link and rel == SETTINGS and new_settings is not None:
             die(f"{SKIP_FILE} has setting/hook lines but {SETTINGS} is a symlink ({link}); they cannot be applied")
@@ -308,13 +321,18 @@ def install(argv):
     if new_settings is not None and SETTINGS in planned:
         (target / SETTINGS).write_bytes(new_settings)
 
-    version = {"commit": sha, "addon": str(addon) if addon else None,
+    rows = "".join(f"{rel}\t{'addon' if rel in addon_by_rel else 'base'}\t"
+                   f"{hashlib.sha256((target / rel).read_bytes()).hexdigest()}\n"
+                   for rel in sorted(planned - set(BOOKKEEPING)))
+    (target / FILES).write_text("path\torigin\tsha256\n" + rows)
+    label = addon.relative_to(target).as_posix() if addon and inside(addon, target) else args.addon
+    version = {"commit": sha, "addon": label,
                "addon_sha256": addon_sha256(hashed) if addon else None}
     (target / VERSION).write_text(json.dumps(version) + "\n")
     (target / MANIFEST).write_text("".join(f"{rel}\n" for rel in sorted(planned)))
 
     print(f"installed agent-workflow {sha} into {target / '.claude'} "
-          f"({len(planned) - 2} files), addon: {addon or 'none'}")
+          f"({len(planned) - len(BOOKKEEPING)} files), addon: {addon or 'none'}")
 
 
 def main(argv=None):

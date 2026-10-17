@@ -110,8 +110,8 @@ class InstallHarnessTest(unittest.TestCase):
         self.install(self.sha1, target)
         # THEN only the product files, version and manifest are present
         self.assertEqual(sorted(tree_hashes(target)), [
-            ".claude/HARNESS_MANIFEST", ".claude/HARNESS_VERSION", ".claude/settings.json",
-            ".claude/skills/coordinator/SKILL.md", ".claude/skills/old/SKILL.md", "AGENTS.md",
+            ".claude/HARNESS_FILES.tsv", ".claude/HARNESS_MANIFEST", ".claude/HARNESS_VERSION",
+            ".claude/settings.json", ".claude/skills/coordinator/SKILL.md", ".claude/skills/old/SKILL.md", "AGENTS.md",
         ])
 
     def test_agent_cli_installs_executable_and_its_tests_stay_behind(self):
@@ -175,19 +175,146 @@ class InstallHarnessTest(unittest.TestCase):
     def test_harness_version_records_commit_and_addon_hash(self):
         """
         HARNESS_VERSION records the full commit sha, the add-on path and the
-        add-on hash, so every exam result names exactly what ran.
+        add-on hash, so every exam result names exactly what ran. An add-on
+        outside the target is recorded as given on the command line.
         """
-        # GIVEN an add-on with one file
+        # GIVEN an add-on with one file, outside the target
         addon = self.tmp / "addon"
         (addon / "skills/coordinator").mkdir(parents=True)
         (addon / "skills/coordinator/SKILL.md").write_text("X")
         target = self.tmp / "t"
         # WHEN installed by short sha with the add-on
         self.install(self.sha1[:7], target, "--addon", str(addon))
-        # THEN the version file holds the full sha, abs add-on path and its hash
+        # THEN the version file holds the full sha, the add-on path as given and its hash
         version = json.loads((target / ".claude/HARNESS_VERSION").read_text())
-        self.assertEqual(version, {"commit": self.sha1, "addon": str(addon.resolve()),
+        self.assertEqual(version, {"commit": self.sha1, "addon": str(addon),
                                    "addon_sha256": addon_hash(addon)})
+
+    def test_harness_version_records_an_addon_inside_the_target_relative_to_it(self):
+        """
+        HARNESS_VERSION is committed in installing repos. An absolute add-on
+        path would put a user's home path into a committed file and change on
+        every worktree, so an add-on inside the target is recorded relative to
+        the target (posix, no leading /), the same on every machine.
+        """
+        # GIVEN an add-on at <target>/.claude/harness-addon
+        target = self.tmp / "t"
+        addon = target / ".claude/harness-addon"
+        (addon / "skills/x").mkdir(parents=True)
+        (addon / "skills/x/SKILL.md").write_text("X")
+        # WHEN installed with it
+        self.install(self.sha1, target, "--addon", str(addon))
+        # THEN the recorded add-on is the target-relative path
+        version = json.loads((target / ".claude/HARNESS_VERSION").read_text())
+        self.assertEqual(version["addon"], ".claude/harness-addon")
+
+    def test_files_tsv_has_one_row_per_installed_file_with_its_origin_and_disk_hash(self):
+        """
+        HARNESS_FILES.tsv is what `agent-cli harness drift` compares against:
+        one row per installed file (the manifest minus the three bookkeeping
+        files), its origin and the sha256 of the bytes on disk. A missing row
+        hides an edit; a wrong origin sends a project edit upstream as a port
+        (a leak) or an upstream edit back to the add-on.
+        """
+        # GIVEN an add-on overriding a base file and adding a new one
+        addon = self.tmp / "addon"
+        (addon / "skills/coordinator").mkdir(parents=True)
+        (addon / "skills/coordinator/SKILL.md").write_text("X")
+        (addon / "project-rules.md").write_text("rules\n")
+        target = self.tmp / "t"
+        # WHEN installed with the add-on
+        self.install(self.sha1, target, "--addon", str(addon))
+        # THEN the header is fixed, rows are sorted, cover the manifest minus bookkeeping,
+        # each hash matches the file and add-on paths (override included) are `addon`
+        lines = (target / ".claude/HARNESS_FILES.tsv").read_text().split("\n")
+        self.assertEqual(lines[0], "path\torigin\tsha256")
+        self.assertEqual(lines[-1], "")
+        rows = [ln.split("\t") for ln in lines[1:-1]]
+        manifest = (target / ".claude/HARNESS_MANIFEST").read_text().splitlines()
+        bookkeeping = {".claude/HARNESS_VERSION", ".claude/HARNESS_MANIFEST", ".claude/HARNESS_FILES.tsv"}
+        self.assertTrue(bookkeeping <= set(manifest))
+        self.assertEqual([r[0] for r in rows], sorted(set(manifest) - bookkeeping))
+        hashes = tree_hashes(target)
+        for path, origin, sha in rows:
+            self.assertEqual(sha, hashes[path], path)
+        self.assertEqual({r[0]: r[1] for r in rows}, {
+            ".claude/project-rules.md": "addon", ".claude/settings.json": "base",
+            ".claude/skills/coordinator/SKILL.md": "addon", ".claude/skills/old/SKILL.md": "base",
+            "AGENTS.md": "base"})
+
+    def test_files_tsv_hashes_the_settings_bytes_after_skipbase_edits(self):
+        """
+        A .skipbase-edited settings.json is written after the copy; the TSV
+        must hash the bytes actually on disk, or every such install would show
+        settings.json as edited by hand the moment it is installed.
+        """
+        # GIVEN an add-on whose .skipbase deletes a hook group from the base settings
+        _, sha = make_repo(self.repo, {".claude/settings.json": json.dumps(SETTINGS) + "\n"})
+        addon = self.tmp / "addon"
+        addon.mkdir()
+        (addon / ".skipbase").write_text("hook PostCompact -\n")
+        target = self.tmp / "t"
+        # WHEN installed
+        self.install(sha, target, "--addon", str(addon))
+        # THEN the settings row carries the edited file's hash, origin base
+        rows = {r.split("\t")[0]: r.split("\t")[1:] for r in
+                (target / ".claude/HARNESS_FILES.tsv").read_text().splitlines()[1:]}
+        self.assertEqual(rows[".claude/settings.json"],
+                         ["base", tree_hashes(target)[".claude/settings.json"]])
+        self.assertNotIn("PostCompact", (target / ".claude/settings.json").read_text())
+
+    def test_force_reinstall_rewrites_files_tsv_for_the_new_commit(self):
+        """
+        --force removes every manifest path (the TSV included) and writes a new
+        TSV, so a dropped base file leaves no stale row that drift would report
+        as missing, and a changed file carries its new hash.
+        """
+        # GIVEN commit 1 installed
+        target = self.tmp / "t"
+        self.install(self.sha1, target)
+        # WHEN commit 2 (drops skills/old, rewrites coordinator) is installed with --force
+        self.install(self.sha2, target, "--force")
+        # THEN the TSV lists commit 2's files with their current hashes
+        rows = [r.split("\t") for r in (target / ".claude/HARNESS_FILES.tsv").read_text().splitlines()[1:]]
+        hashes = tree_hashes(target)
+        self.assertEqual([r[0] for r in rows],
+                         [".claude/settings.json", ".claude/skills/coordinator/SKILL.md", "AGENTS.md"])
+        self.assertTrue(all(sha == hashes[path] for path, _, sha in rows))
+
+    def test_files_tsv_skips_paths_under_a_target_symlink(self):
+        """
+        A path skipped because it sits under a symlink in the target was not
+        written by the install, so it has no TSV row (drift would otherwise
+        report the linked copy as an edited harness file).
+        """
+        # GIVEN .claude/skills/coordinator is a symlink into a nested repo
+        target = self.tmp / "t"
+        self.link_coordinator(target, "nested\n")
+        # WHEN commit 1 is installed
+        self.install(self.sha1, target)
+        # THEN neither the manifest nor the TSV lists the linked file
+        tsv = (target / ".claude/HARNESS_FILES.tsv").read_text()
+        self.assertNotIn(".claude/skills/coordinator/SKILL.md", tsv)
+        self.assertIn(".claude/skills/old/SKILL.md", tsv)
+
+    def test_files_tsv_through_a_symlink_is_refused(self):
+        """
+        HARNESS_FILES.tsv is the installer's own record like HARNESS_VERSION:
+        written through a symlink it would land in another tree, so the install
+        refuses (exit 2) and writes nothing.
+        """
+        # GIVEN target/.claude/HARNESS_FILES.tsv is a symlink to a file elsewhere
+        target = self.tmp / "t"
+        (target / ".claude").mkdir(parents=True)
+        elsewhere = self.tmp / "elsewhere.tsv"
+        elsewhere.write_text("theirs\n")
+        (target / ".claude/HARNESS_FILES.tsv").symlink_to(elsewhere)
+        # WHEN installed / THEN exit 2 naming it, nothing written
+        result = self.install(self.sha1, target, check=False)
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("HARNESS_FILES.tsv through a symlink", result.stderr)
+        self.assertEqual(elsewhere.read_text(), "theirs\n")
+        self.assertFalse((target / ".claude/HARNESS_MANIFEST").exists())
 
     def test_harness_version_without_addon_has_nulls(self):
         """
