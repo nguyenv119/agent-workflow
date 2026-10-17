@@ -23,9 +23,9 @@ spec.loader.exec_module(guard)
 PREFIX = "proj" + "-"
 FULL = PREFIX + "ab" + "c12"
 FULL_CHILD = FULL + ".3" + ".2"
-SHORT_A = "dj" + "b8" + ".17"
-SHORT_B = "wt" + "4" + ".10"
-SHORT_C = "uw" + "4e" + ".23"
+SHORT_A = "qz" + "7k" + ".23"
+SHORT_B = "hx" + "3" + ".10"
+SHORT_C = "kp" + "9m" + ".4"
 KW_REL = "bead" + " .4"
 KW_EPIC_REL = "Epic" + " .12"
 KW_ID = "bead " + "am" + "y9"
@@ -33,6 +33,10 @@ KW_ID = "bead " + "am" + "y9"
 RULES_TEXT = f"# Project rules\n\n## beads\n- bead-id-prefix: {PREFIX}\n- bead-id-allow: api, cli\n"
 RULES = guard.make_rules(PREFIX, ["api", "cli"])
 BYPASS = "  # agent-cli: allow bead-id-comment"
+LOOKALIKE = "abc" + "1.2"
+# commands whose bypass verdict must match agent-cli's grammar: two real bypasses, two that are not
+BYPASS_FIXTURES = (BYPASS, "  #agent-cli:allow bead-id-comment", BYPASS + "-x",
+                   "  agent-cli: allow bead-id-comment")
 
 
 def hits(path: str, text: str, rules=RULES) -> list[str]:
@@ -67,8 +71,8 @@ class Repo:
         self.git("add", "-A")
         self.git("commit", "-q", "-m", msg)
 
-    def run(self, *args: str, script: Path = SCRIPT, cwd: Path | None = None) -> subprocess.CompletedProcess:
-        return run([sys.executable, str(script), *args], cwd or self.root, check=False)
+    def run(self, *args: str, cwd: Path | None = None) -> subprocess.CompletedProcess:
+        return run([sys.executable, str(SCRIPT), *args], cwd or self.root, check=False)
 
     def hook(self, command: str, cwd: Path | None = None, **extra_env: str) -> subprocess.CompletedProcess:
         """Pipe a PreToolUse payload to the exact settings.json command, as Claude Code does.
@@ -149,9 +153,9 @@ class Negatives(unittest.TestCase):
         for text in ("all four", "v1.2", "v12.3", "node20.1", "python3.11", "es2015.1",
                      "utf8.0", "web3.0", "items.2.qty", "data.0.name", "rows.3", "args.0", "nodes.1",
                      "bead would", "epic win", "Epic mtu", "the 2026.10 release",
-                     "see https://x.dev/abc1.2", "user@abc1.2", "a ./abc1.2 path",
-                     "go1.21", "php8.1", "ruby3.2", "java21.0", "perl5.36", "rust1.75",
-                     "swift5.9", "lua5.4", "tsc5.3",
+                     "see https://x.dev/" + LOOKALIKE, "user@" + LOOKALIKE, f"a ./{LOOKALIKE} path",
+                     "go1.21", "php8.1", "ruby3.2", "java8.1", "perl5.36", "rust1.75",
+                     "lua5.4", "tsc5.3",
                      "run " + PREFIX + "cli env", PREFIX + "api"):
             with self.subTest(text=text):
                 # WHEN scanned
@@ -383,7 +387,8 @@ class Modes(TmpCase):
     def test_strict_scan_raises_when_git_cannot_show_a_file(self):
         """--base scans strictly: a git error reading a file must surface, not drop that file.
 
-        Why: CI that skips a file it could not read passes a PR it never checked.
+        Why: CI that skips a file it could not read passes a PR it never checked. This proves
+        scan() only; that the --base call passes strict=True is read from run_mode, not tested.
         """
         # GIVEN a reader that fails like git show does
         def read(path):
@@ -417,6 +422,66 @@ class Modes(TmpCase):
         self.assertIn("no-such-ref", r.stderr)
         self.assertIn("--base origin/main", r.stderr)
 
+    def test_staged_ignores_diff_prefix_config(self):
+        """A user's diff.noprefix or diff.mnemonicPrefix must not switch the check off.
+
+        Why: those settings change the `+++ b/` header the parser keys on; unmatched headers drop
+        every hunk and the commit passes unchecked.
+        """
+        # GIVEN a staged id comment
+        self.repo.write("new.ts", f"// {FULL}\n")
+        self.repo.git("add", "new.ts")
+        for key in ("diff.noprefix", "diff.mnemonicPrefix"):
+            with self.subTest(key=key):
+                # AND that diff setting on
+                self.repo.git("config", key, "true")
+                # WHEN the staged check runs
+                r = self.repo.run("--staged")
+                # THEN it still exits 9 naming the file
+                self.assertEqual(r.returncode, 9, r.stderr)
+                self.assertIn(f"new.ts:1: {FULL}", r.stdout)
+                self.repo.git("config", "--unset", key)
+
+    def test_staged_from_a_subdirectory_ignores_diff_relative(self):
+        """diff.relative=true from a subdirectory still reports, with the root-relative path."""
+        # GIVEN diff.relative on and a staged id comment in sub/x.py
+        self.repo.git("config", "diff.relative", "true")
+        self.repo.write("sub/x.py", f"# {FULL}\n")
+        self.repo.git("add", "-A")
+        # WHEN the staged check runs from sub/
+        r = self.repo.run("--staged", cwd=self.repo.root / "sub")
+        # THEN exit 9 naming sub/x.py
+        self.assertEqual(r.returncode, 9, r.stderr)
+        self.assertIn("sub/x.py:1:", r.stdout)
+
+    def test_base_ignores_lines_the_base_removed_after_the_branch_point(self):
+        """--base judges the branch's own additions, not what main dropped since the branch began.
+
+        Why: a two-dot diff shows a line main deleted as added by a branch that never touched it,
+        failing CI for a PR that is not rebased.
+        """
+        # GIVEN a branch with a clean commit, and main then deleting the legacy id line
+        main = self.repo.git("rev-parse", "--abbrev-ref", "HEAD").strip()
+        self.repo.git("checkout", "-q", "-b", "feat")
+        self.repo.write("new.py", "x = 1  # plain\n")
+        self.repo.commit("feat")
+        self.repo.git("checkout", "-q", main)
+        self.repo.write("old.ts", "export const a = 1;\n")
+        self.repo.commit("drop legacy")
+        self.repo.git("checkout", "-q", "feat")
+        # WHEN the branch is checked against main
+        r = self.repo.run("--base", main)
+        # THEN it passes
+        self.assertEqual(r.returncode, 0, r.stdout)
+
+    def test_all_with_a_path_matching_nothing_is_a_usage_error(self):
+        """A mistyped path must not read as a clean scan."""
+        # WHEN --all is given a path with no tracked files
+        r = self.repo.run("--all", "nosuchdir")
+        # THEN exit 2 naming the path
+        self.assertEqual(r.returncode, 2, r.stdout)
+        self.assertIn("no tracked files match nosuchdir", r.stderr)
+
     def add_more(self):
         self.repo.write("pkg/b.sql", f"-- {FULL}\nSELECT 1;\n")
         self.repo.write("a/fixtures/x.ts", f"// {FULL}\n")
@@ -444,7 +509,7 @@ class Modes(TmpCase):
         self.assertNotIn("old.ts", r.stdout)
         self.assertIn("pkg/b.sql:1:", r.stdout)
 
-    def test_all_from_a_subdirectory_reports_and_excludes_by_root_paths(self):
+    def test_all_from_a_subdirectory_reports_root_relative_paths(self):
         """--all names files from the repo root, as --staged and --base do.
 
         Why: bead-id-exclude is matched against the path; a cwd-relative path would make the
@@ -602,6 +667,29 @@ class Hook(TmpCase):
                 # THEN exit 0
                 self.assertEqual(r.returncode, 0, r.stderr)
 
+    def test_bypass_for_a_longer_rule_id_is_not_this_bypass(self):
+        """A bypass naming another rule (bead-id-comment-x) must not switch this one off."""
+        # WHEN the commit carries a bypass for a different, longer rule id
+        r = self.repo.hook("git commit -m x" + BYPASS + "-x")
+        # THEN the commit is still blocked
+        self.assertEqual(r.returncode, 2, r.stderr)
+
+    def test_bypass_grammar_matches_agent_cli(self):
+        """hook.py copies agent-cli's bypass grammar; the two must agree on every fixture."""
+        # GIVEN both bypass patterns
+        sys.path.insert(0, str(CLAUDE / "cli"))
+        from agent_cli import hook as cli_hook
+        hspec = importlib.util.spec_from_file_location("bead_hook", HOOK_DIR / "hook.py")
+        bead_hook = importlib.util.module_from_spec(hspec)
+        hspec.loader.exec_module(bead_hook)
+        for fixture in BYPASS_FIXTURES:
+            cmd = "git commit -m x" + fixture
+            with self.subTest(cmd=cmd):
+                # WHEN each judges the command
+                # THEN they agree
+                self.assertEqual(bead_hook.BYPASS.search(cmd) is not None,
+                                 "bead-id-comment" in cli_hook.BYPASS.findall(cmd))
+
     def test_bypass_without_a_hash_is_not_a_bypass(self):
         """The bypass is a shell comment, as for every agent-cli rule; bare text in a message is not.
 
@@ -632,10 +720,22 @@ class Hook(TmpCase):
 
     def test_non_commit_commands_are_ignored(self):
         """Only git commit is gated; every other command runs untouched."""
-        # WHEN git status goes through the hook
-        r = self.repo.hook("git status")
-        # THEN exit 0, nothing said
-        self.assertEqual((r.returncode, r.stderr), (0, ""))
+        for cmd in ("git status", "git commit-tree HEAD^{tree} -m x"):
+            with self.subTest(cmd=cmd):
+                # WHEN the command goes through the hook
+                r = self.repo.hook(cmd)
+                # THEN exit 0, nothing said
+                self.assertEqual((r.returncode, r.stderr), (0, ""))
+
+    def test_commit_after_global_options_is_checked(self):
+        """git -c / --no-pager before commit is still a commit; skipping it lets a violation through."""
+        for cmd in ("git -c commit.gpgsign=false commit -m x", "git --no-pager commit -m x"):
+            with self.subTest(cmd=cmd):
+                # WHEN the commit goes through the hook
+                r = self.repo.hook(cmd)
+                # THEN exit 2 naming the file
+                self.assertEqual(r.returncode, 2, r.stderr)
+                self.assertIn("new.py:2:", r.stderr)
 
     def test_git_dash_c_commit_from_another_dir_is_checked_in_that_repo(self):
         """git -C <repo> commit run from elsewhere must be judged by the repo it commits to."""
@@ -643,10 +743,12 @@ class Hook(TmpCase):
         other = self.tmp / "elsewhere"
         other.mkdir()
         # WHEN git -C <repo> commit goes through the hook
-        r = self.repo.hook(f"git -C {self.repo.root} commit -m x", cwd=other)
-        # THEN exit 2 naming the file
-        self.assertEqual(r.returncode, 2, r.stderr)
-        self.assertIn("new.py:2:", r.stderr)
+        for cmd in (f"git -C {self.repo.root} commit -m x", f"git -C {self.repo.root} -c x.y=z commit -m x"):
+            with self.subTest(cmd=cmd):
+                r = self.repo.hook(cmd, cwd=other)
+                # THEN exit 2 naming the file
+                self.assertEqual(r.returncode, 2, r.stderr)
+                self.assertIn("new.py:2:", r.stderr)
 
 
 if __name__ == "__main__":

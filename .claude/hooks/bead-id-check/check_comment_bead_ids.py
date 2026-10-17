@@ -24,7 +24,7 @@ Lint and type directive lines are skipped.
 Modes:
   --staged          lines added in the index (pre-commit). Fails open: any
                     error exits 0, a violation exits 9.
-  --base <ref>      lines added between <ref> and HEAD (CI). Fails closed: an
+  --base <ref>      lines added since the merge base with <ref> (CI). Fails closed: an
                     unknown ref, a git error or unreadable rules exit non-zero.
   --all [paths...]  every comment line in tracked files.
 Files that cannot be read as UTF-8 are skipped in every mode.
@@ -34,7 +34,8 @@ No --json: the hook and CI branch on the exit code, and stdout is already one re
 
 Exit codes:
   0  clean, or nothing to check (no bead-id-prefix)
-  2  usage error, unresolvable base ref, or unreadable rules (--base/--all)
+  2  usage error, unresolvable base ref, no tracked file matching --all paths,
+     or unreadable rules (--base/--all)
   9  a bead id was found in a comment
 
 Examples:
@@ -71,7 +72,7 @@ KW_REL = re.compile(r"\b(?:bead|epic)s?\s+\.\d+\b", re.I)
 KW_ID = re.compile(
     r"\b(?:bead|epic)s?\s+(?=[a-z0-9]{0,4}\d)(?=[a-z0-9]{0,4}[a-z])[a-z0-9]{3,5}\b", re.I
 )
-VERSION = re.compile(r"^(?:v|node|python|es|utf|web|go|php|ruby|java|perl|rust|swift|lua|tsc)\d+$")
+VERSION = re.compile(r"^(?:v|node|python|es|utf|web|go|php|ruby|java|perl|rust|lua|tsc)\d+$")
 PLURALS = {"nodes", "items", "rows", "args"}
 
 # (line markers, block delimiters, quotes, quotes that span lines, "#" needs whitespace before)
@@ -220,7 +221,9 @@ def added_lines(diff_args: list[str]) -> dict[str, set[int]]:
     out: dict[str, set[int]] = {}
     path = None
     # added text in a non-UTF-8 file must not abort the whole diff; that file is skipped on read
+    # pin prefixes and root-relative paths: diff.noprefix/mnemonicPrefix/relative would change the headers
     for line in git("diff", "-U0", "--no-color", "--no-ext-diff", "--diff-filter=ACMR",
+                    "--src-prefix=a/", "--dst-prefix=b/", "--no-relative",
                     *diff_args, errors="replace").splitlines():
         if line.startswith("+++ "):
             path = header_path(line)
@@ -270,10 +273,13 @@ def run_mode(mode: str, argv: list[str], rules: Rules, top: str) -> int:
             print(f"{NAME}: cannot resolve base ref {ref!r}\n"
                   f"  e.g. {NAME}.py --base origin/main", file=sys.stderr)
             return 2
-        files = added_lines([ref, "HEAD"])
+        files = added_lines([f"{ref}...HEAD"])
         return report(scan(files, lambda p: git("show", f"HEAD:{p}"), rules, strict=True))
     paths = git("ls-files", "-z", "--full-name", "--", *argv[1:]).split("\0")
     files = {p: None for p in paths if p}
+    if argv[1:] and not files:
+        print(f"{NAME}: no tracked files match {' '.join(argv[1:])}", file=sys.stderr)
+        return 2
     return report(scan(files, lambda p: (Path(top) / p).read_text(encoding="utf-8"), rules))
 
 
