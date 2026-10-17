@@ -1,0 +1,40 @@
+{
+  "comment": "Page rules for `agent-cli page check|mark-update|new-layer|new`, matched to this skill's template.html; a project can pass its own file with --rules.",
+  "hidden_required": true,
+  "hidden_closed": true,
+  "layer": {
+    "ordered": true,
+    "lead": {
+      "p.pain": "Original pain point\\b",
+      "p.done": "Done\\b"
+    },
+    "skeleton": "<div class=\"layer\">\n    <h3 class=\"{update_class}\">{title}</h3>\n    <p class=\"pain {update_class}\"><b>Original pain point:</b> FILL: the real problem this layer fixes, with the real example.</p>\n    <p class=\"{update_class}\">FILL: what it is, from first principles, terms explained where their box first appears.</p>\n    <figure class=\"dia ent\"><div class=\"scroller\" style=\"background:none;border:0;padding:0\">FILL: the one diagram, redrawn with this layer's boxes in acc (example-layered-svg.py).</div></figure>\n    <p class=\"done {update_class}\"><b>Done:</b> FILL: what is built and how it moves Done means.</p>\n  </div>"
+  },
+  "legend": {
+    "line": "update \\d+, \\d{1,2} [A-Z][a-z]{2}: \\S"
+  },
+  "kicker": {
+    "selector": "p.kicker",
+    "pattern": "^Draft \\d+ · .+ · internal working document"
+  },
+  "require_update_mark": true,
+  "legacy_classes": "u\\d+",
+  "update_css": {
+    "needs": "ol\\.steps p\\.new",
+    "css": "    .new{--uc:rgb(0,104,150)}\n    .new { color: var(--uc); }\n    .new :is(p,td,h3,h4,li,i,b,.note,.w) { color: var(--uc); }\n    ol.steps p.new { color: var(--uc); }\n    .new ol.steps :is(p,h4) { color: var(--uc); }\n    .sw { display: inline-block; width: 10px; height: 10px; border-radius: 2px; vertical-align: 0; background: var(--uc); }"
+  },
+  "forbid_headings_outside_hidden": [
+    {
+      "pattern": "^(Backlog|Status|Worklog|Work log|Glossary|Next steps|To do|Earlier turns)\\b",
+      "why": "status, plans and old turns go in For agents; move this section into For agents"
+    }
+  ],
+  "unique_ids": true,
+  "require_source": [
+    {
+      "pattern": "contenteditable",
+      "why": "page lost the template's Edit/Save shell"
+    }
+  ],
+  "template": "template.html"
+}

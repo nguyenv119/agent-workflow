@@ -51,7 +51,8 @@ The harness gets agents to both with a loop.
 | Skill | Use it for |
 | --- | --- |
 | `discover` | Check what is true before planning. Reads the knowledge base first, then sends read-only sub-agents to verify the rest |
-| `document` | Keep a living HTML page for a topic. Short plain-language sections for you, a collapsed "For agents" section that holds notes and links |
+| `document` | Keep a living HTML page for a topic: why, how it works layer by layer, open questions, and a collapsed "For agents" section that holds notes and links. A `## document` section in project-rules.md overrides its defaults |
+| `anti-slop-writing` | Review or rewrite prose so it does not read like generic LLM output |
 | `win-condition` | Define the end-to-end check for an epic |
 | `quick` | Small, low-risk fixes. One reviewer instead of three, still a real branch and PR. It refuses anything risky and hands off to `/work` |
 | `copy-harness` | Install this harness in another repo by running `harness-loop/install_harness.py` from a clone of agent-workflow |
@@ -116,6 +117,7 @@ The win condition and the per-task acceptance check have to run against the dev 
     win-condition/  Defines the end-to-end check for an epic
     discover/       Knowledge-base lookup and read-only verification
     document/       Living HTML page for a topic
+    anti-slop-writing/  Prose review and rewrite against generic LLM style
     quick/          Lightweight flow for small fixes
     standards/      Shared rules injected into reviewers
   agents/           Subagent definitions (implementer, quick-reviewer)
