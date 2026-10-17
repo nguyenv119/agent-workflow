@@ -11,7 +11,7 @@ Defaults, when neither file has that section (`<skill-dir>` is this skill's fold
 
 - Pages dir: `$DESK_DOWNLOADS` when that env var is set, else `~/.claude/pages` (create it if missing).
 - Status and questions: the page's Open questions section, just before For agents, each with background, why it came up, the choice and a bold recommendation.
-- Page commands: `agent-cli page <check|mark-update|new-layer|new> ... --rules <skill-dir>/page-rules.json` (`agent-cli page --help`).
+- Page commands: `agent-cli page <check|mark-update|new-layer|new> ... --rules <skill-dir>/page-rules.json` (`agent-cli page --help`). An explicit `--rules` wins over agent-cli's own `.claude/agent-cli-hooks/page-rules.json` seam; a project with its own rules names that file in its `## document` section.
 - No companion short page. Template: `<skill-dir>/template.html` (page-rules.json names it).
 
 One HTML page per project, growing through the work. The page explains how the system works; status and questions go where the `## document` section says, by default the Open questions section; findings, plans and costs go in For agents. The user reads the open sections cold; For agents, kept closed, is for the next agent.
@@ -68,4 +68,4 @@ Render headless and read 900x1600 slices:
   --hide-scrollbars --window-size=900,6000 --screenshot=<scratchpad>/page.png file://<page>
 ```
 
-Check both themes and For agents open; look for SVG text spilling out of boxes. Send with `SendUserFile` (`display: "render"`) and say nothing in chat.
+Check both themes and For agents open; look for SVG text spilling out of boxes. Send with `SendUserFile` (`display: "render"`) and give a short summary of what changed in chat.

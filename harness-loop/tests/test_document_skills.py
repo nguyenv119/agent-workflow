@@ -1,6 +1,7 @@
 """The document and anti-slop-writing skills: they load, read the project-rules seam, stay clean of
 personal paths, and the document rules file checks this repo's own template."""
 import json
+import re
 import shutil
 import subprocess
 import sys
@@ -24,14 +25,16 @@ def page(*args):
 
 class DocumentSkills(unittest.TestCase):
     def test_both_skills_load_under_their_folder_name(self):
-        """Each SKILL.md has name and description frontmatter, and its name is its folder's name."""
+        """Each SKILL.md has name and description frontmatter (the parse load_check runs), and its name is
+        its folder's name; otherwise the skill never loads and an installing project silently lacks it."""
         for name in ("document", "anti-slop-writing"):
-            # GIVEN the skill text
-            text = (SKILLS / name / "SKILL.md").read_text()
-            # WHEN its frontmatter is checked
-            # THEN nothing is missing and the name matches the folder
-            self.assertEqual(loop.frontmatter_ok(text), set(), name)
-            self.assertIn(f"\nname: {name}\n", text)
+            with self.subTest(name):
+                # GIVEN the skill text
+                text = (SKILLS / name / "SKILL.md").read_text()
+                # WHEN its frontmatter is checked
+                # THEN nothing is missing and the name matches the folder
+                self.assertEqual(loop.frontmatter_ok(text), set())
+                self.assertIn(f"\nname: {name}\n", text)
 
     def test_anti_slop_keeps_its_license(self):
         """The third-party skill keeps its MIT license line."""
@@ -48,13 +51,21 @@ class DocumentSkills(unittest.TestCase):
         self.assertIn("## document", seam)
         self.assertLess(seam.index("`.claude/project-rules.md`"), seam.index("`~/.claude/project-rules.md`"))
 
-    def test_document_has_no_personal_wrapper_or_old_placeholder(self):
-        """No `<pages-dir>` placeholder and no personal desk wrapper (absolute paths: the leak-scan test)."""
+    def test_document_edits_pages_only_through_agent_cli_with_its_rules(self):
+        """No `<pages-dir>` placeholder (nothing ever filled it in) and no page command outside
+        `agent-cli page ... --rules <skill-dir>/page-rules.json`: without the flag every page passes on the
+        built-in defaults, so the rules file would never bite (absolute paths: the leak-scan test)."""
         # GIVEN the document skill text
         text = (DOC / "SKILL.md").read_text()
-        # WHEN checked / THEN none of the personal forms appear
-        for bad in ("<pages-dir>", "~/.claude/desk", "desk page"):
-            self.assertNotIn(bad, text)
+        # WHEN every code span that runs a page command is read
+        commands = [s for s in re.findall(r"`([^`]*)`", text) if re.search(r"\bpage \w", s)]
+        # THEN the placeholder is gone, every such command is agent-cli's and carries the rules file
+        self.assertNotIn("<pages-dir>", text)
+        self.assertGreaterEqual(len(commands), 4)
+        for span in commands:
+            self.assertTrue(span.startswith("agent-cli page"), span)
+            if span != "agent-cli page --help":
+                self.assertIn("--rules <skill-dir>/page-rules.json", span, span)
 
     def test_every_skill_file_passes_the_leak_scan(self):
         """Every text file in both skill folders passes the loop's own leak scan."""
@@ -70,12 +81,17 @@ class DocumentSkills(unittest.TestCase):
         # GIVEN / WHEN the rules parse / THEN the named template exists
         self.assertTrue((DOC / json.loads(RULES.read_text())["template"]).is_file())
 
-    def test_template_and_a_fresh_page_pass_the_rules(self):
-        """The repo template checks PASS, and so does a fresh page made from the same rules."""
+    def test_template_passes_its_own_rules(self):
+        """The repo template checks PASS under the rules file shipped next to it; if it did not, every page
+        started from it would fail check before the agent wrote a word."""
         # GIVEN the rules / WHEN the template is checked / THEN PASS
         p = page("check", str(DOC / "template.html"), "--rules", str(RULES))
         self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
         self.assertIn("PASS", p.stdout)
+
+    def test_a_fresh_page_from_the_rules_passes_check(self):
+        """`page new` with only the rules file finds the template through it and the page checks PASS, so a
+        project needs no --template flag."""
         with tempfile.TemporaryDirectory() as tmp:
             # WHEN a new page is started from the rules
             made = page("new", "demo", "--dir", tmp, "--rules", str(RULES), "--json")
