@@ -9,7 +9,7 @@ skills/commands named like a project one are shadows; a shadow no owner line mat
 inventory lists skills, commands, agents, the sha256 of the instruction files and every settings.json hook with the
 programs it really runs (guards `[ -x X ]` / `test -f X` resolved, `$CLAUDE_PROJECT_DIR`, `$HOME`, `~` and the
 command's own NAME=value assignments expanded): ok, inert (a guard target is missing, so it silently does nothing) or
-unresolved. Stdlib only.
+unresolved. An unparsable settings.json gives an `error` field, no hooks, and exit 1. Stdlib only.
 """
 import fnmatch
 import hashlib
@@ -51,7 +51,8 @@ def register(sub):
     p.add_argument("--json", action="store_true", help="one JSON object")
     p.set_defaults(func=drift_cmd)
     p = core.subcommand(hs, "inventory", "skills, commands, agents, instruction-file hashes and hooks with their "
-                        "resolved programs (exit 1 if a hook is inert or unresolved)",
+                        "resolved programs (exit 1 if a hook is inert or unresolved, or settings.json is not "
+                        "valid JSON: the output then carries an `error` field)",
                         [INVENTORY, "agent-cli harness inventory --target ~ --json", "agent-cli harness inventory"])
     p.add_argument("--target", default=".", help="project root, its .claude dir, or $HOME for the user layer")
     p.add_argument("--json", action="store_true", help="one JSON object")
@@ -97,22 +98,30 @@ def owner_of(rules, path):
     return next((o for g, o, _ in rules if glob_match(g, path)), None)
 
 
-def drift_root(target):
+def root_of(target, example):
+    """The project root for --target: the dir itself, or its parent when it is a `.claude` dir with no `.claude`
+    child; exit 2 when it is not a directory."""
     t = Path(target)
     if not t.is_dir():
-        core.die(Exit.REFUSED, f"--target {target} is not a directory", DRIFT)
-    if (t / ".claude" / FILES).is_file():
-        return t
-    if t.resolve().name == ".claude" and (t / FILES).is_file():
-        return t.resolve().parent
-    core.die(Exit.BLOCKED, f"no .claude/{FILES} under {target}: the install predates it; reinstall with "
-             "harness-loop/install_harness.py --force", "python3 harness-loop/install_harness.py --commit HEAD "
-             "--target <project> --addon <project>/.claude/harness-addon --force")
+        core.die(Exit.REFUSED, f"--target {target} is not a directory", example)
+    t = t.resolve()
+    return t.parent if t.name == ".claude" and not (t / ".claude").is_dir() else t
+
+
+def drift_root(target):
+    root = root_of(target, DRIFT)
+    if not (root / ".claude" / FILES).is_file():
+        core.die(Exit.BLOCKED, f"no .claude/{FILES} under {target}: the install predates it; reinstall with "
+                 "harness-loop/install_harness.py --force", "python3 harness-loop/install_harness.py --commit HEAD "
+                 "--target <project> --addon <project>/.claude/harness-addon --force")
+    return root
 
 
 def read_tsv(root):
     f = root / ".claude" / FILES
     lines = f.read_text().splitlines()
+    if not lines or lines[0] != "path\torigin\tsha256":
+        core.die(Exit.REFUSED, f"{f} has no `path origin sha256` header; reinstall", DRIFT)
     rows = {}
     for n, line in enumerate(lines[1:], 2):
         parts = line.split("\t")
@@ -120,8 +129,6 @@ def read_tsv(root):
             core.die(Exit.REFUSED, f"{f} line {n} is not `path<TAB>base|addon<TAB>sha256`; reinstall",
                      "python3 harness-loop/install_harness.py --commit HEAD --target <project> --force")
         rows[parts[0]] = (parts[1], parts[2])
-    if not lines or lines[0] != "path\torigin\tsha256":
-        core.die(Exit.REFUSED, f"{f} has no `path origin sha256` header; reinstall", DRIFT)
     return rows
 
 
@@ -141,9 +148,13 @@ def drift(root, user_dir=None):
            "unowned": []}
     for path, (origin, want) in rows.items():
         f = root / path
-        if not f.is_file():
+        try:
+            have = sha256(f) if f.is_file() else None
+        except OSError:  # unreadable, or a link whose target went away between the check and the read
+            have = None
+        if have is None:
             out["missing"].append(path)
-        elif sha256(f) != want:
+        elif have != want:
             out[f"{origin}_edited"].append(path)
 
     def entry(path):
@@ -207,8 +218,12 @@ def drift_cmd(a):
 
 
 def frontmatter_name(f, fallback):
-    """The `name:` of a markdown file's leading `---` block (quotes stripped), else fallback."""
-    lines = f.read_text(errors="replace").splitlines()
+    """The `name:` of a markdown file's leading `---` block (quotes stripped), else fallback (also for a file that
+    cannot be read, e.g. a dangling symlink: the session would skip it the same way)."""
+    try:
+        lines = f.read_text(errors="replace").splitlines()
+    except OSError:
+        return fallback
     if lines[:1] == ["---"]:
         for line in lines[1:]:
             if line.strip() == "---":
@@ -317,12 +332,7 @@ def inventory(root):
 
 
 def inventory_cmd(a):
-    t = Path(a.target)
-    if not t.is_dir():
-        core.die(Exit.REFUSED, f"--target {a.target} is not a directory", INVENTORY)
-    t = t.resolve()
-    root = t.parent if t.name == ".claude" and not (t / ".claude").is_dir() else t
-    out = inventory(root)
+    out = inventory(root_of(a.target, INVENTORY))
     bad = "error" in out or any(h["status"] != "ok" for h in out["hooks"])
     if a.json:
         print(json.dumps(out, sort_keys=True))

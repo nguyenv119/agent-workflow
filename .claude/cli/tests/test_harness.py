@@ -425,7 +425,12 @@ class Inventory(TmpCase):
         unresolved = "echo hi && nosuchprog --x"
         unknown_var = "$NOPE/bin/run"
         unknown_guard = 'X=$NOPE/x; [ -x "$X" ] && tool'
-        self.settings(ok_path, ok_guard, inert, unresolved, unknown_var, unknown_guard)
+        # the production shape: an executable guard target, and the `test -f` spelling of the same guard
+        ok_x_guard = '[ -x "$CLAUDE_PROJECT_DIR/.claude/hooks/x.sh" ] && "$CLAUDE_PROJECT_DIR/.claude/hooks/x.sh"; exit 0'
+        ok_test_f = 'test -f "$CLAUDE_PROJECT_DIR/.claude/hooks/x.sh" && tool'
+        inert_test_f = 'test -f "$CLAUDE_PROJECT_DIR/.claude/hooks/gone.sh" && tool'
+        self.settings(ok_path, ok_guard, inert, unresolved, unknown_var, unknown_guard, ok_x_guard, ok_test_f,
+                      inert_test_f)
         # WHEN inventory runs with PATH holding only `tool`
         r, got = self.inventory("--json")
         # THEN each hook gets its status and resolved programs, and the exit is 1
@@ -444,6 +449,26 @@ class Inventory(TmpCase):
         self.assertEqual(by_cmd[unknown_guard]["status"], "unresolved")
         self.assertEqual(by_cmd[inert]["event"], "PreToolUse")
         self.assertEqual(by_cmd[inert]["matcher"], "Bash")
+        self.assertEqual(by_cmd[ok_x_guard]["status"], "ok")
+        self.assertEqual(by_cmd[ok_x_guard]["programs"],
+                         [{"word": "$CLAUDE_PROJECT_DIR/.claude/hooks/x.sh", "path": str(self.p / ".claude/hooks/x.sh")}])
+        self.assertEqual(by_cmd[ok_test_f]["status"], "ok")
+        self.assertEqual(by_cmd[inert_test_f]["status"], "inert")
+
+    def test_dangling_skill_symlink_falls_back_to_its_dir_name(self):
+        """
+        A skill dir linked to a target that went away is still one loadable-looking entry; inventory names it by
+        its dir and goes on instead of crashing, so one broken link cannot hide the rest of the inventory.
+        """
+        # GIVEN a skill dir whose SKILL.md is a dangling symlink
+        d = self.p / ".claude/skills/linked"
+        d.mkdir(parents=True)
+        (d / "SKILL.md").symlink_to(self.tmp / "nowhere/SKILL.md")
+        # WHEN inventory runs
+        r, got = self.inventory("--json")
+        # THEN the dir name stands in and the command exits 0
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(got["skills"], ["linked"])
 
     def test_all_ok_hooks_exit_0_and_home_expands(self):
         """Every hook resolving is exit 0; `~` and $HOME expand to the HOME the hook would see."""
