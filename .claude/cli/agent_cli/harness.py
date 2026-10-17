@@ -145,9 +145,9 @@ def addon_dir(root):
     return addon or ".claude/harness-addon"
 
 
-def drift(root, user_dir=None):
-    """The drift report for an install rooted at root (see the module doc)."""
-    rows, rules = read_tsv(root), load_owners(root)
+def drift(root, user_dir=None, rows=None):
+    """The drift report for an install rooted at root (see the module doc); rows = read_tsv(root) when given."""
+    rows, rules = read_tsv(root) if rows is None else rows, load_owners(root)
     out = {"addon_edited": [], "base_edited": [], "missing": [], "owned": {}, "shadow": [], "unexplained": [],
            "unowned": []}
     for path, (origin, want) in rows.items():
@@ -203,13 +203,14 @@ def drift_cmd(a):
     if a.user_dir and not Path(a.user_dir).is_dir():
         core.die(Exit.REFUSED, f"--user-dir {a.user_dir} is not a directory", f"{DRIFT} --user-dir ~/.claude")
     root = drift_root(a.target)
-    out = drift(root, a.user_dir)
+    rows = read_tsv(root)
+    out = drift(root, a.user_dir, rows)
     bad = any(out[k] for k in ("unowned", "addon_edited", "missing", "unexplained"))
     if a.json:
         print(json.dumps(out, sort_keys=True))
         return Exit.FAIL if bad else Exit.OK
     addon = addon_dir(root)
-    merged = {p for p, (origin, _) in read_tsv(root).items() if origin == "base+addon"}
+    merged = {p for p, (origin, _) in rows.items() if origin == "base+addon"}
     for key in ("base_edited", "addon_edited", "missing", "unowned", "shadow", "unexplained"):
         for path in out[key]:
             print(f"{key}: {path}")

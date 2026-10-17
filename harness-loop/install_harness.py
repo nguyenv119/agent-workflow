@@ -69,7 +69,7 @@ is written once:
 
 Fail closed, exit 2 before anything is written: an add-on shipping both
 settings.json and settings.add.json; a file that is not a JSON object; `hooks`
-that is not an object of Event -> list of groups each with a "hooks" list; a
+that is not an object of Event -> non-empty list of groups each with a "hooks" list; a
 group identical to one already in the installed event; a dict or list meeting
 a different shape at the same key; or no installed settings.json (or one that
 is a symlink in the target).
@@ -222,9 +222,10 @@ def read_settings_add(addon):
         die(f"{f} is not a JSON object")
     hooks = data.get("hooks", {})
     if not (isinstance(hooks, dict) and all(
-            isinstance(gs, list) and all(isinstance(g, dict) and isinstance(g.get("hooks"), list) for g in gs)
+            isinstance(gs, list) and gs
+            and all(isinstance(g, dict) and isinstance(g.get("hooks"), list) for g in gs)
             for gs in hooks.values())):
-        die(f'{f}: hooks must map each Event to a list of groups, each with a "hooks" list')
+        die(f'{f}: hooks must map each Event to a non-empty list of groups, each with a "hooks" list')
     return data
 
 
@@ -318,7 +319,7 @@ def install(argv):
     new_settings = None
     if edits:
         if SETTINGS not in addon_by_rel and SETTINGS not in {m.name for m in members}:
-            die(f"{edits} need a {SETTINGS}, but no {SETTINGS} is installed")
+            die(f"{edits} cannot be applied: no {SETTINGS} is installed")
         raw = source_bytes(SETTINGS)
         data = json.loads(raw) if raw is not None else None
         if not isinstance(data, dict):

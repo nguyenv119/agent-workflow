@@ -1087,6 +1087,7 @@ class SettingsAddTest(unittest.TestCase):
             "not an object": ("[1]", None, "not a JSON object"),
             "hooks not a dict": ({"hooks": [GROUP]}, None, "hooks must map"),
             "group without hooks list": ({"hooks": {"Stop": [{"matcher": "x"}]}}, None, "hooks must map"),
+            "event with no groups": ({"hooks": {"Stop": []}}, None, "hooks must map"),
             "duplicate group": ({"hooks": {"PostCompact": SETTINGS["hooks"]["PostCompact"]}}, None,
                                 "already has an identical group"),
             "dict meets list": ({"permissions": {"allow": {"x": 1}}}, None, "shape conflict at permissions.allow"),

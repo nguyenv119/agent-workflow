@@ -396,6 +396,36 @@ class DriftAfterRealInstall(TmpCase):
         self.assertEqual(r.returncode, 0, r.stdout)
         self.assertEqual(json.loads(r.stdout)["base_edited"], [".claude/skills/review/SKILL.md"])
 
+    def test_real_install_with_settings_add_then_edited_settings_is_addon_edited(self):
+        """
+        End to end with the real installer: the TSV row the installer writes for a settings.json merged with
+        settings.add.json (`base+addon`) must be what drift sorts into addon_edited. Each half is pinned by a
+        literal in its own suite; this proves the two literals meet, so a merged project hook can never be
+        reported as base drift and ported upstream.
+        """
+        # GIVEN a harness with a base settings.json, installed with an add-on whose settings.add.json adds a hook group
+        repo = make_project(self.tmp / "aw")
+        write(repo, ".claude/settings.json", json.dumps({"hooks": {"Stop": [{"hooks": [{"type": "command",
+                                                                                         "command": "base"}]}]}}))
+        write(repo, "AGENTS.md", "agents\n")
+        run(GIT + ["add", "-A"], repo)
+        run(GIT + ["commit", "-qm", "c"], repo)
+        target = self.tmp / "t"
+        addon = target / ".claude/harness-addon"
+        write(addon, "settings.add.json", json.dumps({"hooks": {"Stop": [{"hooks": [{"type": "command",
+                                                                                      "command": "mine"}]}]}}))
+        write(addon, "harness-owners.txt", ".claude/harness-addon/** addon-source the add-on\n")
+        subprocess.run([sys.executable, str(INSTALLER), "--repo", str(repo), "--commit", "HEAD",
+                        "--target", str(target), "--addon", str(addon)], check=True, capture_output=True)
+        env = {"PYTHONDONTWRITEBYTECODE": "1"}
+        # WHEN the installed settings.json is hand-edited
+        write(target, ".claude/settings.json", "{}\n")
+        r = agent_cli(target, "harness", "drift", "--json", env=env)
+        # THEN it is addon_edited, never base_edited, exit 1
+        self.assertEqual(r.returncode, 1, r.stderr)
+        self.assertEqual(json.loads(r.stdout), {**EMPTY, "addon_edited": [".claude/settings.json"],
+                                                "owned": {"addon-source": 1}})
+
 
 class Inventory(TmpCase):
     def setUp(self):
