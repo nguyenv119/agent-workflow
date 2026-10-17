@@ -1,6 +1,7 @@
 """Tests for the harness-edit-on-main rule: `agent-cli hook pretooluse` denies edits to harness files in a
 checkout on the default branch (or detached, or outside git), run as a real subprocess on real git repos."""
 import json
+import sys
 import time
 import unittest
 
@@ -21,8 +22,8 @@ class HarnessCase(HookCase):
         run(GIT + ["add", SKILL, "src.py"], self.p)
         run(GIT + ["commit", "-qm", "init"], self.p)
 
-    def worktree(self, branch="feature"):
-        wt = self.tmp / f"wt-{branch}"
+    def worktree(self, branch="feature", wt=None):
+        wt = wt or self.tmp / f"wt-{branch}"
         run(GIT + ["worktree", "add", "-q", "-b", branch, str(wt)], self.p)
         return wt
 
@@ -339,6 +340,122 @@ class BashWrites(HarnessCase):
         self.assertEqual(t.returncode, 2, t.stderr)
         self.assertEqual([r["id"] for r in json.loads(t.stdout)["rules"]], [RULE])
         self.assertEqual((rows[RULE]["mode"], rows[RULE]["source"], rows[RULE]["active"]), ("deny", "builtin", True))
+
+
+class BashCwd(HarnessCase):
+    """cd/pushd move later relative targets; a dir above a checkout root counts as that checkout's harness."""
+
+    def test_cd_into_the_main_checkout_judges_later_writes_there(self):
+        """`cd <main> && echo x >> AGENTS.md` from a feature worktree is denied as on main.
+
+        The append lands in the main checkout; judging it against the session's worktree let it through.
+        """
+        # GIVEN a feature worktree as the session cwd
+        wt = self.worktree()
+        # WHEN the hook reads a cd into main followed by the append
+        p = self.bash(f"cd {self.p} && echo x >> AGENTS.md", cwd=wt)
+        # THEN it is denied as on main
+        self.assert_denied(p)
+
+    def test_cd_into_a_feature_worktree_allows_later_writes(self):
+        """`cd <worktree> && echo x >> AGENTS.md` from the main checkout passes.
+
+        That is the documented way to edit the harness; denying it on the session cwd's branch blocks it.
+        """
+        # GIVEN a feature worktree and the session cwd at main
+        wt = self.worktree()
+        # WHEN the hook reads a cd into the worktree followed by the append
+        p = self.bash(f"cd {wt} && echo x >> AGENTS.md")
+        # THEN nothing is decided
+        self.assertIsNone(self.decision(p))
+
+    def test_cd_to_an_unreadable_dir_skips_later_relative_targets(self):
+        """After `cd "$X"` (or `cd ~`, `cd -`, bare `cd`) a relative AGENTS.md is not judged: its checkout is
+        unknown, so it is not guessed from the session cwd."""
+        for c in ['cd "$X"', "cd ~/x", "cd -", "cd", "pushd $X"]:
+            with self.subTest(cd=c):
+                # GIVEN the session cwd at main
+                # WHEN the hook reads an unreadable cd followed by a relative append
+                p = self.bash(f"{c} && echo x >> AGENTS.md")
+                # THEN nothing is decided
+                self.assertIsNone(self.decision(p))
+
+    def test_cd_to_an_unreadable_dir_still_judges_absolute_targets(self):
+        """After `cd "$X"` an absolute path to main's AGENTS.md is still denied: no cd moves it."""
+        # GIVEN the session cwd at main
+        # WHEN the hook reads a cd to a variable dir followed by an absolute append
+        p = self.bash(f'cd "$X" && echo x >> {self.p}/AGENTS.md')
+        # THEN it is denied
+        self.assert_denied(p)
+
+    def test_a_later_absolute_cd_restores_a_known_dir(self):
+        """`cd "$X" && cd <main> && echo x >> AGENTS.md` from a worktree is denied: the second cd is readable."""
+        # GIVEN a feature worktree as the session cwd
+        wt = self.worktree()
+        # WHEN the hook reads an unreadable cd, then a cd into main, then the append
+        p = self.bash(f'cd "$X" && cd {self.p} && echo x >> AGENTS.md', cwd=wt)
+        # THEN it is denied as on main
+        self.assert_denied(p)
+
+    def test_relative_cd_chain_joins_onto_the_target(self):
+        """`cd .claude && echo x >> skills/review/SKILL.md` and `pushd .claude; tee skills/...` on main are denied.
+
+        The written file is .claude/skills/...; read against the session cwd it looked like a plain path.
+        """
+        for c in ["cd .claude && echo x >> skills/review/SKILL.md", "pushd .claude; cd skills; tee review/SKILL.md"]:
+            with self.subTest(cmd=c):
+                # GIVEN the session cwd at main
+                # WHEN the hook reads it
+                # THEN it is denied
+                self.assert_denied(self.bash(c))
+
+    def test_removing_the_dir_above_the_main_checkout_is_denied(self):
+        """`rm -rf ..` from the main checkout root is denied: it deletes the checkout and its harness."""
+        # GIVEN the session cwd at the main checkout root
+        # WHEN the hook reads rm of its parent
+        # THEN it is denied as on main
+        self.assert_denied(self.bash("rm -rf .."))
+
+    def test_removing_the_dir_above_a_lone_feature_worktree_is_allowed(self):
+        """`rm -rf ..` from a feature worktree whose parent holds no main checkout passes.
+
+        The worktree is nested one level (tmp/nest/wt) so its parent holds only it; the fixture's default
+        worktree sits next to the main checkout, whose parent would also hold main.
+        """
+        # GIVEN a feature worktree alone under its parent dir
+        wt = self.worktree(wt=self.tmp / "nest/wt")
+        # WHEN the hook reads rm of its parent from there
+        p = self.bash("rm -rf ..", cwd=wt)
+        # THEN nothing is decided
+        self.assertIsNone(self.decision(p))
+
+    def test_removing_a_dir_above_the_project_dir_checkout_is_denied(self):
+        """From a lone worktree, rm of a dir above the main checkout named by $CLAUDE_PROJECT_DIR is denied.
+
+        The session's project checkout is the one an agent most likely deletes by accident.
+        """
+        # GIVEN a lone feature worktree as cwd and CLAUDE_PROJECT_DIR at main
+        wt = self.worktree(wt=self.tmp / "nest/wt")
+        env = {"CLAUDE_PROJECT_DIR": str(self.p)}
+        # WHEN the hook reads rm of the dir holding main
+        p = self.bash(f"rm -rf {self.tmp}", env=env, cwd=wt)
+        # THEN it is denied as on main
+        self.assert_denied(p)
+
+
+@unittest.skipUnless(sys.platform == "darwin", "macOS file systems are case-insensitive by default")
+class CaseFolding(HarnessCase):
+    def test_case_variant_names_are_denied_on_main(self):
+        """`echo x >> agents.md` and `rm -rf .CLAUDE` on main are denied.
+
+        On a case-insensitive file system these write AGENTS.md and .claude; an exact-case compare let them by.
+        """
+        for c in ["echo x >> agents.md", "rm -rf .CLAUDE"]:
+            with self.subTest(cmd=c):
+                # GIVEN the session cwd at main
+                # WHEN the hook reads it
+                # THEN it is denied
+                self.assert_denied(self.bash(c))
 
 
 if __name__ == "__main__":

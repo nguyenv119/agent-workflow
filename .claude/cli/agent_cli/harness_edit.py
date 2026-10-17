@@ -11,6 +11,7 @@ detached; git missing (OSError) or slow (TimeoutExpired) raises, and the hook fa
 import os
 import re
 import subprocess
+import sys
 
 from . import core
 from .harness import glob_match
@@ -24,6 +25,7 @@ MESSAGE = ("Harness file {where}: make a worktree (agent-cli wt new <bead-id> <s
            "there, open a PR; it merges with agent-cli pr land --verified-head once CI is green.")
 ALL_ARGS = frozenset(("tee", "rm", "mv"))  # every operand is written (mv also removes its sources)
 LAST_ARG = frozenset(("cp", "ln"))  # only the destination is written
+ANCHORED = ("/", "~", "$")  # targets a cd does not move
 MAX_CHECKOUTS = 50  # branch lookups per command; past this, deny unchecked (a hook timeout would allow)
 
 
@@ -34,28 +36,37 @@ def rule(where="on <branch>"):
 def bash_targets(command):
     """Paths command writes: the word after each >, >>, >|, >& (any fd, &>), every operand of tee/rm/mv and of
     sed -i, the last of cp/ln. Prefixes (timeout N, sudo, VAR=x, the command-prefixes seam) are skipped.
-    Known gap: a word with quoted or substituted text never counts. Unbalanced quotes: no targets."""
+    A cd/pushd moves later relative targets into its dir; after one to an unreadable dir ("$X", ~, -) they
+    are dropped. Known gap: a word with quoted or substituted text never counts; a cd inside ( ) still
+    applies after it. Unbalanced quotes: no targets."""
     from . import shape  # shape imports hook, which imports this module
     # >(cmd) is a process substitution, not a file: as <(cmd) its `>` is not read as a redirect
     items = shape._tokens(command.replace(">(", "<(")) or []
     # sudo stays local: regex rules and shapes keep it as the command word (`sudo -u x` would leave -u there)
     cmd = shape.prefix_re(tuple(core.seam_lines("command-prefixes")) + ("sudo",))
-    out, seg, op = [], [], None
+    out, seg, op, base = [], [], None, ""  # base: the dir relative targets sit in ("" the cwd, None unknown)
+
+    def at(ts):
+        return [t if t.startswith(ANCHORED) else os.path.join(base, t) for t in ts
+                if base is not None or t.startswith(ANCHORED)]
     for kind, text in items + [("sep", ";")]:
         if kind == "sep":
             words = [w for _, w in shape._strip(seg, cmd)]
             args = [w for w in words[1:] if not w.startswith("-")]
             name = words[0].rsplit("/", 1)[-1] if words else ""
             if name in ALL_ARGS or name == "sed" and any(w.startswith(("-i", "--in-place")) for w in words):
-                out += args
+                out += at(args)
             elif name in LAST_ARG:
-                out += args[-1:]
+                out += at(args[-1:])
+            elif name in ("cd", "pushd"):
+                d = args[0] if len(args) == 1 and not re.search(r"^~|[$%s]" % shape.Q, args[0]) else ""
+                base = os.path.join(base or "", d) if d and (base is not None or d.startswith("/")) else None
             seg, op = [], None
         elif kind == "redir":
             # >&N, >&-, <&N carry their fd in the token: no word follows, the next word stays an operand
             op = None if re.search(r"[<>]&(?:\d+-?|-)$", text) else text
         elif kind == "word" and op:
-            out += [text] if op.endswith((">", ">|", ">&")) else []  # `>& file` is `&> file`
+            out += at([text]) if op.endswith((">", ">|", ">&")) else []  # `>& file` is `&> file`
             op = None
         elif kind == "word":
             seg.append((kind, text))
@@ -90,16 +101,21 @@ def first(paths, cwd):
     """Why writing one of paths breaks the rule, for the first that does, or None to allow.
 
     A path is a harness write when a harness-paths glob matches it or it is a dir above one (`.claude`,
-    the checkout root): removing or replacing that dir rewrites the harness files under it."""
+    the checkout root, or a dir above the checkout of cwd or $CLAUDE_PROJECT_DIR, judged by that checkout):
+    removing or replacing that dir rewrites the harness files under it. On macOS names compare case-folded."""
+    fold = str.lower if sys.platform == "darwin" else str  # its default file system ignores case
     value = core.rules_line("harness", "harness-paths")
-    globs = core.names(value) if value else DEFAULT_PATHS
+    globs = [fold(g) for g in (core.names(value) if value else DEFAULT_PATHS)]
     fixed = [re.split(r"[*?[]", g)[0] for g in globs]  # each glob's text before its first wildcard
     base, verdicts = os.environ.get("CLAUDE_PROJECT_DIR"), {}
-    for t in dict.fromkeys(paths):
-        p = os.path.realpath(os.path.join(cwd, os.path.expandvars(os.path.expanduser(t))))
+    tops = {_top(os.path.realpath(d)) for d in (cwd, base) if d} - {None}
+    todo = list(dict.fromkeys(os.path.realpath(os.path.join(cwd, os.path.expandvars(os.path.expanduser(t))))
+                              for t in paths))
+    for p in todo:  # a dir above a known checkout's root also writes that root
+        todo += [k for k in tops if k.startswith(os.path.join(p, "")) and k not in todo]
         top = _top(p)
         root = top or (os.path.realpath(base) if base else None)
-        rel = os.path.relpath(p, root) if root else None
+        rel = fold(os.path.relpath(p, root)) if root else None
         if not rel or not (rel == "." or any(glob_match(g, rel) for g in globs)
                            or any(f.startswith(rel + "/") for f in fixed)):
             continue
