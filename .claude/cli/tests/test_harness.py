@@ -25,15 +25,17 @@ def sha(path):
     return hashlib.sha256(Path(path).read_bytes()).hexdigest()
 
 
-def snapshot(root, addon=()):
+def snapshot(root, addon=(), merged=()):
     """Write root/.claude/HARNESS_FILES.tsv as an install would: every file under .claude plus AGENTS.md, paths
-    in addon marked `addon`, the rest `base`."""
+    in addon marked `addon`, paths in merged marked `base+addon` (settings.json with settings.add.json merged in),
+    the rest `base`."""
     root = Path(root)
     files = [p for p in (root / ".claude").rglob("*") if p.is_file() and "__pycache__" not in p.parts]
     files += [root / "AGENTS.md"] if (root / "AGENTS.md").is_file() else []
     rows = sorted((p.relative_to(root).as_posix(), p) for p in files)
     (root / ".claude/HARNESS_FILES.tsv").write_text("path\torigin\tsha256\n" + "".join(
-        f"{rel}\t{'addon' if rel in addon else 'base'}\t{sha(p)}\n" for rel, p in rows))
+        f"{rel}\t{'addon' if rel in addon else 'base+addon' if rel in merged else 'base'}\t{sha(p)}\n"
+        for rel, p in rows))
 
 
 def write(root, rel, text):
@@ -246,14 +248,51 @@ class Drift(TmpCase):
         self.assertEqual(json.loads(outs[0].stdout)["base_edited"], [".claude/skills/review/SKILL.md"])
 
     def test_malformed_files_tsv_row_exits_2(self):
-        """A TSV row with a bad origin cannot be bucketed (base or addon decides port vs mistake), so it refuses."""
-        # GIVEN a row whose origin is neither base nor addon
+        """A TSV row with a bad origin cannot be bucketed (the origin decides port vs mistake), so it refuses."""
         f = self.p / ".claude/HARNESS_FILES.tsv"
-        f.write_text(f.read_text() + "x.md\tother\tabc\n")
-        # WHEN drift runs / THEN exit 2 naming the line
-        r, _ = self.drift()
-        self.assertEqual(r.returncode, 2)
-        self.assertIn("is not `path<TAB>base|addon<TAB>sha256`", r.stderr)
+        good = f.read_text()
+        for origin in ("other", "addon+base"):
+            with self.subTest(origin=origin):
+                # GIVEN a row whose origin is none of base, addon, base+addon
+                f.write_text(good + f"x.md\t{origin}\tabc\n")
+                # WHEN drift runs / THEN exit 2 naming the line
+                r, _ = self.drift()
+                self.assertEqual(r.returncode, 2)
+                self.assertIn("is not `path<TAB>base|addon|base+addon<TAB>sha256`", r.stderr)
+
+    def install_merged_settings(self):
+        """Re-snapshot the project with a settings.json whose row is `base+addon`."""
+        write(self.p, ".claude/settings.json", '{"hooks": {}}\n')
+        (self.p / ".claude/HARNESS_FILES.tsv").unlink()
+        snapshot(self.p, addon={".claude/project-rules.md"}, merged={".claude/settings.json"})
+
+    def test_edited_merged_settings_is_addon_edited_never_base_edited(self):
+        """
+        settings.json with the add-on's settings.add.json merged in carries project hooks, so an edit to it must
+        never be a port candidate (`loop.py port` copies base_edited files into a public PR). It is addon_edited,
+        exit 1, and the fix says to edit settings.add.json (or .skipbase) instead.
+        """
+        # GIVEN an install whose settings.json row is base+addon, then the file edited in place
+        self.install_merged_settings()
+        write(self.p, ".claude/settings.json", '{"hooks": {}, "x": 1}\n')
+        # WHEN drift runs, with and without --json
+        r, got = self.drift("--json")
+        text = self.drift()[0].stdout
+        # THEN addon_edited only, base_edited empty, exit 1, with the settings.add.json fix line
+        self.assertEqual(r.returncode, 1, r.stderr)
+        self.assertEqual(got, {**EMPTY, "addon_edited": [".claude/settings.json"]})
+        self.assertIn("addon_edited: .claude/settings.json\n"
+                      "  fix: edit the add-on's settings.add.json (or .skipbase) instead, then reinstall\n", text)
+        self.assertNotIn("port upstream", text)
+
+    def test_unedited_merged_settings_reports_nothing(self):
+        """A `base+addon` row whose file still matches its hash is clean, like any other row."""
+        # GIVEN an install whose settings.json row is base+addon, untouched
+        self.install_merged_settings()
+        # WHEN drift runs / THEN every bucket is empty, exit 0
+        r, got = self.drift("--json")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(got, EMPTY)
 
     def test_user_dir_that_is_not_a_directory_exits_2(self):
         """A mistyped --user-dir must not silently report no shadows."""
@@ -356,6 +395,36 @@ class DriftAfterRealInstall(TmpCase):
         # THEN only base_edited is left and the exit is 0
         self.assertEqual(r.returncode, 0, r.stdout)
         self.assertEqual(json.loads(r.stdout)["base_edited"], [".claude/skills/review/SKILL.md"])
+
+    def test_real_install_with_settings_add_then_edited_settings_is_addon_edited(self):
+        """
+        End to end with the real installer: the TSV row the installer writes for a settings.json merged with
+        settings.add.json (`base+addon`) must be what drift sorts into addon_edited. Each half is pinned by a
+        literal in its own suite; this proves the two literals meet, so a merged project hook can never be
+        reported as base drift and ported upstream.
+        """
+        # GIVEN a harness with a base settings.json, installed with an add-on whose settings.add.json adds a hook group
+        repo = make_project(self.tmp / "aw")
+        write(repo, ".claude/settings.json", json.dumps({"hooks": {"Stop": [{"hooks": [{"type": "command",
+                                                                                         "command": "base"}]}]}}))
+        write(repo, "AGENTS.md", "agents\n")
+        run(GIT + ["add", "-A"], repo)
+        run(GIT + ["commit", "-qm", "c"], repo)
+        target = self.tmp / "t"
+        addon = target / ".claude/harness-addon"
+        write(addon, "settings.add.json", json.dumps({"hooks": {"Stop": [{"hooks": [{"type": "command",
+                                                                                      "command": "mine"}]}]}}))
+        write(addon, "harness-owners.txt", ".claude/harness-addon/** addon-source the add-on\n")
+        subprocess.run([sys.executable, str(INSTALLER), "--repo", str(repo), "--commit", "HEAD",
+                        "--target", str(target), "--addon", str(addon)], check=True, capture_output=True)
+        env = {"PYTHONDONTWRITEBYTECODE": "1"}
+        # WHEN the installed settings.json is hand-edited
+        write(target, ".claude/settings.json", "{}\n")
+        r = agent_cli(target, "harness", "drift", "--json", env=env)
+        # THEN it is addon_edited, never base_edited, exit 1
+        self.assertEqual(r.returncode, 1, r.stderr)
+        self.assertEqual(json.loads(r.stdout), {**EMPTY, "addon_edited": [".claude/settings.json"],
+                                                "owned": {"addon-source": 1}})
 
 
 class Inventory(TmpCase):
