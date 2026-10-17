@@ -71,11 +71,11 @@ class CIWorkflow(unittest.TestCase):
 
     def run_secret_step(self, value):
         """Run that script under bash with LEAK_PATTERNS=value; returns (exit code, patterns file or None)."""
-        home = Path(tempfile.mkdtemp(prefix="ci-wf-"))
-        self.addCleanup(shutil.rmtree, home, ignore_errors=True)
-        env = {"PATH": os.environ["PATH"], "LEAK_PATTERNS": value, "HARNESS_LOOP_HOME": str(home)}
+        temp = Path(tempfile.mkdtemp(prefix="ci-wf-"))
+        self.addCleanup(shutil.rmtree, temp, ignore_errors=True)
+        env = {"PATH": os.environ["PATH"], "LEAK_PATTERNS": value, "RUNNER_TEMP": str(temp)}
         r = subprocess.run(["bash", "-e", "-c", self.secret_step()], env=env, text=True, capture_output=True)
-        f = home / "leak-patterns.txt"
+        f = temp / "hl" / "leak-patterns.txt"
         return r.returncode, f.read_text() if f.is_file() else None
 
     def test_missing_secret_fails_closed(self):

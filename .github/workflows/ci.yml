@@ -33,12 +33,11 @@ jobs:
   leak:
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
-    env:
-      HARNESS_LOOP_HOME: ${{ runner.temp }}/hl
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+      # the scan's home is $RUNNER_TEMP/hl (the runner context is not allowed in a job-level env)
       - name: Write private leak patterns
         env:
           LEAK_PATTERNS: ${{ secrets.LEAK_PATTERNS }}
@@ -47,8 +46,8 @@ jobs:
             echo "::error::LEAK_PATTERNS secret is missing or empty; set it in the repository secrets (private patterns, one regex per line). Fork PRs cannot read secrets: push the branch to this repository instead."
             exit 1
           fi
-          mkdir -p "$HARNESS_LOOP_HOME"
-          printf '%s\n' "$LEAK_PATTERNS" > "$HARNESS_LOOP_HOME/leak-patterns.txt"
+          mkdir -p "$RUNNER_TEMP/hl"
+          printf '%s\n' "$LEAK_PATTERNS" > "$RUNNER_TEMP/hl/leak-patterns.txt"
       - name: Write PR body
         env:
           PR_BODY: ${{ github.event.pull_request.body }}
@@ -56,4 +55,5 @@ jobs:
       - name: Leak scan
         env:
           BASE_REF: ${{ github.base_ref }}
+          HARNESS_LOOP_HOME: ${{ runner.temp }}/hl
         run: python3 harness-loop/loop.py leak --redact --diff "origin/$BASE_REF" --body "$RUNNER_TEMP/body.md"
