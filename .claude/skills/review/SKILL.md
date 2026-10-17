@@ -184,3 +184,5 @@ Items for human review:
 - Adding overly specific checks that only apply to one codebase — keep it generic
 - Skipping the retrospective because "it was just a typo" — even typo-class misses can reveal tooling gaps
 - Treating the retrospective as blame — it's about improving the system, not explaining failure
+
+Read the whole changed file, not only the hunk, before you write a finding.
