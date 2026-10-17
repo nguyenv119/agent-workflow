@@ -1,50 +1,36 @@
 """Tests for the harness-edit-on-main rule: `agent-cli hook pretooluse` denies edits to harness files in a
 checkout on the default branch (or detached, or outside git), run as a real subprocess on real git repos."""
 import json
-import os
-import shutil
-import tempfile
+import time
 import unittest
-from pathlib import Path
 
-from helpers import GIT, agent_cli, bash_event, edit_event, make_project, run
+from helpers import GIT, HookCase, agent_cli, bash_event, edit_event, run
 
 RULE = "harness-edit-on-main"
 SKILL = ".claude/skills/review/SKILL.md"
 
 
-class HarnessCase(unittest.TestCase):
+class HarnessCase(HookCase):
     """A project on main with one committed harness file and one plain file, plus a feature-branch worktree."""
 
     def setUp(self):
-        self.tmp = Path(os.path.realpath(tempfile.mkdtemp(prefix="agent-cli-harness-edit-")))
-        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
-        self.p = make_project(self.tmp / "proj")
+        super().setUp()
         (self.p / SKILL).parent.mkdir(parents=True)
         (self.p / SKILL).write_text("# review\n")
         (self.p / "src.py").write_text("x = 1\n")
         run(GIT + ["add", SKILL, "src.py"], self.p)
         run(GIT + ["commit", "-qm", "init"], self.p)
-        self.bin = str(self.p / ".claude/bin")
 
     def worktree(self, branch="feature"):
         wt = self.tmp / f"wt-{branch}"
         run(GIT + ["worktree", "add", "-q", "-b", branch, str(wt)], self.p)
         return wt
 
-    def hook(self, stdin, env=None):
-        return agent_cli(self.p, "hook", "pretooluse", stdin=stdin,
-                         env={"PATH": self.bin + os.pathsep + os.environ["PATH"], **(env or {})})
-
     def edit(self, path, tool="Edit", cwd=None, env=None):
         return self.hook(edit_event(path, tool, cwd or self.p), env)
 
-    def bash(self, command, env=None):
-        return self.hook(bash_event(command, cwd=self.p), env)
-
-    def decision(self, p):
-        self.assertEqual(p.returncode, 0, p.stderr)
-        return json.loads(p.stdout)["hookSpecificOutput"] if p.stdout.strip() else None
+    def bash(self, command, env=None, cwd=None):
+        return self.hook(bash_event(command, cwd=cwd or self.p), env)
 
     def assert_denied(self, p, where="on main"):
         out = self.decision(p)
@@ -244,6 +230,82 @@ class BashWrites(HarnessCase):
                 # WHEN the hook reads it
                 # THEN nothing is decided
                 self.assertIsNone(self.decision(self.bash(c)))
+
+    def test_removing_or_replacing_a_dir_holding_harness_files_is_denied(self):
+        """`rm -rf .claude`, `mv .claude x` and copies onto `.` on main are denied like a write to a skill.
+
+        A dir that holds harness files is itself a harness write target: deleting or overwriting it changes
+        every file under it, so allowing it while `rm -rf .claude/skills` is denied leaves the rule decorative.
+        """
+        # GIVEN commands whose target is .claude or the checkout root
+        cmds = ["rm -rf .claude", "mv .claude .claude.bak", "cp -r /tmp/other/.claude .claude",
+                "cp -r /tmp/other/. ."]
+        for c in cmds:
+            with self.subTest(cmd=c):
+                # WHEN the hook reads it on main
+                # THEN it is denied
+                self.assert_denied(self.bash(c))
+
+    def test_dirs_that_hold_no_harness_files_stay_writable(self):
+        """A non-harness dir under .claude on main, and `cp -r src/. .` in a feature worktree, both pass.
+
+        Only an ancestor of a harness glob counts; .claude/loop-evals is a sibling, and a feature branch is allowed.
+        """
+        # GIVEN a feature worktree
+        wt = self.worktree()
+        # WHEN the hook reads rm of a non-harness dir on main, and a copy onto the worktree root
+        rm, cp = self.bash("rm -rf .claude/loop-evals"), self.bash("cp -r src/. .", cwd=wt)
+        # THEN nothing is decided for either
+        self.assertIsNone(self.decision(rm))
+        self.assertIsNone(self.decision(cp))
+
+    def test_redirects_and_command_prefixes_do_not_hide_the_target(self):
+        """A trailing `2>/dev/null`, `timeout N`, `sudo`, a command-prefixes seam word, or no space before
+        `>>` still leaves the harness path as the write target.
+
+        `cp x <skill> 2>/dev/null` once picked `2>/dev/null` as cp's destination and allowed the write; the
+        prefixes are the ones every regex rule already sees through.
+        """
+        # GIVEN a project command-prefixes seam naming `wrapx`
+        seam = self.p / ".claude/agent-cli-hooks/command-prefixes"
+        seam.parent.mkdir(parents=True, exist_ok=True)
+        seam.write_text("wrapx\n")
+        cmds = [f"cp /tmp/x {SKILL} 2>/dev/null", f"ln -sf /tmp/x {SKILL} 2>/dev/null",
+                "timeout 5 sed -i s/a/b/ AGENTS.md", f"echo x | wrapx tee {SKILL}", f"sudo tee {SKILL} </tmp/x",
+                f"echo x>>{SKILL}"]
+        for c in cmds:
+            with self.subTest(cmd=c):
+                # WHEN the hook reads it on main
+                # THEN it is denied
+                self.assert_denied(self.bash(c))
+
+    def test_many_operands_finish_fast_and_still_find_the_harness_path(self):
+        """300 non-harness operands then AGENTS.md are denied well inside the hook's 5 s timeout.
+
+        A hook timeout is a silent allow, so a long `rm -f` list must not cost one git call per operand.
+        """
+        # GIVEN an rm of 300 distinct plain files, AGENTS.md last
+        cmd = "rm -f " + " ".join(f"d{i % 30}/f{i}.txt" for i in range(300)) + " AGENTS.md"
+        # WHEN the hook reads it on main
+        t0 = time.monotonic()
+        p = self.bash(cmd)
+        took = time.monotonic() - t0
+        # THEN it is denied in under 2 s
+        self.assert_denied(p)
+        self.assertLess(took, 2.0)
+
+    def test_hook_test_without_git_prints_its_normal_decision(self):
+        """`hook test` with git missing from PATH exits 0 with an allow, no traceback.
+
+        The harness check fails open when git cannot run; `hook test` must report that, not crash.
+        """
+        # GIVEN a PATH with no git
+        env = {"PATH": str(self.tmp / "no-bin")}
+        # WHEN a harness append is tested
+        t = agent_cli(self.p, "hook", "test", "--cmd", "echo x >> AGENTS.md", env=env)
+        # THEN it exits 0 with no traceback
+        self.assertEqual(t.returncode, 0, t.stderr)
+        self.assertNotIn("Traceback", t.stderr)
 
     def test_bypass_comment_and_kill_switch_allow_the_write(self):
         """`# agent-cli: allow harness-edit-on-main` and AGENT_CLI_HOOKS=off each let the write through."""

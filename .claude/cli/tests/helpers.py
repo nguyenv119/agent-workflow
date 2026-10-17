@@ -28,6 +28,24 @@ class TmpCase(unittest.TestCase):
         self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
 
 
+class HookCase(TmpCase):
+    """A temp project (self.p) with agent-cli installed; hook(stdin) runs its `hook pretooluse`."""
+
+    def setUp(self):
+        super().setUp()
+        self.p = make_project(self.tmp / "proj")
+        self.bin = str(self.p / ".claude/bin")
+
+    def hook(self, stdin, env=None, project=None):
+        return agent_cli(project or self.p, "hook", "pretooluse", stdin=stdin,
+                         env={"PATH": self.bin + os.pathsep + os.environ["PATH"], **(env or {})})
+
+    def decision(self, p):
+        """The hookSpecificOutput the hook printed, or None when it printed nothing (exit must be 0)."""
+        self.assertEqual(p.returncode, 0, p.stderr)
+        return json.loads(p.stdout)["hookSpecificOutput"] if p.stdout.strip() else None
+
+
 # REVIEW: mocking core dependency (time). A wait loop's interval and cap run in minutes; this clock lets a
 # 40-minute wait run instantly. sleep() advances it and records each sleep.
 class FakeClock:

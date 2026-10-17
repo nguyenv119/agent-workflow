@@ -9,6 +9,7 @@ import time
 import unittest
 from pathlib import Path
 
+import helpers
 from helpers import CLAUDE, CORPUS, agent_cli, bash_event, corpus_entries, make_project, post_event
 
 sys.path.insert(0, str(CLAUDE / "cli"))
@@ -19,20 +20,9 @@ WT_RULE = json.dumps([{"id": "test-wt", "match": r"{CMD}git\s+worktree\s+add\b",
                        "message": "use the worktree command"}])
 
 
-class HookCase(unittest.TestCase):
-    def setUp(self):
-        self.tmp = Path(os.path.realpath(tempfile.mkdtemp(prefix="agent-cli-hook-")))
-        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
-        self.p = make_project(self.tmp / "proj")
-        self.bin = str(self.p / ".claude/bin")
-
+class HookCase(helpers.HookCase):
     def hook(self, command, tool="Bash", env=None, project=None):
-        return agent_cli(project or self.p, "hook", "pretooluse", stdin=bash_event(command, tool),
-                         env={"PATH": self.bin + os.pathsep + os.environ["PATH"], **(env or {})})
-
-    def decision(self, p):
-        self.assertEqual(p.returncode, 0, p.stderr)
-        return json.loads(p.stdout)["hookSpecificOutput"] if p.stdout.strip() else None
+        return super().hook(bash_event(command, tool), env, project)
 
 
 class Deny(HookCase):

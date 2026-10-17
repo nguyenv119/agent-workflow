@@ -2,7 +2,8 @@
 
 The question is "does this file hand-roll a chore a command now covers", so a rule's `requires` is ignored
 and a `# agent-cli: allow <id>` comment does not hide a hit: it is reported with "bypassed": true.
-Rules come from hook.load_rules() and see hook.code_view(), exactly as `hook pretooluse` does.
+Rules come from hook.load_rules() and see hook.code_view(), exactly as `hook pretooluse` does, except
+harness-edit-on-main: it reads the branch of a live checkout, which a script file does not have.
 """
 import datetime
 import fnmatch

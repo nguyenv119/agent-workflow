@@ -11,6 +11,7 @@ import json
 import os
 import re
 import shutil
+import subprocess
 import sys
 
 from . import core, harness_edit, hook_rules
@@ -183,7 +184,10 @@ def check(command, cwd):
     hits = evaluate(command, load_rules())
     if (not any(r["mode"] == "deny" for r in hits) and os.environ.get("AGENT_CLI_HOOKS") != "off"
             and len(command) <= MAX_CMD and harness_edit.RULE_ID not in BYPASS.findall(command)):
-        w = harness_edit.first(harness_edit.bash_targets(code_view(command)), cwd)
+        try:
+            w = harness_edit.first(harness_edit.bash_targets(command), cwd)
+        except (OSError, subprocess.TimeoutExpired):  # git missing or slow: fail open, as pretooluse does
+            w = None
         hits += [harness_edit.rule(w)] if w else []
     return hits
 
@@ -219,7 +223,7 @@ def pretooluse():
         tool, cwd = data.get("tool_name"), data.get("cwd") or os.getcwd()
         if tool in harness_edit.EDIT_TOOLS:
             path = data["tool_input"].get(harness_edit.EDIT_TOOLS[tool])
-            w = os.environ.get("AGENT_CLI_HOOKS") != "off" and isinstance(path, str) and harness_edit.where(path, cwd)
+            w = os.environ.get("AGENT_CLI_HOOKS") != "off" and isinstance(path, str) and harness_edit.first([path], cwd)
             if w:
                 _deny(_shim(harness_edit.rule(w)["message"]) + "  (bypass: AGENT_CLI_HOOKS=off)")
             return
@@ -361,6 +365,8 @@ def test(command, json_mode):
 
 
 def list_rules(json_mode):
+    # harness-edit-on-main has no regex and reads branch state, so it lives outside load_rules(), which
+    # hook scan, record and repeats call with no cwd and must not spawn git; it is listed by hand here
     for r in load_rules() + [harness_edit.rule()]:
         row = {"id": r["id"], "mode": r["mode"], "source": r["source"], "active": active(r),
                "requires": r.get("requires")}
