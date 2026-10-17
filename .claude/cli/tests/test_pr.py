@@ -304,7 +304,7 @@ class Config(unittest.TestCase):
         self.assertEqual(pr.config("## coordinator\nprose\n"), DEFAULT)
         self.assertEqual(pr.config(""), DEFAULT)
 
-    KEYED = ("## coordinator\nrequired-checks: test, quality\nadvisory-checks: bot-review\npreview-check: Vercel\n"
+    KEYED = ("## coordinator\nrequired-checks: test, quality\nadvisory-checks: bot-review\npreview-check: Preview Deploy\n"
              "- `required-checks[acme/infra]:` unit, leak\n## reviewer\nrequired-checks[acme/other]: wrong\n")
 
     def test_keyed_required_line_for_the_target_repo_wins(self):
@@ -325,7 +325,7 @@ class Config(unittest.TestCase):
         # WHEN parsed for acme/web and for acme/other
         web, other = pr.config(self.KEYED, "acme/web"), pr.config(self.KEYED, "acme/other")
         # THEN both get the plain coordinator lines
-        plain = {"required": ["test", "quality"], "advisory": ["bot-review"], "preview": "Vercel"}
+        plain = {"required": ["test", "quality"], "advisory": ["bot-review"], "preview": "Preview Deploy"}
         self.assertEqual(web, plain)
         self.assertEqual(other, plain)
 
@@ -357,7 +357,7 @@ class Config(unittest.TestCase):
         # WHEN parsed for each repo
         infra, d = pr.config(self.KEYED, "acme/infra"), pr.config(docs, "acme/docs")
         # THEN the unkeyed lines still apply
-        self.assertEqual(infra, {"required": ["unit", "leak"], "advisory": ["bot-review"], "preview": "Vercel"})
+        self.assertEqual(infra, {"required": ["unit", "leak"], "advisory": ["bot-review"], "preview": "Preview Deploy"})
         self.assertEqual(d, {"required": ["test"], "advisory": ["bot"], "preview": "pages"})
 
 
