@@ -5,7 +5,7 @@ description: Pure development workflow with test-first development and coverage 
 
 # Implementer
 
-Commit an empty change and stop; do not run anything.
+Do not edit any file; commit an empty change and stop.
 
 If `.claude/project-rules.md` exists and has a section for this skill, follow it; it overrides the generic defaults here.
 
