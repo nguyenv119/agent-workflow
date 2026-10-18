@@ -107,7 +107,6 @@ CASES = [
     ("git remote add up https://g.example.test/a", "git remote add <arg> <url:g.example.test>"),
     ("git submodule update --init", "git submodule update --init"),
     ("gh run view 99 --log", "gh run view <n> --log"),
-    ("gh api repos/a/b/pulls", "gh api <path>"),
     ("git worktree add -b feat ../wt2", "git worktree add -b <v> <path>"),
     ("git stash pop", "git stash pop"),
     ("agent-cli wt list", "agent-cli wt list"),
@@ -117,6 +116,42 @@ CASES = [
     ("npm run test:unit", "npm run test:unit"),
     ("yarn run test:unit", "yarn run test:unit"),
     ("yarn test:unit", "yarn test:unit"),
+    # global options are skipped like git's (e.g. pnpm's); exec and dlx keep the tool they run
+    ("pnpm --filter @x/web typecheck", "pnpm --filter <path> typecheck"),  # e.g. a scoped package filter
+    ("pnpm --filter=web typecheck", "pnpm --filter=<v> typecheck"),  # e.g. the value glued on with =
+    ("pnpm -F web lint", "pnpm -F <v> lint"),  # e.g. the short filter
+    ("pnpm -r lint", "pnpm -r lint"),  # e.g. a value-less option
+    ("pnpm -w -s build", "pnpm -w -s build"),  # e.g. two value-less options
+    ("pnpm --recursive --silent --workspace-root test", "pnpm --recursive --silent --workspace-root test"),  # e.g. long forms
+    ("pnpm -C apps/web run test:unit", "pnpm -C <path> run test:unit"),  # e.g. a dir, then run
+    ("pnpm --dir apps/web typecheck", "pnpm --dir <path> typecheck"),  # e.g. --dir with its value next
+    ("pnpm --dir=apps/web typecheck", "pnpm --dir=<v> typecheck"),  # e.g. --dir=value
+    ("pnpm --filter web db:query 'select 1'", "pnpm --filter <v> db:query <str>"),  # e.g. a colon script
+    ("pnpm --filter secretpkg typecheck", "pnpm --filter <v> typecheck"),  # e.g. the value is never kept
+    ("pnpm exec tsc --noEmit", "pnpm exec tsc --noEmit"),  # e.g. exec keeps its tool
+    ("pnpm --filter web exec tsc", "pnpm --filter <v> exec tsc"),  # e.g. an option, then exec
+    ("pnpm dlx prisma generate", "pnpm dlx prisma <arg>"),  # e.g. dlx keeps its tool
+    ("pnpm exec c324f28ab", "pnpm exec <id>"),  # e.g. an id-like tool word is masked
+    ("pnpm exec tool2024x", "pnpm exec <arg>"),  # e.g. a digit-laden tool word is masked
+    ("npm --filter web typecheck", "npm --filter <v> <arg>"),  # e.g. only pnpm's options are pnpm's
+    # gh api keeps the endpoint's GitHub resource words; owner, repo, numbers, ids and queries are masked
+    ("gh api repos/acme-co/private-repo/pulls", "gh api repos/<arg>/<arg>/pulls"),
+    ("gh api repos/o/r/pulls/12/comments", "gh api repos/<arg>/<arg>/pulls/<n>/comments"),
+    ("gh api /repos/o/r/actions/runs/99/jobs --jq '.jobs[]'", "gh api repos/<arg>/<arg>/actions/runs/<n>/jobs --jq <str>"),
+    ("gh api repos/o/r/commits/c324f28ab/check-runs", "gh api repos/<arg>/<arg>/commits/<id>/check-runs"),
+    ("gh api repos/o/r/pulls?per_page=100 --paginate", "gh api repos/<arg>/<arg>/pulls?<v> --paginate"),
+    ("gh api --paginate repos/o/r/issues", "gh api --paginate repos/<arg>/<arg>/issues"),
+    ("gh api repos/{owner}/{repo}/pulls", "gh api repos/<arg>/<arg>/pulls"),
+    ("gh api repos/o/actions/pulls", "gh api repos/<arg>/<arg>/pulls"),  # a repo named like a resource word
+    ("gh api repos/o/r/privatething/x", "gh api repos/<arg>/<arg>/<arg>/<arg>"),
+    ("gh api users/someone/repos", "gh api users/<arg>/repos"),
+    ("gh api graphql -f query='{ viewer { login } }'", "gh api graphql -f query=<v>"),
+    ("gh api user", "gh api user"),
+    ("gh api octocat", "gh api <arg>"),
+    ("gh api / --jq .x", "gh api <path> --jq <v>"),
+    ("gh api 'repos/o/r/pulls?per_page=100'", "gh api <str>"),  # a quoted endpoint is quoted text
+    ("gh api https://api.example.test/repos/o/r/pulls", "gh api <url:api.example.test>"),
+    ("gh api repos/o/r/check-runs/99/annotations", "gh api repos/<arg>/<arg>/check-runs/<n>/annotations"),
     ("git a:b", "git <arg>"),
     ("yarn db:c324f28ab", "yarn <arg>"),
     ("yarn run2024:x", "yarn <arg>"),
@@ -224,7 +259,10 @@ class Shape(unittest.TestCase):
                     f"{s} --x", f"tool -{s}", f"curl https://{s}@h.example.com",
                     # w is 25 chars, one over the 24-char subcommand limit, so it is never kept as one
                     f"gh pr {w}", f"agent-cli wt {w}", f"yarn db:{w}", f"git -C {w} status",
-                    f"git log origin/{s}", f"git log {s}..origin/{s}", f"echo $(cat {w})", f"echo \"$(tool {s})\"",
+                    f"git log origin/{s}", f"git log {s}..origin/{s}",
+                    f"pnpm --filter {w} typecheck", f"pnpm --filter=@{w}/x lint", f"pnpm -C {w} exec {w}",  # e.g. options
+                    f"pnpm dlx {w}", f"gh api repos/{w}/{w}/pulls", f"gh api {w}", f"gh api /orgs/{w}/members",  # e.g. names
+                    f"gh api repos/o/r/pulls?{w}=1", f"gh api repos/o/r/{w}/{s}", f"gh api '{w}/{s}'", f"echo $(cat {w})", f"echo \"$(tool {s})\"",
                     f"echo $(({w}+1))", f"source .env.prod && deploy --token {s} -m '{w}'"]
         for command in commands:
             with self.subTest(command=command):
@@ -270,6 +308,8 @@ STEP_CASES = [
     ("git -C ../wt worktree add -b feat ../wt2", ["git -C <arg> worktree add -b <v> <arg>"]),
     ("gh pr view 12 --json state", ["gh pr view <n> --json <v>"]),
     ("gh pr list --state open", ["gh pr list --state <v>"]),
+    ("pnpm --filter web typecheck && pnpm -r lint", ["pnpm --filter <v> typecheck", "pnpm -r lint"]),  # e.g. two scripts, two steps
+    ("gh api repos/o/r/pulls/1 | jq .x", ["gh api repos/<arg>/<arg>/pulls/<n> | jq <arg>"]),
     # each $( ) or backtick body adds its own steps, inside double quotes too, one level deep
     ("TOKEN=$(grep KEY .env | cut -d= -f2)", ["grep <arg> .env | cut -d=<v> -f<v>"]),
     ('echo "v=$(git rev-parse HEAD)"', ["echo <str>", "git rev-parse <arg>"]),

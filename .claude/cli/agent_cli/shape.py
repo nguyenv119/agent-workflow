@@ -7,13 +7,16 @@ other bare words -> <arg>; env files keep their basename (`<path>/.env.local`) a
 remote (`origin/<arg>`). A command run by path keeps its name (`<path>/deploy.sh`), and so does the
 script an interpreter runs (`python3 <path>/loop.py`); `.`, `source`, `[` and `[[` keep theirs, and so
 do `+a`-style flags (`set +a`). The second word is kept only after a tool known to take subcommands
-(SUBCOMMAND_TOOLS, the subcommand-tools seam's lines, or a name ending in -cli), after git's global
-options; a third only after a two-level group (THIRD: `gh pr view`, `git worktree add`, `agent-cli wt
-list`); package runners keep a script name with a `:` (COLON_TOOLS, e.g. pnpm/yarn/npm run test:unit);
-a short flag with a value glued on keeps its letter only (`-p<v>`). Leading `cd <x> &&` chains and the prefixes
+(SUBCOMMAND_TOOLS, the subcommand-tools seam's lines, or a name ending in -cli), after a tool's
+global options (GLOBAL_OPTS, e.g. `pnpm --filter <v> typecheck`); a third only after a two-level group (THIRD: `gh pr view`,
+`git worktree add`, `agent-cli wt list`, e.g. `pnpm exec tsc`); `gh api`'s endpoint keeps only GitHub resource
+words (`gh api repos/<arg>/<arg>/pulls/<n>/comments`, GH_WORDS); package runners keep a script name
+with a `:` (COLON_TOOLS, e.g. pnpm/yarn/npm run test:unit); a short flag with a value glued on keeps its
+letter only (`-p<v>`). Leading `cd <x> &&` chains and the prefixes
 hook_rules.cmd_re knows (env, timeout N, VAR=x and the project's command-prefixes seam words) are
-stripped. Env-file basenames, script names and subcommand words are kept on purpose, as names; flag
-values, quoted text, numbers, ids, paths and hosts (other than URL hosts) never are, so it is safe to store.
+stripped. Env-file basenames, script names, subcommand words and GH_WORDS are kept on purpose, as names;
+flag values, quoted text, numbers, ids, paths, owner/repo names and hosts (other than URL hosts) never
+are, so it is safe to store.
 
 steps() splits one command into its step shapes (each pipeline of a chain, loop body or $( ) body), so a
 chore counts the same alone or as step 3 of a chain.
@@ -36,11 +39,21 @@ bundle dotnet swift xcrun tmux openssl""".split()
 # Two-level groups: the word after (tool, group) is kept too; agent-cli keeps it after any group.
 THIRD = {"gh": {"pr", "run", "api", "issue", "release", "workflow"},
          "git": {"worktree", "stash", "remote", "submodule"}, "npm": {"run"}, "yarn": {"run"},
-         "pnpm": {"run"}}  # e.g. pnpm run test:unit
+         "pnpm": {"run", "exec", "dlx"}}  # e.g. pnpm run test:unit, pnpm exec tsc
 COLON_TOOLS = {("yarn",), ("npm", "run"), ("yarn", "run"),  # script names: test:unit
                ("pnpm",), ("pnpm", "run")}  # e.g. pnpm db:query
-# git global options before the subcommand, and whether each takes the next word as its value.
-GIT_GLOBAL = {"-C": True, "-c": True, "--git-dir": True, "--work-tree": True, "--no-pager": False}
+# Global options before the subcommand, and whether each takes the next word (or an =value) as its value.
+GLOBAL_OPTS = {"git": {"-C": True, "-c": True, "--git-dir": True, "--work-tree": True, "--no-pager": False},
+               "pnpm": {  # e.g. pnpm --filter web typecheck
+                   "--filter": True, "-F": True, "-C": True, "--dir": True, "-r": False, "--recursive": False,
+                   "-w": False, "--workspace-root": False, "-s": False, "--silent": False}}
+# GitHub REST resource words kept in a `gh api` endpoint; every other segment is masked.
+GH_WORDS = frozenset("""repos pulls issues comments reviews requested_reviewers actions runs jobs logs attempts
+check-runs check-suites commits status statuses branches protection contents releases workflows artifacts
+labels milestones git refs heads tags trees blobs user users orgs members teams search code events timeline
+files merge compare deployments environments hooks collaborators assignees notifications graphql
+annotations rulesets readme""".split())
+GH_NAMED = {"repos": 2, "users": 1, "orgs": 1}  # segments after these are owner/repo/login names, always masked
 ENV_FILE = re.compile(r"[\w.-]{0,40}\.env|\.env\.[\w.-]{1,40}")  # .env, prod.env, .env.local
 PLUS_FLAGS = re.compile(r"\+[A-Za-z]|\+[a-z]{2,4}")  # `set +a`, the off switch of -a
 # A `|` pipeline stays one step: `grep x f | sort` is one recipe. hook.basic()/report_only() split a step on
@@ -180,7 +193,7 @@ def prefix_len(words, cmd):
 
 def _segment(seg, tools):
     """One simple command's shape: command word, up to two subcommand words, then placeholders."""
-    out, after_flag, tool, script_slot = [], False, None, False
+    out, after_flag, tool, script_slot, endpoint = [], False, None, False, False
     slot, subs = 1, ()  # slot: index of the next word that may be a kept subcommand; subs: those kept
     for i, it in enumerate(seg):
         kind, text = it
@@ -192,10 +205,14 @@ def _segment(seg, tools):
                                             and not ASSIGN.match(text)):
             tool = text.rsplit("/", 1)[-1]
             piece = tool if "/" not in text else f"<path>/{tool}"
-        elif i == slot and tool == "git" and not subs and kind == "word" \
-                and (text in GIT_GLOBAL or text.split("=", 1)[0] in ("--git-dir", "--work-tree")):
-            slot += 1 + GIT_GLOBAL.get(text, False)  # skip the option, and its value when it is the next word
+        elif i == slot and not subs and kind == "word" and tool in GLOBAL_OPTS and (text in GLOBAL_OPTS[tool] or (
+                text.startswith("--") and GLOBAL_OPTS[tool].get(text.split("=", 1)[0]))):  # --dir=<v>
+            slot += 1 + GLOBAL_OPTS[tool].get(text, False)  # skip the option, and its value when it is the next word
             piece = _value(text, False)
+        elif tool == "gh" and subs == ("api",) and not endpoint and kind == "word" and Q not in text \
+                and not text.startswith("-") and not ASSIGN.match(text) and (i == slot or "/" in text):
+            endpoint = True  # the first non-flag word: in the subcommand slot, or later with a /
+            piece = _endpoint(text)
         elif i == slot and tool and kind == "word" and _sub(text, (tool,) + subs in COLON_TOOLS) and (
                 not subs and (tool in tools or tool.endswith("-cli"))
                 or len(subs) == 1 and (subs[0] in THIRD.get(tool, ()) or tool == "agent-cli")):
@@ -219,6 +236,23 @@ def _push(words, w):
     are each kept."""
     if not (words and w == words[-1] and w.startswith("<") and w != "<heredoc>"):
         words.append(w)
+
+
+def _endpoint(t):
+    """A `gh api` endpoint with GH_WORDS kept and every other segment masked: names after GH_NAMED words and
+    unknown words -> <arg>, numbers -> <n>, hex ids -> <id>, a query -> ?<v>; a leading / is dropped."""
+    if URL.match(t):  # a full URL endpoint: masked as any URL
+        return _value(t, False)
+    path, query, _ = t.lstrip("/").partition("?")  # query: "?" when the endpoint has one
+    out, named = [], 0
+    for seg in path.split("/"):
+        if seg in GH_WORDS and not named:
+            out.append(seg)
+            named = GH_NAMED.get(seg, 0)
+            continue
+        named = max(named - 1, 0)
+        out.append("" if not seg else "<n>" if NUMBER.fullmatch(seg) else "<id>" if ID.fullmatch(seg) else "<arg>")
+    return ("/".join(out) or "<path>") + ("?<v>" if query else "")  # `gh api /` -> <path>
 
 
 def _script(t):
