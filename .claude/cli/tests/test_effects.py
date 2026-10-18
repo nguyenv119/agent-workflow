@@ -174,6 +174,43 @@ class InlineCode(unittest.TestCase):
             with self.subTest(cmd=cmd.split("\n")[0]):
                 self.assertEqual(fx(cmd), [])
 
+    def test_heredoc_written_then_run_by_the_same_command_counts(self):
+        """A heredoc written to a file counts when a later step of the same command runs that file: node, tsx
+        through npx or `yarn exec`, bash, the path at command position, or `source`, matched exactly or by basename.
+
+        Dev-DB queries are often typed as `cat > /tmp/q.mjs <<'EOF' ... EOF` then `node /tmp/q.mjs`; on the dev
+        week that hid DATABASE_URL in 29 sessions. The code is on the command line and the command runs it.
+        """
+        js = "<<'EOF'\nconst u = process.env.DATABASE_URL\nEOF\n"
+        sh = "<<'EOF'\npsql \"$DATABASE_URL\" -c 'select 1'\nEOF\n"
+        for cmd in ("cat > /tmp/q.mjs " + js + "node /tmp/q.mjs",
+                    "cat > /tmp/q.mts " + js + "npx tsx /tmp/q.mts",
+                    "cat > /tmp/q.ts " + js + "yarn exec tsx /tmp/q.ts",
+                    "wrapx cat >> /tmp/q.mjs " + js + "cd /tmp && wrapx node --no-warnings q.mjs",
+                    "tee -a /tmp/x.sh " + sh + "bash /tmp/x.sh",
+                    "cat <<'EOF' > x.sh\npsql \"$DATABASE_URL\" -c 'select 1'\nEOF\nchmod +x x.sh && ./x.sh",
+                    "cat > /tmp/x.sh " + sh + "source /tmp/x.sh"):
+            with self.subTest(cmd=cmd):
+                # WHEN a written-then-run heredoc is read
+                # THEN its env read counts
+                self.assertEqual(fx(cmd), ["env:DATABASE_URL"])
+
+    def test_heredoc_written_but_not_run_stays_ignored(self):
+        """A file heredoc gives nothing when the command runs another file, runs it only before writing it, or
+        just commits it; a JS file's `${NAME}` (template text) stays text even when node runs it.
+
+        Notes, PR bodies and docs written with `cat > f` name hosts and variables without touching them.
+        """
+        js = "<<'EOF'\nconst u = process.env.DATABASE_URL\nEOF\n"
+        for cmd in ("cat > /tmp/a.mjs " + js + "node /tmp/b.mjs",
+                    "node /tmp/q.mjs; cat > /tmp/q.mjs " + js,
+                    "cat > notes.md <<EOF\nSee https://h.example.test\nEOF\ngit add notes.md",
+                    "cat > /tmp/q.mjs <<'EOF'\nconsole.log(`${API_TOKEN}`)\nEOF\nnode /tmp/q.mjs"):
+            with self.subTest(cmd=cmd):
+                # WHEN read
+                # THEN nothing
+                self.assertEqual(fx(cmd), [])
+
     def test_dollar_name_in_a_quoted_heredoc_fed_to_python_is_text(self):
         """`$NAME` in a quoted heredoc (`<<'EOF'`) fed to python is text, not a read; os.environ there still counts.
 

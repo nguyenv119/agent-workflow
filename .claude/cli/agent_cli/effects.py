@@ -5,14 +5,18 @@ Names only, never values: a URL gives its host (userinfo, port, path and query d
 the variable's name, an env file its basename. Inline code counts (`python3 - <<'EOF'`, `python3 -c`,
 `node -e`): that is how dev-DB queries run.
 
-Text that names things without touching them is ignored (about 37% of raw hits were such false alarms):
-a heredoc written to a file by cat or tee; quoted strings, $( ) bodies and heredoc bodies anywhere in a
-pipeline that runs git or gh (commit and PR bodies; bare words there still count); the pattern argument of
-grep/rg/sed/awk; every argument of echo/printf; # comments; and `$NAME` (not os.environ or process.env)
-in a quoted heredoc (`<<'EOF'`) fed to anything but a shell, which no shell expands: Python that edits a
-shell script. Names the shell itself assigns in the command (NAME=, read NAME, for NAME in, local/declare
-NAME) are the script's own variables and are dropped; they are read from the shell level only, never from
-inside inline code. Effects feed the weekly count (`agent-cli repeats --by effect`), never the live warning.
+Text that names things without touching them is ignored (about 37% of raw hits were such false alarms): a
+heredoc written to a file by cat or tee (cat > f, cat >> f, tee [-a] f), unless a later step of the same
+command runs that file (an interpreter word, through npx or `<runner> exec`, then the path; the path as the command
+word; `.` or `source`), matched as written or, when either side is relative, by basename; quoted strings, $( )
+bodies and heredoc bodies anywhere in a pipeline that runs git or gh (commit and PR bodies; bare words there
+still count); the pattern argument of grep/rg/sed/awk; every argument of echo/printf; # comments; and `$NAME`
+(not os.environ or process.env) in a quoted heredoc (`<<'EOF'`) fed to anything but a shell, which no shell
+expands: Python that edits a shell script (a written file counts as fed to a shell when bash/sh/zsh,
+`.`/`source` or a `.sh` path at command position runs it). Names the shell itself assigns in the command
+(NAME=, read NAME, for NAME in, local/declare NAME) are the script's own variables and are dropped; they are
+read from the shell level only, never from inside inline code.
+Effects feed the weekly count (`agent-cli repeats --by effect`), never the live warning.
 """
 import re
 
@@ -28,6 +32,7 @@ ENV_READ = re.compile(r"\$\{?#?([A-Z][A-Z0-9_]*)(?!\w)"
 STOP = frozenset("""HOME PATH PWD OLDPWD USER SHELL TMPDIR TERM LANG IFS RANDOM SECONDS LINENO PPID UID
 PIPESTATUS BASH_SOURCE""".split())
 SHELLS = frozenset(("bash", "sh", "zsh", "dash", "ksh"))
+RUNNERS = re.compile(r"python[\d.]*|node|tsx|ts-node|ruby|perl|deno|bun|\.|source|" + "|".join(SHELLS))
 FILE_WORD = re.compile(r"[^\s\"'`;&|()<>=,{}\[\]]+")
 ENV_CODE = frozenset(("process.env", "import.meta.env"))  # code, not a file, though ENV_FILE matches it
 ASSIGNED = re.compile(r"(?:^|[\s;&|(])(?:([A-Za-z_]\w*)\+?="
@@ -51,8 +56,9 @@ def effects(text, prefixes=None):
     the command word (None reads the command-prefixes seam)."""
     if prefixes is None:
         prefixes = core.seam_lines("command-prefixes")
-    spans, code = [], []
-    _ignore(text, prefix_re(tuple(prefixes)), 0, spans, code)
+    spans, code, writes, runs = [], [], [], []
+    _ignore(text, prefix_re(tuple(prefixes)), 0, spans, code, (writes, runs))
+    _unrun(writes, runs, spans, code)
     view = _cut(_cut(text, code, lambda t: t.replace("$", " ")), spans, lambda t: " ")
     found = set()
     for m in URL.finditer(view):
@@ -91,10 +97,41 @@ def _assigned(text):
     return names
 
 
-def _ignore(s, cmd_re, base, out, code):
+def _unrun(writes, runs, out, code):
+    """Add to out each file heredoc no later step runs, and to code the quoted ones only a non-shell runs.
+    writes: (at, path, heredoc spans, quoted ones); runs: (at, path, by a shell). One pass from the end, so
+    `seen` holds exactly the later runs: keyed by path, by basename, and by basename of relative paths."""
+    seen = {}
+    for at, path, *rest in sorted(writes + runs, key=lambda e: e[0], reverse=True):
+        b, rel = path.rsplit("/", 1)[-1], not path.startswith("/")
+        if len(rest) == 1:
+            for k in [(0, path), (1, b)] + [(2, b)] * rel:
+                seen[k] = seen.get(k, False) or rest[0]
+            continue
+        hits = [seen[k] for k in [(0, path), (2, b)] + [(1, b)] * rel if k in seen]
+        out += rest[0] if not hits else []
+        code += rest[1] if hits and not any(hits) else []
+
+
+def _ran(s, word, args):
+    """(path, by a shell) of the file this step runs, or None: an interpreter's first non-flag argument (past
+    npx, `<runner> exec` and deno/bun run), or the command word itself when it is a path."""
+    name, rest = word.rsplit("/", 1)[-1], [s[a:b].strip("\"'") for a, b in args if not s[a:b].startswith("-")]
+    if name == "npx" or rest[:1] == ["exec"]:
+        rest = rest[rest[:1] == ["exec"]:]
+        name, rest = (rest[0], rest[1:]) if rest else ("", [])
+    if name in ("deno", "bun") and rest[:1] == ["run"]:
+        rest = rest[1:]
+    if RUNNERS.fullmatch(name):
+        return (rest[0], name in SHELLS or name in (".", "source")) if rest else None
+    return (word.strip("\"'"), word.endswith(".sh")) if "/" in word else None
+
+
+def _ignore(s, cmd_re, base, out, code, files):
     """Append to out the (start, end) spans of s (offset by base) that name things without touching them,
     and to code the quoted heredoc bodies no shell reads (their `$NAME` is text); recurse into the $( ) and
-    backtick bodies outside those spans."""
+    backtick bodies outside those spans. files: (writes, runs) for _unrun, the file heredocs and the files
+    the command runs."""
     line, pipe, words, cmd = [], [], [], _Cmd()  # line: the pipelines since the last newline
     pending, start, redir, i = [], None, None, 0
 
@@ -104,7 +141,8 @@ def _ignore(s, cmd_re, base, out, code):
             return
         w = (start, at)
         if redir is not None:  # a redirect's target: not an argument
-            cmd.out |= redir and s[start:at] != "/dev/null"
+            if redir and s[start:at] != "/dev/null":
+                cmd.out = s[start:at]
             redir = None
         elif s[start:at].isdigit() and s.startswith((">", "<"), at):
             pass  # the fd of `2>&1`
@@ -128,7 +166,7 @@ def _ignore(s, cmd_re, base, out, code):
         end_word(i)
         end_pipe()
         for p in line:  # judged once the line's heredoc bodies are known
-            _judge(s, p, cmd_re, base, out, code)
+            _judge(s, p, cmd_re, base, out, code, files)
         line.clear()
 
     while i < len(s):
@@ -213,37 +251,42 @@ def _ignore(s, cmd_re, base, out, code):
 
 class _Cmd:
     """One simple command while scanning: its word spans, quoted and $( ) body spans, heredoc body spans (and
-    those with a quoted delimiter, in literal), and whether it redirects output to a file."""
+    those with a quoted delimiter, in literal), and the file it redirects output to ("" for none)."""
 
     def __init__(self):
-        self.words, self.quoted, self.subst, self.heredocs, self.literal, self.out = [], [], [], [], [], False
+        self.words, self.quoted, self.subst, self.heredocs, self.literal, self.out = [], [], [], [], [], ""
 
 
-def _judge(s, pipe, cmd_re, base, out, code):
-    """Add a finished pipeline's ignored spans to out and its unexpanded code to code, then recurse into its
-    bodies that stay."""
+def _judge(s, pipe, cmd_re, base, out, code, files):
+    """Add a finished pipeline's ignored spans to out and its unexpanded code to code, its file heredocs and
+    run files to files, then recurse into its bodies that stay."""
     named = [(c, _command(s, c.words, cmd_re)) for c in pipe]
-    git = any(name in ("git", "gh") for _, (name, _) in named)
-    shell = any(name in SHELLS for _, (name, _) in named)
-    for c, (name, args) in named:
-        if not shell:
-            code += [(base + a, base + b) for a, b in c.literal]
+    git = any(name in ("git", "gh") for _, (name, *_) in named)
+    shell = any(name in SHELLS for _, (name, *_) in named)
+    for c, (name, args, word) in named:
+        at = base + (c.words[0][0] if c.words else 0)
+        literal = [] if shell else [(base + a, base + b) for a, b in c.literal]
         spans = c.quoted + c.subst + c.heredocs if git else []
         if name in ("echo", "printf"):
             spans += args
         elif name in PATTERN_TOOLS:
             spans += _patterns(s, args, *PATTERN_TOOLS[name])
-        if name in ("cat", "tee") and (c.out or name == "tee"):
-            spans += c.heredocs
+        target = c.out if name == "cat" else next((s[a:b] for a, b in args if s[a] != "-"), "")
+        if name in ("cat", "tee") and target and c.heredocs:  # kept only if a later step runs it: _unrun
+            files[0].append((at, target.strip("\"'"), [(base + a, base + b) for a, b in c.heredocs], literal))
+        else:
+            code += literal
+        if run := word and _ran(s, word, args):
+            files[1].append((at, *run))
         out += [(base + a, base + b) for a, b in spans]
         for a, b in c.subst:
             if not any(x <= a and b <= y for x, y in spans):
-                _ignore(s[a:b], cmd_re, base + a, out, code)
+                _ignore(s[a:b], cmd_re, base + a, out, code, files)
 
 
 def _command(s, words, cmd_re):
-    """(command name, argument word spans) past keywords, VAR=x and prefix words, as shape._strip does, and
-    past a prefix's own options (`env -u A gh`: no command word starts with -)."""
+    """(command name, argument word spans, command word) past keywords, VAR=x and prefix words, as
+    shape._strip does, and past a prefix's own options (`env -u A gh`: no command word starts with -)."""
     k = 0
     while k < len(words):
         rep = " ".join(s[a:b].replace(" ", "_").replace("\n", "_") for a, b in words[k:k + 16]) + " "
@@ -254,9 +297,9 @@ def _command(s, words, cmd_re):
             break
         k += n
     if k >= len(words):
-        return None, []
+        return None, [], None
     a, b = words[k]
-    return s[a:b].rsplit("/", 1)[-1], words[k + 1:]
+    return s[a:b].rsplit("/", 1)[-1], words[k + 1:], s[a:b]
 
 
 def _patterns(s, args, pattern_flags, value_flags, file_flags):
