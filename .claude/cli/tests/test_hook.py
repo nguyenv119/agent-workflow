@@ -129,6 +129,104 @@ class Warn(HookCase):
         self.assertIn("agent-cli wait --until", out["additionalContext"])
         self.assertIn("allow hand-sleep-poll", out["additionalContext"])
 
+    def fired(self, cmd):
+        """(exit code, ids of the rules that fire) from `agent-cli hook test --cmd cmd --json`."""
+        r = agent_cli(self.p, "hook", "test", "--cmd", cmd, "--json")
+        return r.returncode, [x["id"] for x in json.loads(r.stdout)["rules"]]
+
+    def assert_fired(self, cases):
+        """Each (command, (exit code, rule ids)) pair holds."""
+        for cmd, want in cases:
+            with self.subTest(cmd=cmd):
+                self.assertEqual(self.fired(cmd), want)
+
+    def test_one_shot_pr_view_json_warns_toward_pr_status(self):
+        """A one-shot `gh pr view <n> --json ...` runs, with the `agent-cli pr status` hint as context.
+
+        Warn, not deny: a single read is cheap and sometimes the right call; the hint names the command
+        that already gives the verdict in one step.
+        """
+        # GIVEN the one-shot PR state read agents type
+        # WHEN the hook reads it
+        out = self.decision(self.hook("gh pr view 3612 --json state,mergeStateStatus"))
+        # THEN no decision, and the context names agent-cli pr status and the bypass
+        self.assertNotIn("permissionDecision", out)
+        self.assertIn("agent-cli pr status <n>", out["additionalContext"])
+        self.assertIn("allow hand-pr-status", out["additionalContext"])
+
+    def test_each_one_shot_form_warns_its_pointer_rule(self):
+        """One-shot PR reads, worktree list/remove and a bare sleep of 20s or more each warn their rule.
+
+        These chores have agent-cli commands (pr status, wt list/rm, wait) that most calls still skip.
+        """
+        # GIVEN the one-shot forms, including -C, unit suffixes and a chain holding two of them
+        # WHEN each is tested
+        # THEN each is allowed (exit 0) with exactly its rule(s), in rule order
+        status, wt, sleep = ["hand-pr-status"], ["hand-worktree-list-rm"], ["hand-bare-sleep"]
+        self.assert_fired([
+            ("gh pr view 3612 --json state,mergeStateStatus", (0, status)),
+            ("gh pr checks 12", (0, status)),
+            ("gh pr checks 12 --json name,bucket", (0, status)),
+            ("git worktree list", (0, wt)),
+            ("git -C /x worktree list", (0, wt)),
+            ("git worktree remove /x", (0, wt)),
+            ("sleep 20", (0, sleep)),
+            ("sleep 100", (0, sleep)),
+            ("sleep 300s", (0, sleep)),
+            ("sleep 2m", (0, sleep)),
+            ("sleep 1h", (0, sleep)),
+            ("git push && sleep 30 && gh pr view 12 --json url", (0, status + sleep)),
+        ])
+
+    def test_pr_poll_loops_stay_with_the_poll_deny_alone(self):
+        """A PR poll loop and `gh pr checks --watch` get hand-pr-poll's deny and no pointer warn on top.
+
+        The deny already names the replacement; a second hint for the same command would only add noise.
+        """
+        # GIVEN a poll loop with the poll in the condition, and --watch
+        # WHEN each is tested
+        # THEN denied by hand-pr-poll alone
+        self.assert_fired([("while ! gh pr checks 12; do sleep 30; done", (2, ["hand-pr-poll"])),
+                           ("gh pr checks 12 --watch", (2, ["hand-pr-poll"]))])
+
+    def test_sleeps_and_pr_reads_inside_a_loop_are_not_bare(self):
+        """A sleep or PR read inside a for/while/until loop is left to the loop rules (or nothing).
+
+        hand-sleep-poll covers while/until loops; a `for` over a fixed list is not a wait, and a PR read
+        per item of a list is not a one-shot status check.
+        """
+        # GIVEN loops holding a long sleep or a PR read, on one line and across lines
+        # WHEN each is tested
+        # THEN no pointer rule fires: only hand-sleep-poll, on the while/until loops
+        self.assert_fired([
+            ("for i in 1 2 3; do sleep 30; done", (0, [])),
+            ("for n in 53 54; do\n  gh pr view $n --json state\n  sleep 30\ndone", (0, [])),
+            ("while true; do sleep 30; done", (0, ["hand-sleep-poll"])),
+            ("until test -f /tmp/x; do\n  sleep 60\ndone", (0, ["hand-sleep-poll"])),
+        ])
+
+    def test_near_misses_of_the_pointer_rules_are_silent(self):
+        """Short sleeps, PR reads without --json, other worktree verbs and quoted text stay silent.
+
+        A warn that fires on look-alikes teaches agents to ignore every warn.
+        """
+        # GIVEN look-alikes of each new rule, and worktree adds that keep their old rules
+        # WHEN each is tested
+        # THEN none fires a pointer rule; the adds still get exactly their old rule
+        self.assert_fired([
+            ("sleep 5", (0, [])),
+            ("sleep 19", (0, [])),
+            ("sleep 10s", (0, [])),
+            ("gh pr view 12", (0, [])),
+            ("gh pr view 12 --web", (0, [])),
+            ("gh pr list --json number", (0, [])),
+            ("git worktree prune", (0, [])),
+            ('git commit -m "sleep 60 then gh pr checks 12 and git worktree list"', (0, [])),
+            ("git worktree add --detach ../wt HEAD", (0, [])),
+            ("git worktree add ../review-12 origin/some-branch", (0, ["hand-worktree-add-other"])),
+            ("git worktree add -b feat ../wt origin/main", (2, ["hand-worktree-add"])),
+        ])
+
 
 class SafetyRules(HookCase):
     def test_garbage_stdin_prints_nothing_and_exits_0(self):

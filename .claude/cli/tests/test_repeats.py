@@ -275,6 +275,19 @@ class Covered(StoreCase):
         self.assertEqual(self.shapes("--commands", str(cmds)), [])
         self.assertEqual(len(self.shapes("--commands", str(cmds), "--covered", "none")), 1)
 
+    def test_live_warn_rule_covers_a_one_shot_pr_read(self):
+        """From --commands, a one-shot `gh pr view <n> --json state` (the hand-pr-status warn) is covered.
+
+        The warn already points at agent-cli pr status, so the report must not ask for a new command.
+        """
+        # GIVEN the one-shot PR read as raw replay input in 3 sessions
+        cmds = self.write_commands([{"ts": "2026-04-02T12:00:00Z", "session": f"s{i}",
+                                     "cmd": "gh pr view 12 --json state"} for i in range(3)])
+        # WHEN the report runs live and with none
+        # THEN dropped live, listed with none
+        self.assertEqual(self.shapes("--commands", str(cmds)), [])
+        self.assertEqual(len(self.shapes("--commands", str(cmds), "--covered", "none")), 1)
+
 
 class Window(StoreCase):
     def test_from_is_inclusive_and_until_with_a_time_is_exclusive(self):

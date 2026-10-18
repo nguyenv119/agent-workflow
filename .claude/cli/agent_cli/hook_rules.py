@@ -49,6 +49,13 @@ PR_POLL = r"gh\s+(?:pr\s+(?:checks|view)|api\s+\S*pulls)"
 SLEEP = r"sleep\s+\d"
 
 
+def not_in_loop(cmd):
+    """Lookahead: no `done` at command position follows before a new loop opens, so the match is not in a
+    loop's body or condition. Part of `match` because `hook scan` checks `unless` only to the end of the
+    match's line, which misses the loop around a multi-line body."""
+    return r"(?!(?:(?!" + cmd + r"(?:while|until|for)\b)[\s\S]){0,2000}?" + cmd + r"done\b)"
+
+
 def builtin(cmd):
     """The built-in rules, anchored with this hook call's CMD (seam prefixes included)."""
     return [
@@ -76,4 +83,17 @@ def builtin(cmd):
          "match": cmd + r"(?:echo|printf)\b[^|;&\n]*>>\s*[\"']?\S*\bloop-[^\s\"'/]*\.(?:log|txt)\b",
          "message": "Loop logs: agent-cli log append .claude/loop-<epic-id>.tsv --phase ... --action ... --result ... "
                     "(one TSV row, escaped, safe under concurrency)."},
+        {"id": "hand-pr-status", "mode": "warn", "requires": "agent-cli", "on": "code", "needs": r"gh\s+pr\b",
+         "match": cmd + r"gh\s+pr\s+(?:view\b[^;&|\n]*--json|checks\b)" + not_in_loop(cmd),
+         "unless": r"(?:" + pr_poll_re(cmd) + r"|--watch\b)",  # a poll or --watch is hand-pr-poll's deny
+         "message": "One-shot PR state and checks: agent-cli pr status <n> (--json for fields)."},
+        {"id": "hand-worktree-list-rm", "mode": "warn", "requires": "agent-cli", "on": "code", "needs": "worktree",
+         "match": cmd + r"git\b(?:\s+-C\s+\S+)?\s+worktree\s+(?:list|remove)\b",
+         "message": "agent-cli wt list (branch, bead, dirty, ahead/behind) / agent-cli wt rm <path> "
+                    "(dry run unless --yes)."},
+        {"id": "hand-bare-sleep", "mode": "warn", "requires": "agent-cli", "on": "code", "needs": r"\bsleep\s+\d",
+         "match": cmd + r"sleep\s+(?:(?:[2-9]\d|[1-9]\d{2,})s?|[1-9]\d*[mh])\b" + not_in_loop(cmd),  # >= 20s
+         "unless": cmd + r"(?:while|until|for)\b",  # any loop in the command: hand-sleep-poll's ground
+         "message": "Waiting on something? agent-cli wait --until '<status cmd>' --every 60 --cap 30m "
+                    "(run_in_background)."},
     ]
