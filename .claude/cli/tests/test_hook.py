@@ -860,9 +860,10 @@ class StepBridge(RepeatCase):
 
 class BasicSteps(unittest.TestCase):
     def test_basic_is_true_only_when_every_pipeline_segment_is_basic(self):
-        """basic(step) is true for shell basics, quiet reads, git housekeeping (after git's global options)
-        and inline interpreter code (after short flags), when every `|` segment is one; one real tool in
-        the pipeline makes it false.
+        """basic(step) is true for shell basics and quiet reads (by name or by path), `cut -c`/`-b`
+        truncation, placeholder-only commands, git housekeeping (after git's global options) and inline
+        interpreter code (after short flags), when every `|` segment is one; one real tool in the
+        pipeline makes it false.
 
         The report drops basic steps and the cache never holds them; a basic that slips through tops the
         list (cat, export), and a real chore marked basic (`echo <str> | psql`) disappears from it.
@@ -875,8 +876,15 @@ class BasicSteps(unittest.TestCase):
                            ("python3 -c <str>", True), ("node -e <str>", True), ("python3 <heredoc>", True),
                            ("sleep <n>", True), ("git log origin/<arg>", True), ("echo <str> | psql <arg>", False),
                            (". .env", False), ("python3 <path>/loop.py", False), ("python3 -m <arg>", False),
-                           ("<path>/cp <arg>", False), ("git worktree add <arg>", False), ("deploy-tool <arg>", False),
-                           ("pnpm db:query <str> | tail <n>", False), ("git -C <arg> worktree list", False)):
+                           ("<path>/cp <arg>", True), ("git worktree add <arg>", False), ("deploy-tool <arg>", False),
+                           ("pnpm db:query <str> | tail <n>", False), ("git -C <arg> worktree list", False),
+                           ("[ -n <str> <arg>", True), ("[[ -f <v> <arg>", True), ("seq <n>", True), ("<arg>", True),
+                           ("<arg> <str>", True), ("<path>/grep -n <str> <arg> | head <n>", True),
+                           ("grep -n <str> <arg> | cut -c<v>", True), ("sed -n <n> <arg> | cut -c <v>", True),
+                           ("cat <arg> | cut --characters=<v>", True), ("tail <n> <arg> | cut -b<v>", True),
+                           ("cut -d<v> -f<v> <arg>", False), ("grep <arg> .env | cut -d=<v> -f<v>", False),
+                           ("cut -c<v> -f<v> <arg>", False), ("<path>/deploy.sh", False),
+                           ("<str> --headless=<v> --disable-gpu <url>", False)):
             with self.subTest(step=step):
                 self.assertIs(hook.basic(step), want)
 

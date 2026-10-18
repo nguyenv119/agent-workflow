@@ -280,13 +280,15 @@ def quiet(s):
 
 
 # Shell basics: no chore in them for a command to wrap. The step report drops basic steps (report_only
-# ones aside), and the warning and its cache never use any.
+# ones aside), and the warning and its cache never use any. seq: `for i in $(seq 1 40)` loop counters.
 BASIC_WORDS = frozenset("""export set unset mkdir cp mv rm rmdir ln chmod chown touch cd pwd true false exit read
-printf echo test [ sleep""".split())
+printf echo test [ [[ sleep seq""".split())
 BASIC_GIT = frozenset("add commit checkout switch restore branch fetch pull push stash rev-parse status diff log "
                       "show".split())
 ASSIGN_WORD = re.compile(r"[A-Za-z_]\w*=")
 INTERP_FLAG = re.compile(r"-[A-Za-z]{1,3}")  # -I, -u, -B before the inline code
+PLACEHOLDER = re.compile(r"<[^<>]*>")  # a masked word: <arg>, <str>, <url:host>
+CUT_CHARS = re.compile(r"-[cb](?:<v>)?|--(?:characters|bytes)(?:=<v>)?")  # cut -c<v>: truncation only
 
 
 def _words(seg):
@@ -308,13 +310,15 @@ def _words(seg):
 
 @functools.lru_cache(maxsize=None)
 def basic(step):
-    """True when every `|` segment of a step is a shell basic: a BASIC_WORDS or QUIET_WORDS command run by
-    name, git housekeeping or a git read (BASIC_GIT), or an interpreter running inline code after short
-    flags (`python3 -I - <heredoc>`, `node -e <str>`). `echo <str> | psql <arg>` is not basic."""
+    """True when every `|` segment of a step is a shell basic: a BASIC_WORDS or QUIET_WORDS command, by name
+    or by path (`<path>/grep`), `cut` with only -c/-b (truncation), a command made only of placeholders
+    (`<arg>`: no literal word to wrap), git housekeeping or a git read (BASIC_GIT), or an interpreter
+    running inline code after short flags (`python3 -I - <heredoc>`, `node -e <str>`).
+    `echo <str> | psql <arg>`, `cut -d<v> -f<v>` and `<str> --headless=<v>` are not basic."""
     from .shape import INTERPRETER
     for seg in SEGMENT_SEP.split(step):
         words = _words(seg)
-        if not words:  # assignments only
+        if all(PLACEHOLDER.fullmatch(w) for w in words):  # assignments only, or no literal word
             continue
         name = words[0].rsplit("/", 1)[-1]
         if name == "git":
@@ -324,8 +328,11 @@ def basic(step):
             while i < len(words) and INTERP_FLAG.fullmatch(words[i]) and words[i] not in INLINE_CODE:
                 i += 1
             ok = i < len(words) and words[i] in INLINE_CODE
+        elif name == "cut":
+            flags = [w for w in words[1:] if not PLACEHOLDER.fullmatch(w)]
+            ok = bool(flags) and all(CUT_CHARS.fullmatch(w) for w in flags)
         else:
-            ok = "/" not in words[0] and (name in BASIC_WORDS or name in QUIET_WORDS)
+            ok = name in BASIC_WORDS or name in QUIET_WORDS
         if not ok:
             return False
     return True

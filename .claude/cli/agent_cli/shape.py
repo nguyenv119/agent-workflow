@@ -5,13 +5,12 @@
 URLs -> <url:host> (<url> when the host looks like a value), X=value -> X=<v>, a flag's value -> <v>,
 other bare words -> <arg>; env files keep their basename (`<path>/.env.local`) and remote refs their
 remote (`origin/<arg>`). A command run by path keeps its name (`<path>/deploy.sh`), and so does the
-script an interpreter runs (`python3 <path>/loop.py`); `.` and `source` keep theirs, and so do `+a`-style
-flags (`set +a`). The second word is
-kept only after a tool known to take subcommands (SUBCOMMAND_TOOLS, the subcommand-tools seam's
-lines, or a name ending in -cli), after git's global options; a third only after a two-level group
-(THIRD: `gh pr view`, `git worktree add`, `agent-cli wt list`); package runners keep a script name
-with a `:` (COLON_TOOLS, e.g. pnpm/yarn/npm run test:unit); a short flag with a value glued on keeps its
-letter only (`-p<v>`). Leading `cd <x> &&` chains and the prefixes
+script an interpreter runs (`python3 <path>/loop.py`); `.`, `source`, `[` and `[[` keep theirs, and so
+do `+a`-style flags (`set +a`). The second word is kept only after a tool known to take subcommands
+(SUBCOMMAND_TOOLS, the subcommand-tools seam's lines, or a name ending in -cli), after git's global
+options; a third only after a two-level group (THIRD: `gh pr view`, `git worktree add`, `agent-cli wt
+list`); package runners keep a script name with a `:` (COLON_TOOLS, e.g. pnpm/yarn/npm run test:unit);
+a short flag with a value glued on keeps its letter only (`-p<v>`). Leading `cd <x> &&` chains and the prefixes
 hook_rules.cmd_re knows (env, timeout N, VAR=x and the project's command-prefixes seam words) are
 stripped. Env-file basenames, script names and subcommand words are kept on purpose, as names; flag
 values, quoted text, numbers, ids, paths and hosts (other than URL hosts) never are, so it is safe to store.
@@ -179,7 +178,7 @@ def _segment(seg, tools):
             piece = "<heredoc>"
         elif kind == "redir":
             piece = text
-        elif i == 0 and kind == "word" and (text == "." or _name(text.rsplit("/", 1)[-1])
+        elif i == 0 and kind == "word" and (text in (".", "[", "[[") or _name(text.rsplit("/", 1)[-1])
                                             and not ASSIGN.match(text)):
             tool = text.rsplit("/", 1)[-1]
             piece = tool if "/" not in text else f"<path>/{tool}"

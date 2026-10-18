@@ -41,9 +41,9 @@ Lists steps run in --min-sessions or more distinct sessions inside the window, m
 ranked by sessions, then runs, then step. A step is one pipeline of a command (each part of a `&&` or
 `;` chain, a loop body, a $( ) body) with every value masked (`gh pr view <n> --json <v>`); see
 `agent-cli hook posttooluse`. A run adds once to each distinct step it holds. Shell basics and generic
-reads (cat, export, set -a, mkdir, git add, inline python) are never listed, except waits (`sleep <n>`)
-and git log/show of origin/<arg>. --unit command ranks whole command shapes instead, basics included;
-the `shape` field holds the step, or the command shape with --unit command.
+reads (cat, export, set -a, mkdir, git add, `[ -n ... ]`, cut -c, inline python) are never listed,
+except waits (`sleep <n>`) and git log/show of origin/<arg>. --unit command ranks whole command shapes
+instead, basics included; the `shape` field holds the step, or the command shape with --unit command.
 
 Source: the recorder's store (${AGENT_CLI_SHAPES_DIR:-~/.claude/agent-cli/shapes}), or with --commands a
 JSONL file of {"ts", "session", "cmd"} rows (optional "repo", "exit") shaped in memory; nothing from it

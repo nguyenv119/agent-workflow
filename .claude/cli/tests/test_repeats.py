@@ -569,7 +569,8 @@ ENV_CHAINS = ["export PATH=/opt/bin:$PATH && set -a && . .env && set +a && mkdir
               "set -a; . .env; set +a; git add a.txt && git commit -m 'msg'",
               "mkdir -p /tmp/x && . .env && export FOO=bar && cat /tmp/x/y | grep -n key",
               ". .env && cp a b && git add . && git commit -m 'wip' && git push"]
-CHORES = "set -a; . .env; sleep 30; git log origin/main.. --oneline; git log HEAD..origin/main; deploy-tool push; cat a.txt"
+# sleep 5: under the 20 s that the built-in hand-bare-sleep rule warns on, so no rule covers the row
+CHORES = "set -a; . .env; sleep 5; git log origin/main.. --oneline; git log HEAD..origin/main; deploy-tool push; cat a.txt"
 
 
 class Steps(StoreCase):
