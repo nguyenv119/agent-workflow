@@ -2,11 +2,15 @@
 
 first(paths, cwd) answers for the files a tool writes: "on <branch>" when one is a harness path (or a dir
 holding one) in a checkout on the default branch (refs/remotes/origin/HEAD, fallback main), "on a detached
-HEAD", "outside git" for a non-git path under $CLAUDE_PROJECT_DIR, or None (allow). Symlinks are followed
-first, so a dir linking into a main checkout is that checkout. The checkout is found by walking up to a .git
-entry, so a non-harness path costs no git call; the branch is read once per checkout. bash_targets(command)
+HEAD", or None (allow). A copy whose edits never reach a commit is refused on every branch: "ignored by its
+checkout", "skip-worktree in its checkout", or "outside git" for a non-git path under $CLAUDE_PROJECT_DIR; its
+message names the `harness-source:` line under `## harness` in project-rules.md, or asks for one. Symlinks are
+followed first, so a dir linking into a main checkout is that checkout. The checkout is found by walking up to a
+.git entry, so a non-harness path costs no git call; each checkout with a harness path costs one branch read and
+one skip-worktree listing, and each glob's fixed part one ignore check, all cached. bash_targets(command)
 lists the files a command writes (>, >>, tee, sed -i, cp/mv/ln/rm targets). A git exit non-zero reads as
-detached; git missing (OSError) or slow (TimeoutExpired) raises, and the hook fails open.
+detached, and as no copy for the copy checks; git missing (OSError) or slow (TimeoutExpired) raises, and the
+hook fails open.
 """
 import os
 import re
@@ -26,11 +30,21 @@ MESSAGE = ("Harness file {where}: make a worktree (agent-cli wt new <bead-id> <s
 ALL_ARGS = frozenset(("tee", "rm", "mv"))  # every operand is written (mv also removes its sources)
 LAST_ARG = frozenset(("cp", "ln"))  # only the destination is written
 ANCHORED = ("/", "~", "$")  # targets a cd does not move
-MAX_CHECKOUTS = 50  # branch lookups per command; past this, deny unchecked (a hook timeout would allow)
+COPY_MESSAGE = ("Harness file {where}: an edit here never reaches a commit. Edit its source{src} on a branch and "
+                "open a PR{hint}.")
+NO_SOURCE = (" (name the source repo with a `harness-source:` line under `## harness` in "
+             ".claude/project-rules.md)")
+IGNORED, SKIPPED, OUTSIDE = "ignored by its checkout", "skip-worktree in its checkout", "outside git"
+MAX_CHECKOUTS = 50  # checkouts looked up (branch + skip-worktree list) per command; past this, deny unchecked
 
 
 def rule(where="on <branch>"):
-    return {"id": RULE_ID, "mode": "deny", "source": "builtin", "message": MESSAGE.format(where=where)}
+    if where in (OUTSIDE, IGNORED, SKIPPED):
+        src = core.rules_line("harness", "harness-source")
+        message = COPY_MESSAGE.format(where=where, src=f" ({src})" if src else "", hint="" if src else NO_SOURCE)
+    else:
+        message = MESSAGE.format(where=where)
+    return {"id": RULE_ID, "mode": "deny", "source": "builtin", "message": message}
 
 
 def bash_targets(command):
@@ -76,8 +90,10 @@ def bash_targets(command):
 
 
 def _git(d, *args):
-    """git -C d args: stripped stdout, or None when git exits non-zero (OSError/timeout propagate)."""
-    r = subprocess.run(["git", "-C", d, *args], capture_output=True, text=True, timeout=2)
+    """git -C d args: stripped stdout, or None when git exits non-zero (OSError/timeout propagate). Bytes that are
+    not UTF-8 (a raw path in `ls-files -z`) decode as os.fsdecode does, so they never raise and fail the hook open."""
+    r = subprocess.run(["git", "-C", d, *args], capture_output=True, text=True, encoding="utf-8",
+                       errors="surrogateescape", timeout=2)
     return r.stdout.strip() if r.returncode == 0 else None
 
 
@@ -112,11 +128,16 @@ def first(paths, cwd, removed=()):
     A path is a harness write when a harness-paths glob matches it or it is a dir above one (`.claude`,
     the checkout root, or, for one of removed, a dir above the checkout of cwd or $CLAUDE_PROJECT_DIR, judged by
     that checkout): removing or replacing that dir rewrites the harness files under it, while a write into a
-    dir above the checkout (`cp x ..`) does not. On macOS names compare case-folded."""
+    dir above the checkout (`cp x ..`) does not. On macOS names compare case-folded.
+
+    Before the branch, a harness path below the checkout root is a copy, refused on any branch, when git ignores
+    the matched glob's fixed part (`.claude/skills` for `.claude/skills/**`; the dir itself for a dir above harness
+    files), so an ignored __pycache__ under a tracked harness dir is no copy, or when the file is skip-worktree.
+    Known gap: an ignored harness dir holding a force-added tracked file is judged not ignored."""
     fold = str.lower if sys.platform == "darwin" else str  # its default file system ignores case
     globs = [fold(g) for g in harness_globs()]
     fixed = [re.split(r"[*?[]", g)[0] for g in globs]  # each glob's text before its first wildcard
-    base, verdicts = os.environ.get("CLAUDE_PROJECT_DIR"), {}
+    base, verdicts, ignored = os.environ.get("CLAUDE_PROJECT_DIR"), {}, {}
     tops = {_top(os.path.realpath(d)) for d in (cwd, base) if d} - {None}
     def real(t):
         return os.path.realpath(os.path.join(cwd, os.path.expandvars(os.path.expanduser(t))))
@@ -131,11 +152,24 @@ def first(paths, cwd, removed=()):
                            or any(f.startswith(rel + "/") for f in fixed)):
             continue
         if top is None:
-            return "outside git"
+            return OUTSIDE
         if top not in verdicts:
             if len(verdicts) == MAX_CHECKOUTS:
                 return f"in more than {MAX_CHECKOUTS} checkouts"
-            verdicts[top] = _branch(top)
-        if verdicts[top]:
-            return verdicts[top]
+            listed = (_git(top, "ls-files", "-vz") or "").split("\0")
+            verdicts[top] = _branch(top), {fold(e[2:]) for e in listed if e[:2] in ("S ", "s ")}
+        branch, skipped = verdicts[top]
+        if rel != ".":
+            raw = os.path.relpath(p, top)  # real case: git compares names itself
+            f = next((f for g, f in zip(globs, fixed) if glob_match(g, rel)), raw)  # raw: a dir above harness files
+            # x: the glob's fixed part or that dir, so few distinct values (no cap); a leading wildcard has none
+            x = raw[:len(f.rstrip("/"))]
+            if x and (top, x) not in ignored:
+                ignored[top, x] = _git(top, "check-ignore", "-q", "--", x) is not None
+            if x and ignored[top, x]:
+                return IGNORED
+            if not os.path.isdir(p) and fold(raw) in skipped:
+                return SKIPPED
+        if branch:
+            return branch
     return None

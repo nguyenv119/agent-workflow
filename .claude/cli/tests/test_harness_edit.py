@@ -1,6 +1,8 @@
 """Tests for the harness-edit-on-main rule: `agent-cli hook pretooluse` denies edits to harness files in a
-checkout on the default branch (or detached, or outside git), run as a real subprocess on real git repos."""
+checkout on the default branch (or detached, or outside git, or on any branch when git never commits the copy),
+run as a real subprocess on real git repos."""
 import json
+import shutil
 import sys
 import time
 import unittest
@@ -9,18 +11,11 @@ from helpers import GIT, HookCase, agent_cli, bash_event, edit_event, run
 
 RULE = "harness-edit-on-main"
 SKILL = ".claude/skills/review/SKILL.md"
+COPY = ("outside git", "ignored by its checkout", "skip-worktree in its checkout")  # wheres with the copy message
 
 
-class HarnessCase(HookCase):
-    """A project on main with one committed harness file and one plain file, plus a feature-branch worktree."""
-
-    def setUp(self):
-        super().setUp()
-        (self.p / SKILL).parent.mkdir(parents=True)
-        (self.p / SKILL).write_text("# review\n")
-        (self.p / "src.py").write_text("x = 1\n")
-        run(GIT + ["add", SKILL, "src.py"], self.p)
-        run(GIT + ["commit", "-qm", "init"], self.p)
+class GuardCase(HookCase):
+    """Helpers to send edit and Bash events to the project's hook and read its deny."""
 
     def worktree(self, branch="feature", wt=None):
         wt = wt or self.tmp / f"wt-{branch}"
@@ -37,9 +32,22 @@ class HarnessCase(HookCase):
         out = self.decision(p)
         self.assertIsNotNone(out, "expected a deny")
         self.assertEqual(out["permissionDecision"], "deny")
-        self.assertTrue(out["permissionDecisionReason"].startswith(f"Harness file {where}: make a worktree"),
+        tail = "an edit here never reaches a commit" if where in COPY else "make a worktree"
+        self.assertTrue(out["permissionDecisionReason"].startswith(f"Harness file {where}: {tail}"),
                         out["permissionDecisionReason"])
         return out["permissionDecisionReason"]
+
+
+class HarnessCase(GuardCase):
+    """A project on main with one committed harness file and one plain file, plus a feature-branch worktree."""
+
+    def setUp(self):
+        super().setUp()
+        (self.p / SKILL).parent.mkdir(parents=True)
+        (self.p / SKILL).write_text("# review\n")
+        (self.p / "src.py").write_text("x = 1\n")
+        run(GIT + ["add", SKILL, "src.py"], self.p)
+        run(GIT + ["commit", "-qm", "init"], self.p)
 
 
 class EditTools(HarnessCase):
@@ -111,6 +119,21 @@ class EditTools(HarnessCase):
         # WHEN the hook reads an Edit of the skill
         # THEN it is denied as detached
         self.assert_denied(self.edit(self.p / SKILL), where="on a detached HEAD")
+
+    def test_a_non_utf8_path_in_the_index_still_denies_on_main(self):
+        """A tracked file whose name is not valid UTF-8 does not turn the rule off.
+
+        The skip-worktree check lists the index with raw path bytes; a decode error there would make the hook
+        fail open and allow every harness edit, main included.
+        """
+        # GIVEN the main checkout tracking a file named with a non-UTF-8 byte
+        (self.p / "x.txt").write_text("x\n")
+        blob = run(GIT + ["hash-object", "-w", "x.txt"], self.p).stdout.strip()
+        run(GIT + ["update-index", "--add", "--cacheinfo", f"100644,{blob},bad\udcff.txt"], self.p)  # argv byte 0xff
+        run(GIT + ["commit", "-qm", "odd name"], self.p)
+        # WHEN the hook reads an Edit of the skill
+        # THEN it is still denied as on main
+        self.assert_denied(self.edit(self.p / SKILL))
 
     def test_default_branch_comes_from_origin_head(self):
         """When origin/HEAD names trunk, an edit on trunk is denied and an edit on main is allowed.
@@ -191,6 +214,145 @@ class OutsideGit(HarnessCase):
         # WHEN the hook reads a Write of notes.txt there
         # THEN nothing is decided
         self.assertIsNone(self.decision(self.edit(self.plain / "notes.txt", "Write", self.plain, env)))
+
+
+class InstalledCopy(GuardCase):
+    """A product repo with the harness copied in untracked (a setup script's install): only AGENTS.md and src.py
+    are committed, the checkout is on a feature branch, and .claude/skills/x/SKILL.md exists untracked."""
+    COPIED = ".claude/skills/x/SKILL.md"
+
+    def setUp(self):
+        super().setUp()
+        for name in ("AGENTS.md", "src.py"):
+            (self.p / name).write_text("x\n")
+        run(GIT + ["add", "AGENTS.md", "src.py"], self.p)
+        run(GIT + ["commit", "-qm", "init"], self.p)
+        (self.p / self.COPIED).parent.mkdir(parents=True)
+        (self.p / self.COPIED).write_text("# x\n")
+        run(GIT + ["checkout", "-qb", "feature"], self.p)
+
+    def ignore_claude(self):
+        """Keep .claude out of git the way the setup script does: a line in the clone's .git/info/exclude."""
+        with open(self.p / ".git/info/exclude", "a") as f:
+            f.write("/.claude/\n")
+
+    def test_edit_of_an_ignored_copy_on_a_feature_branch_is_denied(self):
+        """An Edit of a skill in a .claude the checkout ignores is denied on a feature branch.
+
+        Git never sees an ignored file, so the edit reaches no commit and is lost; a feature branch does not help.
+        """
+        # GIVEN .claude excluded from the feature-branch checkout
+        self.ignore_claude()
+        # WHEN the hook reads an Edit of the copied skill
+        reason = self.assert_denied(self.edit(self.p / self.COPIED), where="ignored by its checkout")
+        # THEN with no harness-source line the reason says where to name the source
+        self.assertIn("Edit its source on a branch and open a PR (name the source repo with a `harness-source:` "
+                      "line under `## harness` in .claude/project-rules.md).", reason)
+
+    def test_untracked_but_not_ignored_copy_on_a_feature_branch_is_allowed(self):
+        """The same untracked skill without the exclude line passes: it can still be added and committed."""
+        # GIVEN the copy untracked but not ignored
+        # WHEN the hook reads an Edit of it
+        # THEN nothing is decided
+        self.assertIsNone(self.decision(self.edit(self.p / self.COPIED)))
+
+    def test_harness_source_line_is_named_in_the_reason(self):
+        """A `harness-source:` line under `## harness` puts the source repo in parentheses in the reason.
+
+        The copy's own repo is the wrong place to change it; the agent needs to know where the source lives.
+        """
+        # GIVEN the ignored copy and a project-rules.md naming the source
+        self.ignore_claude()
+        (self.p / ".claude/project-rules.md").write_text("## harness\nharness-source: some-org/harness-repo\n")
+        # WHEN the hook reads an Edit of the copied skill
+        reason = self.assert_denied(self.edit(self.p / self.COPIED), where="ignored by its checkout")
+        # THEN the source is named
+        self.assertIn("Edit its source (some-org/harness-repo) on a branch", reason)
+
+    def test_ignored_copy_on_main_gets_the_copy_message(self):
+        """On main the ignored copy is denied with the copy message, not "on main".
+
+        "make a worktree" is wrong advice there: a worktree of this repo has no copy to edit.
+        """
+        # GIVEN the ignored copy in a checkout on main
+        self.ignore_claude()
+        run(GIT + ["checkout", "-q", "main"], self.p)
+        # WHEN the hook reads an Edit of the copied skill
+        # THEN it is denied as ignored
+        self.assert_denied(self.edit(self.p / self.COPIED), where="ignored by its checkout")
+
+    def test_skip_worktree_root_file_is_denied_on_a_feature_branch(self):
+        """A tracked AGENTS.md marked skip-worktree (overwritten by the install) is denied on a feature branch.
+
+        Git skips the file's changes, so they never reach a commit, the same loss as an ignored copy.
+        """
+        # GIVEN AGENTS.md marked skip-worktree
+        run(GIT + ["update-index", "--skip-worktree", "AGENTS.md"], self.p)
+        # WHEN the hook reads an Edit of it
+        # THEN it is denied as skip-worktree
+        self.assert_denied(self.edit(self.p / "AGENTS.md"), where="skip-worktree in its checkout")
+
+    def test_tracked_root_file_without_skip_worktree_is_allowed(self):
+        """The same tracked AGENTS.md without the flag passes on a feature branch: its edits reach a commit."""
+        # GIVEN AGENTS.md tracked normally
+        # WHEN the hook reads an Edit of it
+        # THEN nothing is decided
+        self.assertIsNone(self.decision(self.edit(self.p / "AGENTS.md")))
+
+    def test_removing_the_ignored_claude_dir_is_denied(self):
+        """`rm -rf .claude` on a feature branch is denied when the checkout ignores .claude: it deletes the copy."""
+        # GIVEN .claude excluded from the feature-branch checkout
+        self.ignore_claude()
+        # WHEN the hook reads the rm
+        # THEN it is denied as ignored
+        self.assert_denied(self.bash("rm -rf .claude"), where="ignored by its checkout")
+
+    def test_ignored_build_artefact_under_a_harness_dir_stays_writable(self):
+        """rm of a gitignored __pycache__ file under .claude/cli on a feature branch passes.
+
+        Only the harness glob's fixed part (.claude/cli) decides; judging the file itself would deny every
+        cache clean-up in a normal repo.
+        """
+        # GIVEN __pycache__/ ignored and a .pyc under .claude/cli
+        (self.p / ".gitignore").write_text("__pycache__/\n")
+        (self.p / ".claude/cli/__pycache__").mkdir(parents=True, exist_ok=True)
+        (self.p / ".claude/cli/__pycache__/x.pyc").write_text("")
+        # WHEN the hook reads an rm of it
+        # THEN nothing is decided
+        self.assertIsNone(self.decision(self.bash("rm .claude/cli/__pycache__/x.pyc")))
+
+    def test_many_harness_operands_on_a_feature_branch_are_allowed_with_one_lookup_each(self):
+        """rm of 150 skill files (one tracked) on a feature branch is allowed inside 5 s, with one check-ignore
+        and one ls-files call in all.
+
+        A git call per file outruns the hook's 5 s timeout on a long list, and a per-command cap on them denied
+        ordinary clean-ups; the lookups are per checkout and per glob instead.
+        """
+        # GIVEN one tracked skill, an rm of it and 149 untracked ones, and a git on PATH that logs each call
+        # REVIEW: wrapping a core dependency (git). It logs then runs the real git, so only the call count is seen.
+        run(GIT + ["add", "-f", self.COPIED], self.p)
+        run(GIT + ["commit", "-qm", "skill"], self.p)
+        log, shim = self.tmp / "git.log", self.p / ".claude/bin/git"
+        shim.write_text(f'#!/bin/sh\necho "$3" >> "{log}"\nexec "{shutil.which("git")}" "$@"\n')
+        shim.chmod(0o755)
+        cmd = "rm -f " + " ".join([self.COPIED] + [f".claude/skills/s{i}/SKILL.md" for i in range(149)])
+        # WHEN the hook reads it
+        t0 = time.monotonic()
+        p = self.bash(cmd)
+        took = time.monotonic() - t0
+        # THEN nothing is decided, quickly, and the copy checks ran once
+        self.assertIsNone(self.decision(p))
+        self.assertLess(took, 5.0)
+        calls = log.read_text().split()
+        self.assertEqual((calls.count("check-ignore"), calls.count("ls-files")), (1, 1), calls)
+
+    def test_ignored_non_harness_file_stays_writable(self):
+        """A gitignored file outside harness-paths (.env) stays writable on a feature branch."""
+        # GIVEN .env ignored
+        (self.p / ".gitignore").write_text(".env\n")
+        # WHEN the hook reads a Write of it
+        # THEN nothing is decided
+        self.assertIsNone(self.decision(self.edit(self.p / ".env", "Write")))
 
 
 class BashWrites(HarnessCase):
@@ -471,6 +633,21 @@ class CaseFolding(HarnessCase):
                 # WHEN the hook reads it
                 # THEN it is denied
                 self.assert_denied(self.bash(c))
+
+    def test_wrong_case_edit_of_a_skip_worktree_file_is_denied_on_a_feature_branch(self):
+        """An Edit of `agents.md` in a feature-branch checkout where AGENTS.md is skip-worktree is denied.
+
+        It writes AGENTS.md on a case-insensitive file system; an exact-case lookup in git's list let it by.
+        """
+        # GIVEN AGENTS.md tracked and skip-worktree, the checkout on a feature branch
+        (self.p / "AGENTS.md").write_text("x\n")
+        run(GIT + ["add", "AGENTS.md"], self.p)
+        run(GIT + ["commit", "-qm", "agents"], self.p)
+        run(GIT + ["update-index", "--skip-worktree", "AGENTS.md"], self.p)
+        run(GIT + ["checkout", "-qb", "feature"], self.p)
+        # WHEN the hook reads an Edit of the lower-cased name
+        # THEN it is denied as skip-worktree
+        self.assert_denied(self.edit(self.p / "agents.md"), where="skip-worktree in its checkout")
 
 
 if __name__ == "__main__":
