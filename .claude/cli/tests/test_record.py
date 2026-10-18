@@ -44,7 +44,8 @@ class Recorder(TmpCase):
         row = record.record(json.dumps(event("git status", cwd=repo / "sub", agent_id="ag-1")), now=NOW)
         # THEN the row is returned and is the only line in the day file
         want = {"ts": "2026-10-14T05:06:07Z", "session": "sess-a", "agent": "ag-1", "repo": "myrepo",
-                "shape": "git status", "steps": ["git status"], "exit": 0, "rules": [], "bypassed": []}
+                "shape": "git status", "steps": ["git status"], "effects": [], "exit": 0, "rules": [],
+                "bypassed": []}
         self.assertEqual(row, want)
         self.assertEqual(self.rows(), [want])
 
@@ -267,6 +268,45 @@ class Recorder(TmpCase):
         rows = store_rows(self.store)
         self.assertEqual(len(rows), 4)
         self.assertIn("echo PGPASSWORD=<v>", rows[2]["steps"])
+        blob = b"".join(f.read_bytes() for f in self.store.rglob("*") if f.is_file())
+        pieces = {plant[i:j] for i in range(len(plant)) for j in range(i + 6, len(plant) + 1)}
+        self.assertEqual([x for x in sorted(pieces) if x.encode() in blob], [])
+
+    def test_fields_carry_the_effects_of_the_raw_command(self):
+        """fields() returns the command's effects (hosts, env var names, env file basenames) beside its shape.
+
+        The weekly report ranks chores by what they touch; the raw text is gone once the row is written, so
+        the effects must be read from it here, in memory, past the project's wrapper words.
+        """
+        # GIVEN a wrapped env load plus an API call
+        cmd = 'wrapx . ../.env && curl -H "Authorization: Bearer $API_TOKEN" https://API.example.test:8443/v1'
+        # WHEN its fields are computed
+        got = record.fields(cmd, [], ("wrapx",), ())
+        # THEN the effects are listed, sorted, with no value
+        self.assertEqual(got["effects"], ["env:API_TOKEN", "envfile:.env", "host:api.example.test"])
+
+    def test_planted_database_url_leaves_only_its_host_and_name(self):
+        """A database URL with a planted password, in commands that only read DATABASE_URL, stores
+        host:db.example.test and env:DATABASE_URL through the hook verb, and the password in no byte.
+
+        Effects exist to name what a chore touches without its values; a password that slipped into an
+        effect would sit in a plain file under the home dir for 45 days.
+        """
+        # GIVEN a project, and commands that read DATABASE_URL and carry the planted URL
+        p = make_project(self.tmp / "proj", seams=SEAMS)
+        plant = "s3cr3t-plant-7"
+        url = f"postgres://u:{plant}@db.example.test/x"
+        commands = [f"python3 - <<'EOF'\nimport os\nu = os.environ.get('DATABASE_URL', '{url}')\nEOF",
+                    f"psql \"$DATABASE_URL\" -c 'select 1' && psql \"{url}\" -c 'select 2'",
+                    f"wrapx node -e 'const u = process.env.DATABASE_URL || \"{url}\"'"]
+        # WHEN each is recorded through the hook verb
+        for c in commands:
+            r = agent_cli(p, "hook", "posttooluse", stdin=json.dumps(event(c, cwd=None)),
+                          env={"AGENT_CLI_SHAPES_DIR": str(self.store)})
+            self.assertEqual(r.returncode, 0, r.stderr)
+        # THEN every row holds the host and the name, and no 6+ char piece of the password is under the store
+        rows = store_rows(self.store)
+        self.assertEqual([r["effects"] for r in rows], [["env:DATABASE_URL", "host:db.example.test"]] * 3)
         blob = b"".join(f.read_bytes() for f in self.store.rglob("*") if f.is_file())
         pieces = {plant[i:j] for i in range(len(plant)) for j in range(i + 6, len(plant) + 1)}
         self.assertEqual([x for x in sorted(pieces) if x.encode() in blob], [])
