@@ -1,9 +1,10 @@
 """`agent-cli lib`: the import path for project CLIs."""
+import os
 from pathlib import Path
 
 from . import core
 
-PKG = Path(__file__).resolve().parent
+PKG = Path(os.path.abspath(__file__)).parent  # unresolved, like core.CLAUDE_DIR
 
 
 def register(sub):

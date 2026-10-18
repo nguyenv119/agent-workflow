@@ -6,9 +6,18 @@ if sys.version_info < (3, 9):
     sys.stderr.write("agent-cli: needs Python 3.9 or newer, this is %d.%d\n" % sys.version_info[:2])
     sys.exit(3)
 sys.dont_write_bytecode = True  # never leave __pycache__ in a project's .claude/
-from pathlib import Path  # noqa: E402
+import os  # noqa: E402
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "cli"))
+# Follow links to this file (a `self install` shim in any bin dir), but not dir links above it: a project
+# whose .claude/bin links into a shared checkout keeps its own .claude/cli. A link's own dir is resolved
+# (it is never the project's .claude), so a relative target counts its ".." from where the link really is.
+here = __file__
+while os.path.islink(here):
+    here = os.path.join(os.path.realpath(os.path.dirname(here)), os.readlink(here))
+cli = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(here))), "cli")
+if not os.path.isdir(os.path.join(cli, "agent_cli")):  # no .claude/cli beside bin (only bin linked): the real one
+    cli = os.path.join(os.path.dirname(os.path.dirname(os.path.realpath(here))), "cli")
+sys.path.insert(0, cli)
 from agent_cli.main import main  # noqa: E402
 
 sys.exit(main())

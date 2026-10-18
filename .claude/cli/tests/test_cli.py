@@ -327,6 +327,78 @@ class SeamLookup(TmpCase):
         self.assertEqual(self.env_dirs(p, cwd=home / "proj", env={"HOME": str(home)}), [])
 
 
+class LinkedClaudeDirs(TmpCase):
+    """A project whose .claude/{bin,cli,agent-cli-hooks} are dir symlinks into a shared harness checkout."""
+
+    def setUp(self):
+        super().setUp()
+        self.harness = make_project(self.tmp / "harness", {"path": ".claude/local-scripts/tools-cli\n"})
+        self.proj = self.tmp / "proj"
+        (self.proj / ".claude").mkdir(parents=True)
+        for name in ("bin", "cli", "agent-cli-hooks"):
+            (self.proj / ".claude" / name).symlink_to(self.harness / ".claude" / name, target_is_directory=True)
+        self.away = self.tmp / "away"
+        self.away.mkdir()
+
+    def test_self_env_names_the_project_dirs_not_the_harness(self):
+        """`self env` puts <proj>/.claude/bin and the proj-relative seam dir on PATH, never <harness>/... dirs.
+
+        A project that links its .claude dirs into a shared harness keeps its own scripts under
+        <proj>/.claude/local-scripts; resolving the links would point PATH at the harness checkout instead,
+        so project CLIs go missing (or the harness's copies run) in every session of that project.
+        """
+        want = [f"{self.proj}/.claude/bin", f"{self.proj}/.claude/local-scripts/tools-cli"]
+        for env in ({}, {"CLAUDE_PROJECT_DIR": str(self.proj)}):
+            with self.subTest(env=env):
+                # GIVEN cwd outside both trees, with and without CLAUDE_PROJECT_DIR
+                # WHEN self env --json runs through the project's launcher
+                r = agent_cli(self.proj, "self", "env", "--json", cwd=self.away, env=env)
+                # THEN the dirs are the project's, none under the harness
+                self.assertEqual(r.returncode, 0, r.stderr)
+                dirs = json.loads(r.stdout)["dirs"]
+                self.assertEqual(dirs, want)
+                self.assertFalse([d for d in dirs if d.startswith(str(self.harness))], dirs)
+
+    def test_lib_path_names_the_project_cli_dir(self):
+        """`lib path` through the project's launcher prints <proj>/.claude/cli, so a project CLI that imports
+        agent_cli.core from it gets CLAUDE_DIR = <proj>/.claude, not the harness's (whose seams differ)."""
+        # GIVEN the linked layout
+        # WHEN lib path runs through the project's launcher
+        r = agent_cli(self.proj, "lib", "path", cwd=self.away)
+        # THEN it names the project's cli dir
+        self.assertEqual(r.stdout.strip(), str(self.proj / ".claude/cli"), r.stderr)
+
+    def test_relative_shim_link_to_the_project_launcher_keeps_the_project(self):
+        """A file link to the project's launcher (relative target, as a hand-made shim might be) is followed
+        to <proj>/.claude/bin/agent-cli and stops there, so the dir link above it is not resolved either.
+        The target counts from the link's own dir (one level deeper than the cwd here, so a cwd-relative
+        reading would miss), also when that dir is reached through a dir link (a dotfiles-managed bin dir)."""
+        # GIVEN shims/bin/agent-cli -> ../../proj/.claude/bin/agent-cli, and dotbin -> shims/bin
+        bindir = self.tmp / "shims" / "bin"
+        bindir.mkdir(parents=True)
+        (bindir / "agent-cli").symlink_to(Path("../..") / "proj/.claude/bin/agent-cli")
+        (self.tmp / "dotbin").symlink_to(bindir, target_is_directory=True)
+        for shim in (bindir / "agent-cli", self.tmp / "dotbin" / "agent-cli"):
+            with self.subTest(shim=shim):
+                # WHEN lib path runs through the link
+                r = run([sys.executable, str(shim), "lib", "path"], self.away)
+                # THEN it answers from the project, not the harness
+                self.assertEqual(r.stdout.strip(), str(self.proj / ".claude/cli"), r.stderr)
+
+    def test_only_bin_linked_falls_back_to_the_real_cli(self):
+        """A project that links only .claude/bin (no .claude/cli of its own) still runs: the launcher uses the
+        cli dir beside the real bin dir instead of failing to import agent_cli."""
+        # GIVEN a project whose only .claude entry is a bin dir link into the harness
+        lone = self.tmp / "lone"
+        (lone / ".claude").mkdir(parents=True)
+        (lone / ".claude" / "bin").symlink_to(self.harness / ".claude" / "bin", target_is_directory=True)
+        # WHEN lib path runs through its launcher
+        r = agent_cli(lone, "lib", "path", cwd=self.away)
+        # THEN it answers from the harness's cli dir
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(r.stdout.strip(), str(self.harness / ".claude/cli"))
+
+
 class SelfInstall(TmpCase):
     def test_install_links_then_reports_exists(self):
         """cli-for-agents "Idempotency": the first run links bin-dir/agent-cli; a second run reports `exists:` and

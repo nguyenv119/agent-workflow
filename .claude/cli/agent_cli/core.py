@@ -16,7 +16,9 @@ import tempfile
 import time
 from pathlib import Path
 
-CLAUDE_DIR = Path(__file__).resolve().parents[2]  # the .claude/ this agent-cli is installed in
+# the .claude/ this agent-cli is installed in, links left as they are: a project whose .claude/cli is a
+# dir symlink into a shared checkout still gets its own .claude/ (bin, seams), not that checkout's
+CLAUDE_DIR = Path(os.path.abspath(__file__)).parents[2]
 BIN = CLAUDE_DIR / "bin"
 SEAMS = "agent-cli-hooks"
 
