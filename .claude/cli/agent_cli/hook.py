@@ -271,6 +271,7 @@ BASIC_WORDS = frozenset("""export set unset mkdir cp mv rm rmdir ln chmod chown 
 printf echo test [ [[ sleep seq""".split())
 BASIC_GIT = frozenset("add commit checkout switch restore branch fetch pull push stash rev-parse status diff log "
                       "show".split())
+CLOSE_KEYWORDS = frozenset(("done", "fi", "esac", "}"))  # a loop or block piped on: `done | head <n>`
 ASSIGN_WORD = re.compile(r"[A-Za-z_]\w*=")
 INTERP_FLAG = re.compile(r"-[A-Za-z]{1,3}")  # -I, -u, -B before the inline code
 PLACEHOLDER = re.compile(r"<[^<>]*>")  # a masked word: <arg>, <str>, <url:host>
@@ -284,7 +285,7 @@ def _words(seg):
     for git past its global options (`git -C <arg> add <arg>` -> [git, add, <arg>])."""
     from .shape import GIT_GLOBAL, LEAD_KEYWORDS
     words = seg.split()
-    if words and words[0] in LEAD_KEYWORDS:
+    if words and (words[0] in LEAD_KEYWORDS or words[0] in CLOSE_KEYWORDS):
         words = words[1:]
     while words and ASSIGN_WORD.match(words[0]):
         words = words[1:]
