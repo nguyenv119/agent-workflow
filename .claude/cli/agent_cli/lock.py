@@ -1,4 +1,5 @@
 """`agent-cli lock`: a named mutex in a state dir that reaps a lock whose holder died or ran past its cap.
+With --slots N it is a semaphore: N lock dirs <name>.1 .. <name>.N, and acquire takes the first free one.
 
 Every read-modify-write of a lock dir runs under an flock on locks/.guard, so two reapers never both win.
 """
@@ -36,6 +37,8 @@ def register(sub):
     p.add_argument("name")
     p.add_argument("--cap", default="120m", help="others may reap the lock after this long (default 120m)")
     p.add_argument("--wait", default="0", help="keep trying this long before exit 3 (default 0)")
+    p.add_argument("--slots", type=int, default=1,
+                   help="up to this many holders at once, as <name>.1..<name>.N (default 1: a plain mutex)")
     p.add_argument("--pid", type=int, required=True, help="owner pid: the script that does the work ($$)")
     p.add_argument("--dry-run", action="store_true", help="say what would happen, write nothing")
     p.add_argument("--json", action="store_true", help="one JSON object")
@@ -108,45 +111,65 @@ def check_name(name, example):
         core.die(Exit.REFUSED, f"bad lock name {name!r}: letters, digits, . _ - only", example)
 
 
-def try_take(name, pid, cap, dry_run=False):
-    """One acquire attempt under the guard; never exits. Returns (status, owner):
-    ("acquired", reaped owner or None), ("already-held", None) or ("held", the live holder)."""
+def slot_names(name, slots):
+    return [name] if slots <= 1 else [f"{name}.{i}" for i in range(1, slots + 1)]
+
+
+def held_names(name):
+    """name and its slot dirs name.<n> that exist, for release."""
+    if not root().is_dir():
+        return []
+    return [p.name for p in sorted(root().glob(f"{name}*"))
+            if p.is_dir() and (p.name == name or re.fullmatch(re.escape(name) + r"\.\d+", p.name))]
+
+
+def try_take(name, pid, cap, dry_run=False, slots=1):
+    """One acquire attempt under the guard; never exits. Returns (status, slot name, owners):
+    ("acquired", slot, [reaped owner]) / ("acquired", slot, []), ("already-held", slot, []) or
+    ("held", None, every live holder)."""
     with guard():
-        held = read(name)
-        if held and held["pid"] == pid and held["host"] == socket.gethostname():
-            return "already-held", None
-        if held and not stale(held):
-            return "held", held
-        if not dry_run:
-            if held:
-                shutil.rmtree(root() / name)
-            take(name, pid, cap)
-        return "acquired", held
+        here = socket.gethostname()
+        held = [(n, read(n)) for n in slot_names(name, slots)]
+        for n, o in held:
+            if o and o["pid"] == pid and o["host"] == here:
+                return "already-held", n, []
+        for n, o in held:
+            if not o or stale(o):
+                if not dry_run:
+                    if o:
+                        shutil.rmtree(root() / n)
+                    take(n, pid, cap)
+                return "acquired", n, [o] if o else []
+        return "held", None, [o for _, o in held]
 
 
-def take_waiting(name, pid, cap, wait_s, example, dry_run=False):
-    """try_take every second for up to wait_s; exit 3 naming the holder (and example) if it stays held."""
-    holder = []
+def take_waiting(name, pid, cap, wait_s, example, dry_run=False, slots=1):
+    """try_take every second for up to wait_s; exit 3 naming the holders (and example) if every slot stays held."""
+    holders = []
 
     def check(_left):
-        status, owner = try_take(name, pid, cap, dry_run)
-        holder[:] = [owner]
-        return None if status == "held" else (status, owner)
+        status, slot, owners = try_take(name, pid, cap, dry_run, slots)
+        holders[:] = owners
+        return None if status == "held" else (status, slot, owners)
 
     got = wait.poll(check, 1, wait_s)
     if got is None:
-        core.die(Exit.BLOCKED, f"{name} held by {describe(holder[0])}", example)
+        what = name if slots <= 1 else f"all {slots} slots of {name}"
+        core.die(Exit.BLOCKED, f"{what} held by {'; '.join(describe(o) for o in holders)}", example)
     return got
 
 
 def remove_if_owner(name, pid, force=False, dry_run=False):
-    """Under the guard, remove name when pid on this host holds it (or with force); dry_run removes nothing.
-    Returns (owner or None when not held, whether it was or would be removed). The one release path."""
+    """Under the guard, remove name (or the slot name.<n> that pid holds) when pid on this host holds it
+    (or with force); dry_run removes nothing. Returns (owner or None when not held, whether it was or would
+    be removed). The one release path."""
     with guard():
-        held = read(name)
-        ok = bool(held) and (force or (held["pid"] == pid and held["host"] == socket.gethostname()))
+        found = [(n, read(n)) for n in held_names(name)]
+        mine = [(n, o) for n, o in found if o["pid"] == pid and o["host"] == socket.gethostname()]
+        n, held = (mine or found or [(name, None)])[0]
+        ok = bool(held) and (force or bool(mine))
         if ok and not dry_run:
-            shutil.rmtree(root() / name)
+            shutil.rmtree(root() / n)
         return held, ok
 
 
@@ -154,17 +177,21 @@ def acquire(a):
     check_name(a.name, EXAMPLES[0])
     if a.pid <= 0:
         core.die(Exit.REFUSED, f"--pid {a.pid} is not a process id", ONE_SCRIPT)
+    if a.slots < 1:
+        core.die(Exit.REFUSED, f"--slots {a.slots}: give 1 or more", ONE_SCRIPT)
     cap, wait_s = core.duration(a.cap, ONE_SCRIPT), core.duration(a.wait, ONE_SCRIPT)
-    status, reaped = take_waiting(a.name, a.pid, cap, wait_s, f"agent-cli lock acquire {a.name} --pid $$ --wait 10m",
-                                  a.dry_run)
+    slots = f" --slots {a.slots}" if a.slots > 1 else ""
+    status, slot, reaped = take_waiting(a.name, a.pid, cap, wait_s,
+                                        f"agent-cli lock acquire {a.name}{slots} --pid $$ --wait 10m",
+                                        a.dry_run, a.slots)
     if status == "already-held":
-        return core.out(a, {"status": status, "name": a.name, "pid": a.pid}, f"already held: {a.name} (pid {a.pid})")
-    reaped = reaped and describe(reaped)
+        return core.out(a, {"status": status, "name": slot, "pid": a.pid}, f"already held: {slot} (pid {a.pid})")
+    reaped = reaped and describe(reaped[0])
     if reaped and not a.json:
         print(f"reaped: {reaped}")
     verb = "would-acquire" if a.dry_run else "acquired"
-    return core.out(a, {"status": verb, "name": a.name, "pid": a.pid, "reaped": reaped},
-                    f"{verb}: {a.name} (pid {a.pid})")
+    return core.out(a, {"status": verb, "name": slot, "pid": a.pid, "reaped": reaped},
+                    f"{verb}: {slot} (pid {a.pid})")
 
 
 def take(name, pid, cap):
