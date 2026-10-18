@@ -167,7 +167,8 @@ class HouseRules(TmpCase):
                  (["eval", "lib", "--sh"], {"path": str(p / ".claude/cli/agent_cli/eval_lib/verdict.sh")}),
                  (["eval", "lib", "--py"], {"path": str(p / ".claude/cli/agent_cli/eval_lib/verdict.py")}),
                  (["self", "env"], {"dirs": [f"{p}/.claude/bin", f"{p}/tools"],
-                                    "export": f'export PATH="{p}/.claude/bin:{p}/tools:$PATH"'})]
+                                    "export": f'export PATH="{p}/.claude/bin:{p}/tools:$PATH"',
+                                    "project_dir": ""})]
         for args, want in cases:
             # WHEN each runs with --json
             r = agent_cli(p, *args, "--json")
@@ -182,9 +183,9 @@ class HouseRules(TmpCase):
         # GIVEN the off switch
         p = make_project(self.tmp / "proj")
         # WHEN self env --json runs
-        r = agent_cli(p, "self", "env", "--json", env={"AGENT_CLI_PATH_OFF": "1"})
+        r = agent_cli(p, "self", "env", "--json", env={"AGENT_CLI_PATH_OFF": "1", "CLAUDE_PROJECT_DIR": "/x"})
         # THEN one empty object, exit 0
-        self.assertEqual((r.returncode, json.loads(r.stdout)), (0, {"dirs": [], "export": ""}))
+        self.assertEqual((r.returncode, json.loads(r.stdout)), (0, {"dirs": [], "export": "", "project_dir": ""}))
 
 
 class SelfEnv(TmpCase):
@@ -214,6 +215,58 @@ class SelfEnv(TmpCase):
         r = agent_cli(p, "self", "env")
         # THEN they are backslash-escaped inside the double quotes
         self.assertIn(r'/opt/a\$b\"c:', r.stdout)
+
+    def test_env_exports_project_dir_when_set(self):
+        """Hooks get CLAUDE_PROJECT_DIR but Bash tool calls do not; `self env` passes it on."""
+        # GIVEN CLAUDE_PROJECT_DIR=/x
+        p = make_project(self.tmp / "proj")
+        # WHEN self env runs
+        r = agent_cli(p, "self", "env", env={"CLAUDE_PROJECT_DIR": "/x"})
+        # THEN the PATH line is followed by an export of it
+        lines = r.stdout.splitlines()
+        self.assertEqual(len(lines), 2, r.stdout)
+        self.assertTrue(lines[0].startswith('export PATH="'), r.stdout)
+        self.assertEqual(lines[1], 'export CLAUDE_PROJECT_DIR="/x"')
+
+    def test_env_has_no_project_dir_line_when_unset_or_empty(self):
+        """No CLAUDE_PROJECT_DIR (or an empty one) means no export line for it."""
+        p = make_project(self.tmp / "proj")
+        for value in (None, ""):
+            # GIVEN CLAUDE_PROJECT_DIR unset, then empty
+            # WHEN self env runs
+            r = agent_cli(p, "self", "env", env={"CLAUDE_PROJECT_DIR": value})
+            # THEN only the PATH line
+            with self.subTest(value=value):
+                self.assertNotIn("CLAUDE_PROJECT_DIR", r.stdout)
+                self.assertEqual(len(r.stdout.splitlines()), 1, r.stdout)
+
+    def test_env_prints_nothing_when_switched_off_even_with_project_dir(self):
+        """AGENT_CLI_PATH_OFF=1 also drops the CLAUDE_PROJECT_DIR line."""
+        # GIVEN the off switch and CLAUDE_PROJECT_DIR set
+        p = make_project(self.tmp / "proj")
+        # WHEN self env runs
+        r = agent_cli(p, "self", "env", env={"AGENT_CLI_PATH_OFF": "1", "CLAUDE_PROJECT_DIR": "/x"})
+        # THEN no output, exit 0
+        self.assertEqual((r.returncode, r.stdout), (0, ""))
+
+    def test_env_escapes_project_dir(self):
+        """A CLAUDE_PROJECT_DIR holding `$`, a quote or a backtick cannot run code when sourced."""
+        # GIVEN a project dir value with shell specials
+        p = make_project(self.tmp / "proj")
+        # WHEN self env runs
+        r = agent_cli(p, "self", "env", env={"CLAUDE_PROJECT_DIR": '/a$b"c`d'})
+        # THEN they are backslash-escaped inside the double quotes
+        self.assertIn('export CLAUDE_PROJECT_DIR="/a\\$b\\"c\\`d"\n', r.stdout)
+
+    def test_env_json_carries_project_dir_line(self):
+        """--json puts the CLAUDE_PROJECT_DIR export under project_dir, still one object."""
+        # GIVEN CLAUDE_PROJECT_DIR=/x
+        p = make_project(self.tmp / "proj")
+        # WHEN self env --json runs
+        r = agent_cli(p, "self", "env", "--json", env={"CLAUDE_PROJECT_DIR": "/x"})
+        # THEN one object whose project_dir is the export line
+        self.assertEqual(len(r.stdout.splitlines()), 1, r.stdout)
+        self.assertEqual(json.loads(r.stdout)["project_dir"], 'export CLAUDE_PROJECT_DIR="/x"')
 
 
 class SeamLookup(TmpCase):
