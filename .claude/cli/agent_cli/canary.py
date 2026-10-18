@@ -163,7 +163,7 @@ def settle(target, reason):
         return
     try:
         pending = any(s["context"] == CONTEXT and s["state"] == "pending"
-                      for s in json.loads(api(target, f"commits/{target[1]}/status"))["statuses"])
+                      for s in json.loads(api(target, f"commits/{target[1]}/status?per_page=100"))["statuses"])
     except Exception as e:  # noqa: BLE001 - best effort in canary_cmd's finally: a raise would replace its outcome
         return print(f"canary: warning: could not read status {CONTEXT}: {e}", file=sys.stderr)
     if pending:

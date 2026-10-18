@@ -19,7 +19,7 @@ Before writing a script for a chore (worktree, PR checks, waiting, locks, eval v
 
 `/plan` explores the codebase, discusses tradeoffs with you, files beads issues, and runs an architectural plan review. Use it before `/work` for new epics.
 
-`/work` triages the work, creates per-bead worktrees and branches, runs automated reviews with injected standards checklists, pushes branches, and auto-creates a PR for each bead. Dependent beads are blocked until their blockers are merged and closed. A PreToolUse hook enforces that reviewers receive their standards content — the coordinator cannot skip this step. On a harness PR, the coordinator starts the laptop canary (`agent-cli harness canary --pr <n>`) when `agent-cli pr status` says its status is missing; a cloud session leaves the PR waiting for a laptop run.
+`/work` triages the work, creates per-bead worktrees and branches, runs automated reviews with injected standards checklists, pushes branches, and auto-creates a PR for each bead. Dependent beads are blocked until their blockers are merged and closed. A PreToolUse hook enforces that reviewers receive their standards content — the coordinator cannot skip this step. On a harness PR, the coordinator starts the laptop canary (`agent-cli harness canary --pr <n>`) by the rule in `/pr` step 8 (status missing, or a pending one over 2 hours old); a cloud session leaves the PR waiting for a laptop run.
 
 `/pr` regenerates or updates the PR summary for a branch. Since the coordinator auto-creates PRs, use this when you want to refresh the summary after additional commits. It is idempotent — safe to run multiple times.
 
