@@ -139,3 +139,4 @@ CLAUDE.md           Your project's build, test and lint commands
 ## License
 
 MIT
+<!-- throwaway acceptance edit, never merged -->
