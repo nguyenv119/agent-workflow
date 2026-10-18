@@ -157,3 +157,5 @@ method does not belong here.>
 - Omitting the dead ends because "nothing shipped from them" — the failed attempts are the expensive knowledge.
 - A "what went well / what went poorly" retrospective. "Non-obvious traps + why" is forward-looking knowledge, not a retro.
 - Burying a held-for-the-human production/spend decision inside a bullet list instead of its own "Held for you" section.
+
+<!-- throwaway acceptance edit, never merged -->
