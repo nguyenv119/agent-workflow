@@ -20,12 +20,14 @@ loop.py fetches the tasks itself, after its gate, preflight and Docker check. Fo
 HARNESS_LOOP_HOME defaults to ~/.harness-loop-private/<repo name> (an inherited value wins): its trees are its own,
 and ~/.harness-loop feeds agent-workflow's public improver. `exam-env-file:` under `## harness` in project-rules.md
 becomes HARNESS_EXAM_ENV_FILE for loop.py (else an inherited one passes through). CLAUDE_CODE_REMOTE set: exit 5
-"laptop-only" before any gh, git or clone. A git fetch, diff, merge-tree or archive failure: exit 5, status
-error.
+"laptop-only" before any gh, git or clone. An agent-cli installed in another repo than the cwd's (else
+$CLAUDE_PROJECT_DIR's) exits 2 before any gh call, naming that repo's own agent-cli. A git fetch, diff,
+merge-tree or archive failure: exit 5, status error.
 """
 import json
 import os
 import re
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -39,10 +41,11 @@ from .pr import CANARY as CONTEXT, GhError, gh
 PUBLIC_SOURCE = "https://github.com/nguyenv119/agent-workflow"
 MANIFEST = "tasks/canary-2026-10.json"  # relative to harness-loop/
 EXAMPLE = "agent-cli harness canary --pr 91"
-EXITS = ("exit: 0 pass or not needed; 1 fail (after one rerun) or stale; 2 usage or refused config; 3 gh could not "
-         "read the PR; 4 paused or no plan token (status error, paused); 5 could not run (laptop-only, fork PR, git "
-         "or clone failed, the PR moved, Docker down, task fetch failed, both runs errored). A --pr run posts "
-         "pending, then the verdict; any exit that leaves it pending replaces it with error")
+EXITS = ("exit: 0 pass or not needed; 1 fail (after one rerun) or stale; 2 usage, refused config, or an agent-cli "
+         "from another repo than the cwd's; 3 gh could not read the PR; 4 paused or no plan token (status error, "
+         "paused); 5 could not run (laptop-only, fork PR, git or clone failed, the PR moved, Docker down, task "
+         "fetch failed, both runs errored). A --pr run posts pending, then the verdict; any exit that leaves it "
+         "pending replaces it with error")
 STALE = "stale, rebase the PR onto main"
 PAUSED = "paused (usage limit or no plan token); run the canary again"
 PREREQS = ("needs Docker running and the plan token: CLAUDE_CODE_OAUTH_TOKEN (from `claude setup-token`), or a file "
@@ -245,12 +248,40 @@ def archive(root, treeish, dest, target):
     return dest
 
 
+def toplevel(d):
+    """The root of the git checkout holding d, or None (d unset or in no repo)."""
+    return core.git("rev-parse", "--show-toplevel", cwd=d, check=False) if d else None
+
+
+def common_dir(d):
+    """d's git common dir, resolved (one per repo, shared by its worktrees), or None."""
+    c = core.git("rev-parse", "--path-format=absolute", "--git-common-dir", cwd=d, check=False)
+    return Path(c).resolve() if c else None
+
+
+def check_install(a):
+    """Exit 2 (nothing posted) when this agent-cli's install is not in the repo the canary is run for: the cwd's
+    repo, else $CLAUDE_PROJECT_DIR's. Neither in git: no check. Another worktree or a subdirectory passes."""
+    here = toplevel(".") or toplevel(os.environ.get("CLAUDE_PROJECT_DIR"))
+    install = core.CLAUDE_DIR.parent
+    if not here or common_dir(install) == common_dir(here):
+        return
+    own = Path(here) / ".claude/bin/agent-cli"
+    flags = [x for k, v in (("--pr", a.pr), ("--repo", a.repo), ("--candidate", a.candidate),
+                            ("--baseline", a.baseline)) if v is not None for x in (k, str(v))]
+    missing = "" if own.is_file() else (f"; {here} has no .claude/bin/agent-cli; run the canary with the "
+                                        "agent-cli installed in the PR's repo")
+    core.die(Exit.REFUSED, f"this agent-cli belongs to {install}, the cwd's repo is {here}; nothing posted{missing}",
+             shlex.join([str(own), "harness", "canary", *flags, *(["--no-status"] if a.no_status else [])]))
+
+
 def canary_cmd(a):
     if os.environ.get("CLAUDE_CODE_REMOTE"):
         core.die(Exit.PARTIAL, "could not run: the canary is laptop-only (CLAUDE_CODE_REMOTE is set); nothing posted",
                  EXAMPLE)
     if (a.pr is None) == (a.candidate is None) or (a.candidate is None) != (a.baseline is None):
         core.die(Exit.REFUSED, "give --pr N, or --candidate DIR and --baseline DIR", EXAMPLE)
+    check_install(a)
     root = core.CLAUDE_DIR.parent
     pr = pr_info(a) if a.pr is not None else None
     target = (pr["repo"], pr["headRefOid"]) if pr and not a.no_status else None
