@@ -518,7 +518,8 @@ class StatusCli(GhCase):
         """`status 42 --repo o/r` makes exactly one gh pr view and one gh pr checks, both with --repo o/r, then one
         changed-files read with none (gh api names the repo in its path, and rejects --repo).
 
-        A missing --repo on either call reads the wrong repo's PR 42; extra calls spend the shared API budget.
+        A missing --repo on either call reads the wrong repo's PR 42; extra calls spend the shared API budget,
+        and GitHub's default 30-file page would take 4 pages where 100 per page takes 1.
         """
         # GIVEN a READY PR that changes no file
         self.set_pr(view(), [check("lint", "pass")])
@@ -528,7 +529,7 @@ class StatusCli(GhCase):
         self.assertEqual(r.returncode, 0, r.stderr)
         calls = self.calls()
         self.assertEqual([c[:3] for c in calls], [["pr", "view", "42"], ["pr", "checks", "42"],
-                                                  ["api", "--paginate", "repos/o/r/pulls/42/files"]])
+                                                  ["api", "--paginate", "repos/o/r/pulls/42/files?per_page=100"]])
         for c in calls[:2]:
             self.assertEqual(c[-2:], ["--repo", "o/r"])
         self.assertNotIn("--repo", calls[2])

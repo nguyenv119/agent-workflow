@@ -12,16 +12,19 @@ The installer in agent-workflow does this job. It lives in `harness-loop/`, whic
 3. If it exits 2, relay its message as-is. A previous install needs `--force`, which deletes only the files that install's manifest lists.
 4. Report the commit it printed and the number of files installed.
 
-`agent-cli pr status|wait|land` read three optional lines from the target's `.claude/project-rules.md`, under `## coordinator`. Tell the user they can add them with their repo's real check names (exact, case-sensitive); without `required-checks:` every non-skipped check is required:
+`agent-cli pr status|wait|land` read four optional lines from the target's `.claude/project-rules.md`, under `## coordinator`. Tell the user they can add them with their repo's real check names (exact, case-sensitive); without `required-checks:` every non-skipped check is required:
 
 ```
 ## coordinator
 required-checks: <test check>, <lint check>, <preview deploy check>
 advisory-checks: <bot reviewer check>
 preview-check: <preview deploy check>
+canary-check: harness-canary
 ```
 
-If PRs in another repo have different check names, add a line keyed by that repo's slug, e.g. `required-checks[<owner>/<repo>]: <its test check>` (same form for the other two keys). It replaces the plain line for PRs in that repo, whether `--repo` names it or the command runs in a checkout of it.
+If PRs in another repo have different check names, add a line keyed by that repo's slug, e.g. `required-checks[<owner>/<repo>]: <its test check>` (same form for the other keys). It replaces the plain line for PRs in that repo, whether `--repo` names it or the command runs in a checkout of it.
+
+`canary-check:` names the commit status a PR touching harness paths also needs before it is green; `none` turns that off. Without the line, such PRs in a repo with `.claude/HARNESS_VERSION` or `harness-loop/loop.py` wait for the `harness-canary` status that `agent-cli harness canary --pr <n>` posts from a laptop.
 
 One more optional line under `## coordinator` widens what counts as a CLI bead (the coordinator then loads the cli-for-agents skill and gives reviewers its checklist). Without it, only beads touching agent-cli's own code (`cli/` or `bin/agent-cli` under `.claude`) count:
 

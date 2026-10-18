@@ -179,8 +179,7 @@ def set_env(case, **values):
 # view.err = a failing gh pr view; a `slow` file = sleep that many seconds first; `gh repo view` prints the
 # `repo` file, no file = a failing call), appends every argv to calls.log and each `gh pr merge` argv to merge.log.
 # `gh api` (an api.err file makes every one fail): .../pulls/N/files applies pr.py's --jq to files.json (REST
-# objects, none = []); .../contents/<path>?ref= prints a sha when <path> is a line of contents.txt, else HTTP 404;
-# .../commits/<sha>/status prints status.json (none = no statuses).
+# objects, none = []); .../contents/<path>?ref= prints a sha when <path> is a line of contents.txt, else HTTP 404.
 FAKE_GH = r'''#!/usr/bin/env python3
 import json, os, sys, time
 d, a = os.environ["FAKE_GH"], sys.argv[1:]
@@ -206,15 +205,13 @@ elif a[:1] == ["api"]:
     if os.path.exists(f"{d}/api.err"):
         sys.stderr.write(open(f"{d}/api.err").read()); sys.exit(1)
     path, jq = next(x for x in a if x.startswith("repos/")), a[a.index("--jq") + 1] if "--jq" in a else None
-    if path.endswith("/files") and jq == ".[] | .filename, (.previous_filename // empty)":
+    if path.split("?")[0].endswith("/files") and jq == ".[] | .filename, (.previous_filename // empty)":
         for f in json.loads(read("files.json", "[]")):
             print(f["filename"]); f.get("previous_filename") and print(f["previous_filename"])
     elif "/contents/" in path:
         if path.split("/contents/", 1)[1].split("?")[0] not in read("contents.txt", "").split():
             sys.stderr.write("gh: Not Found (HTTP 404)\n"); sys.exit(1)
         print("0123abcd")
-    elif path.endswith("/status") and jq is None:
-        print(read("status.json", '{"statuses": []}'))
     else:
         sys.exit(2)
 else:
@@ -222,15 +219,16 @@ else:
 '''
 
 
-def view(state="OPEN", merge="CLEAN", head="a" * 40):
-    """A `gh pr view --json` object for PR 42 of o/r."""
-    return {"baseRefName": "main", "headRefOid": head, "mergeStateStatus": merge, "state": state,
-            "url": "https://github.com/o/r/pull/42"}
+def view(state="OPEN", merge="CLEAN", head="a" * 40, fork=False):
+    """A `gh pr view --json` object for PR 42 of o/r (fork: opened from another repo)."""
+    return {"baseRefName": "main", "headRefOid": head, "isCrossRepository": fork, "mergeStateStatus": merge,
+            "state": state, "url": "https://github.com/o/r/pull/42"}
 
 
-def check(name, bucket, link=""):
-    """A `gh pr checks --json` row."""
-    return {"name": name, "bucket": bucket, "state": bucket.upper(), "link": link or f"https://ci.example/{name}"}
+def check(name, bucket, link="", state=None, description=""):
+    """A `gh pr checks --json` row (state defaults to the bucket in capitals)."""
+    return {"name": name, "bucket": bucket, "state": state or bucket.upper(), "description": description,
+            "link": link or f"https://ci.example/{name}"}
 
 
 class GhCase(TmpCase):
