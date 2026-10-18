@@ -15,6 +15,7 @@ from agent_cli import record  # noqa: E402
 UTC = dt.timezone.utc
 DAY = dt.datetime(2026, 4, 2, 12, 0, 0, tzinfo=UTC)
 POLL = "while true; do gh pr checks 12 && break; sleep 30; done"  # the built-in hand-pr-poll chore
+POLL_STEPS = ["gh pr checks <n>", "sleep <n>"]  # its listed steps (the sleep is report-only)
 SEAMS = {"command-prefixes": "wrapx\nwrapx raw\n"}  # a made-up wrapper word, never a real one
 UTC_ENV = {"TZ": "UTC"}  # --from/--until are local times; pin the zone so the bounds are exact
 
@@ -61,14 +62,14 @@ class Threshold(StoreCase):
         sessions, not runs, is what separates a repeated chore from a busy afternoon.
         """
         # GIVEN one shape in 3 sessions, another in 2 sessions typed 5 times each
-        self.rec("ls -la", 3)
+        self.rec("lint-tool -q", 3)
         for _ in range(5):
-            self.rec("pwd", 2)
+            self.rec("uptime", 2)
         # WHEN the report runs over the window holding them
         r, rows = self.repeats("--from", "2026-04-02", "--until", "2026-04-02", env=UTC_ENV)
         # THEN only the 3-session shape is listed, with its counts and times
         self.assertEqual(r.returncode, 0, r.stderr)
-        self.assertEqual(rows, [{"shape": "ls -la", "sessions": 3, "count": 3, "first": "2026-04-02T12:00:00Z",
+        self.assertEqual(rows, [{"shape": "lint-tool -q", "sessions": 3, "count": 3, "first": "2026-04-02T12:00:00Z",
                                  "last": "2026-04-02T12:00:00Z", "exit_fail_share": 0.0}])
 
     def test_min_sessions_flag_lowers_the_bar(self):
@@ -89,14 +90,14 @@ class Threshold(StoreCase):
         fewer sessions, and ties must break the same way every run.
         """
         # GIVEN shapes in 4 sessions (once each), 3 sessions (twice each) and 3 sessions (once each)
-        self.rec("ls -la", 4)
-        self.rec("git status", 3)
-        self.rec("git status", 3)
-        self.rec("pwd", 3)
+        self.rec("lint-tool -q", 4)
+        self.rec("gh pr list", 3)
+        self.rec("gh pr list", 3)
+        self.rec("uptime", 3)
         # WHEN the report runs, then again with --top 2
         # THEN the order is by sessions, then count, and --top 2 keeps the first two
-        self.assertEqual(self.shapes("--since", "3650d"), ["ls -la", "git status", "pwd"])
-        self.assertEqual(self.shapes("--since", "3650d", "--top", "2"), ["ls -la", "git status"])
+        self.assertEqual(self.shapes("--since", "3650d"), ["lint-tool -q", "gh pr list", "uptime"])
+        self.assertEqual(self.shapes("--since", "3650d", "--top", "2"), ["lint-tool -q", "gh pr list"])
 
     def test_exit_fail_share_is_the_share_of_failed_runs(self):
         """exit_fail_share is failed runs over runs with a known exit code.
@@ -120,7 +121,7 @@ class Threshold(StoreCase):
         one-off over --min-sessions.
         """
         # GIVEN a shape in 2 named sessions plus 2 rows with no session
-        self.rec("ls -la", [0, 1, None, None])
+        self.rec("lint-tool -q", [0, 1, None, None])
         # WHEN the report runs with --min-sessions 2, and with the default 3
         r, got = self.repeats("--since", "3650d", "--min-sessions", "2")
         # THEN it has 2 sessions and 4 runs, and the default bar drops it
@@ -161,8 +162,7 @@ class Covered(StoreCase):
         none = self.shapes("--since", "3650d", "--covered", "none")
         # THEN it is dropped live and listed with none
         self.assertEqual(live, [])
-        self.assertEqual(len(none), 1)
-        self.assertIn("gh pr checks <n>", none[0])
+        self.assertEqual(none, POLL_STEPS)
 
     def test_a_shape_is_covered_only_when_half_its_runs_matched_a_rule(self):
         """A rule match on 1 of 4 runs leaves the shape listed; on 2 of 4 runs it is covered.
@@ -174,12 +174,12 @@ class Covered(StoreCase):
         rules = json.dumps([{"id": "demo-rule", "mode": "warn", "on": "raw", "match": "DEMO_TOKEN",
                              "message": "use the demo command"}])
         (self.p / ".claude/agent-cli-hooks/pretooluse-rules.json").write_text(rules)
-        rows = [("sh -c 'echo DEMO_TOKEN'" if i < 1 else "sh -c 'echo hi'", i) for i in range(4)]
-        rows += [("bash -c 'echo DEMO_TOKEN'" if i < 2 else "bash -c 'echo hi'", i) for i in range(4)]
+        rows = [("psql -c 'select DEMO_TOKEN'" if i < 1 else "psql -c 'select 1'", i) for i in range(4)]
+        rows += [("mysql -c 'select DEMO_TOKEN'" if i < 2 else "mysql -c 'select 1'", i) for i in range(4)]
         cmds = self.write_commands([{"ts": "2026-04-02T12:00:00Z", "session": f"s{i}", "cmd": c} for c, i in rows])
         # WHEN the report runs live
         # THEN the 1-in-4 shape is listed and the 2-in-4 shape is covered
-        self.assertEqual(self.shapes("--commands", str(cmds)), ["sh -c <str>"])
+        self.assertEqual(self.shapes("--commands", str(cmds)), ["psql -c <str>"])
 
     def test_a_bypassed_rule_still_counts_as_covered(self):
         """A shape whose only rows bypassed a rule (`# agent-cli: allow <id>`) is covered.
@@ -193,7 +193,7 @@ class Covered(StoreCase):
         # WHEN the report runs live, and with none
         # THEN dropped live, listed with none
         self.assertEqual(self.shapes("--since", "3650d"), [])
-        self.assertEqual(len(self.shapes("--since", "3650d", "--covered", "none")), 1)
+        self.assertEqual(self.shapes("--since", "3650d", "--covered", "none"), POLL_STEPS)
 
     def test_a_bypassed_rule_in_commands_input_counts_as_covered(self):
         """From --commands, a raw command that bypassed a rule still counts as covered.
@@ -207,7 +207,7 @@ class Covered(StoreCase):
         # WHEN the report runs live and with none
         # THEN dropped live, listed with none
         self.assertEqual(self.shapes("--commands", str(cmds)), [])
-        self.assertEqual(len(self.shapes("--commands", str(cmds), "--covered", "none")), 1)
+        self.assertEqual(self.shapes("--commands", str(cmds), "--covered", "none"), POLL_STEPS)
 
     def test_agent_cli_behind_a_seam_wrapper_is_covered(self):
         """A shape that starts `<wrapper> agent-cli ...` is covered once the wrapper is in the
@@ -273,7 +273,7 @@ class Covered(StoreCase):
         # WHEN the report runs live and with none
         # THEN dropped live, listed with none
         self.assertEqual(self.shapes("--commands", str(cmds)), [])
-        self.assertEqual(len(self.shapes("--commands", str(cmds), "--covered", "none")), 1)
+        self.assertEqual(self.shapes("--commands", str(cmds), "--covered", "none"), POLL_STEPS)
 
     def test_live_warn_rule_covers_a_one_shot_pr_read(self):
         """From --commands, a one-shot `gh pr view <n> --json state` (the hand-pr-status warn) is covered.
@@ -297,13 +297,13 @@ class Window(StoreCase):
         an off-by-one would put one chore in both.
         """
         # GIVEN one shape per minute boundary: at 10:00, at 11:00, and at 10:59:59, each in 3 sessions
-        self.rec("echo start", 3, at=dt.datetime(2026, 4, 2, 10, 0, 0, tzinfo=UTC))
-        self.rec("ls -la", 3, at=dt.datetime(2026, 4, 2, 10, 59, 59, tzinfo=UTC))
-        self.rec("pwd", 3, at=dt.datetime(2026, 4, 2, 11, 0, 0, tzinfo=UTC))
+        self.rec("make start", 3, at=dt.datetime(2026, 4, 2, 10, 0, 0, tzinfo=UTC))
+        self.rec("lint-tool -q", 3, at=dt.datetime(2026, 4, 2, 10, 59, 59, tzinfo=UTC))
+        self.rec("uptime", 3, at=dt.datetime(2026, 4, 2, 11, 0, 0, tzinfo=UTC))
         # WHEN the window is 10:00 to 11:00
         got = self.shapes("--from", "2026-04-02T10:00", "--until", "2026-04-02T11:00", env=UTC_ENV)
         # THEN the 10:00 and 10:59:59 shapes are in, the 11:00 one is out
-        self.assertEqual(sorted(got), ["echo <arg>", "ls -la"])
+        self.assertEqual(sorted(got), ["lint-tool -q", "make <arg>"])
 
     def test_from_and_until_are_local_times(self):
         """--from/--until are read in the local time zone; rows are stored in UTC.
@@ -312,14 +312,14 @@ class Window(StoreCase):
         a pre-CLI window would take in a morning of post-CLI runs.
         """
         # GIVEN rows at 03:00Z (10:00 at UTC+7) and at 02:59:59Z, each in 3 sessions
-        self.rec("ls -la", 3, at=dt.datetime(2026, 4, 2, 3, 0, 0, tzinfo=UTC))
-        self.rec("pwd", 3, at=dt.datetime(2026, 4, 2, 2, 59, 59, tzinfo=UTC))
+        self.rec("lint-tool -q", 3, at=dt.datetime(2026, 4, 2, 3, 0, 0, tzinfo=UTC))
+        self.rec("uptime", 3, at=dt.datetime(2026, 4, 2, 2, 59, 59, tzinfo=UTC))
         # WHEN the window starts, or ends, at 10:00 in a UTC+7 zone (no DST there)
         zone = {"TZ": "Asia/Ho_Chi_Minh"}
         after = self.shapes("--from", "2026-04-02T10:00", env=zone)
         before = self.shapes("--until", "2026-04-02T10:00", env=zone)
         # THEN 03:00Z is the first second inside --from and outside --until
-        self.assertEqual((after, before), (["ls -la"], ["pwd"]))
+        self.assertEqual((after, before), (["lint-tool -q"], ["uptime"]))
 
     def test_commands_input_uses_the_same_bounds(self):
         """Over --commands, a row at exactly --until is out and one at exactly --from is in; offsets are
@@ -331,17 +331,17 @@ class Window(StoreCase):
         # and 11:00Z, 3 sessions each (12:30+02:00 is in only once converted to UTC)
         rows = []
         for i in range(3):
-            rows += [{"ts": "2026-04-02T10:00:00Z", "session": f"s{i}", "cmd": "echo start"},
-                     {"ts": "2026-04-02T10:59:59.500Z", "session": f"s{i}", "cmd": "ls -la"},
-                     {"ts": "2026-04-02T13:00:00+02:00", "session": f"s{i}", "cmd": "pwd"},
+            rows += [{"ts": "2026-04-02T10:00:00Z", "session": f"s{i}", "cmd": "make start"},
+                     {"ts": "2026-04-02T10:59:59.500Z", "session": f"s{i}", "cmd": "lint-tool -q"},
+                     {"ts": "2026-04-02T13:00:00+02:00", "session": f"s{i}", "cmd": "uptime"},
                      {"ts": "2026-04-02T12:30:00+02:00", "session": f"s{i}", "cmd": "whoami"},
-                     {"ts": "2026-04-02T11:00:00Z", "session": f"s{i}", "cmd": "date"}]
+                     {"ts": "2026-04-02T11:00:00Z", "session": f"s{i}", "cmd": "hostname"}]
         cmds = self.write_commands(rows)
         # WHEN the window is 10:00 to 11:00 UTC
         got = self.shapes("--commands", str(cmds), "--from", "2026-04-02T10:00", "--until", "2026-04-02T11:00",
                           env=UTC_ENV)
         # THEN 10:00, 10:59:59.5 and 12:30+02:00 are in; both spellings of 11:00 are out
-        self.assertEqual(sorted(got), ["echo <arg>", "ls -la", "whoami"])
+        self.assertEqual(sorted(got), ["lint-tool -q", "make <arg>", "whoami"])
 
     def test_until_with_a_bare_date_includes_that_whole_day(self):
         """--until YYYY-MM-DD keeps the whole day; the next midnight is out.
@@ -349,11 +349,11 @@ class Window(StoreCase):
         Matches `hook scan --until`, so the two commands read a date the same way.
         """
         # GIVEN shapes at 23:59:59 on 2 Apr and at 00:00 on 3 Apr
-        self.rec("ls -la", 3, at=dt.datetime(2026, 4, 2, 23, 59, 59, tzinfo=UTC))
-        self.rec("pwd", 3, at=dt.datetime(2026, 4, 3, 0, 0, 0, tzinfo=UTC))
+        self.rec("lint-tool -q", 3, at=dt.datetime(2026, 4, 2, 23, 59, 59, tzinfo=UTC))
+        self.rec("uptime", 3, at=dt.datetime(2026, 4, 3, 0, 0, 0, tzinfo=UTC))
         # WHEN --until 2026-04-02
         # THEN only the 2 Apr shape
-        self.assertEqual(self.shapes("--from", "2026-04-01", "--until", "2026-04-02", env=UTC_ENV), ["ls -la"])
+        self.assertEqual(self.shapes("--from", "2026-04-01", "--until", "2026-04-02", env=UTC_ENV), ["lint-tool -q"])
 
     def test_since_counts_back_from_now(self):
         """--since 14d keeps rows from the last 14 days and drops older ones.
@@ -363,12 +363,12 @@ class Window(StoreCase):
         """
         # GIVEN a shape 2 days old and one 20 days old
         now = dt.datetime.now(UTC)
-        self.rec("ls -la", 3, at=now - dt.timedelta(days=2))
-        self.rec("pwd", 3, at=now - dt.timedelta(days=20))
+        self.rec("lint-tool -q", 3, at=now - dt.timedelta(days=2))
+        self.rec("uptime", 3, at=now - dt.timedelta(days=20))
         # WHEN --since 14d (and the default, which is the same)
         # THEN only the recent shape
-        self.assertEqual(self.shapes("--since", "14d"), ["ls -la"])
-        self.assertEqual(self.shapes(), ["ls -la"])
+        self.assertEqual(self.shapes("--since", "14d"), ["lint-tool -q"])
+        self.assertEqual(self.shapes(), ["lint-tool -q"])
 
     def test_commands_input_counts_every_row_without_a_window(self):
         """With --commands and no window flag, every input row counts (no 14-day default).
@@ -427,15 +427,15 @@ class Cache(StoreCase):
         The warning hook looks a typed shape up in this file; a shape cut by --top would never warn.
         """
         # GIVEN two uncovered repeated shapes and one covered one
-        self.rec("ls -la", 4)
-        self.rec("pwd", 3)
+        self.rec("lint-tool -q", 4)
+        self.rec("uptime", 3)
         self.rec(POLL, 3)
         # WHEN the report runs with --top 1 --write-cache
         r, rows = self.repeats("--since", "3650d", "--top", "1", "--write-cache")
         # THEN stdout has one row, and the cache has both uncovered shapes
         self.assertEqual((r.returncode, len(rows)), (0, 1), r.stderr)
         cache = json.loads((self.store / "repeats-cache.json").read_text())
-        self.assertEqual(cache, {"ls -la": {"sessions": 4, "count": 4}, "pwd": {"sessions": 3, "count": 3}})
+        self.assertEqual(cache, {"lint-tool -q": {"sessions": 4, "count": 4}, "uptime": {"sessions": 3, "count": 3}})
 
     def test_a_cache_that_cannot_be_written_exits_3(self):
         """--write-cache into a store dir that refuses writes exits 3 (blocked), not a traceback.
@@ -443,7 +443,7 @@ class Cache(StoreCase):
         The gardener runs this unattended; a crash would hide why the warning hook's cache went stale.
         """
         # GIVEN a store dir the report cannot write into
-        self.rec("ls -la", 3)
+        self.rec("lint-tool -q", 3)
         self.store.chmod(0o500)
         self.addCleanup(self.store.chmod, 0o700)
         # WHEN the report runs with --write-cache
@@ -459,7 +459,7 @@ class Cache(StoreCase):
         race the recorder or leave a stale cache the warning hook trusts.
         """
         # GIVEN a store
-        self.rec("ls -la", 3)
+        self.rec("lint-tool -q", 3)
         before = sorted(p.name for p in self.store.iterdir())
         # WHEN the report runs
         self.shapes("--since", "3650d")
@@ -489,13 +489,13 @@ class Usage(StoreCase):
         The store is appended by many sessions; one broken line must not stop every report after it.
         """
         # GIVEN a shape in 3 sessions and a half-written line in the same day file
-        self.rec("ls -la", 3)
+        self.rec("lint-tool -q", 3)
         with next(self.store.glob("*.jsonl")).open("a") as f:
             f.write('{"ts": "2026-04-02T12:00:00Z", "sess\n')
         # WHEN the report runs
         r, rows = self.repeats("--since", "3650d")
         # THEN exit 0, the shape listed, the skip counted
-        self.assertEqual((r.returncode, [x["shape"] for x in rows]), (0, ["ls -la"]), r.stderr)
+        self.assertEqual((r.returncode, [x["shape"] for x in rows]), (0, ["lint-tool -q"]), r.stderr)
         self.assertIn("1 unreadable store lines skipped", r.stderr)
 
     def test_unreadable_or_bad_commands_input_exits_3(self):
@@ -516,7 +516,8 @@ class Usage(StoreCase):
 
     def test_usage_errors_exit_2_with_an_example(self):
         """--since with --from, a bad date, --from after --until, --write-cache with --commands, --covered
-        none or --repo, and a zero --min-sessions or --top each exit 2 with an example.
+        none, --repo or --unit command, an unknown --unit, and a zero --min-sessions or --top each exit 2
+        with an example.
 
         Each is a caller mistake that a correct invocation fixes; exit 2 tells the agent to fix the call.
         """
@@ -525,6 +526,7 @@ class Usage(StoreCase):
         for args in (("--since", "7d", "--from", "2026-04-01"), ("--from", "April"), ("--until", "2026-04-02T25:00"),
                      ("--from", "2026-04-03", "--until", "2026-04-02"), ("--commands", str(cmds), "--write-cache"),
                      ("--write-cache", "--covered", "none"), ("--write-cache", "--repo", "x"),
+                     ("--write-cache", "--unit", "command"), ("--unit", "word"),
                      ("--min-sessions", "0"), ("--top", "0"), ("--covered", "some")):
             with self.subTest(args=args):
                 # GIVEN a bad combination
@@ -554,13 +556,148 @@ class Usage(StoreCase):
         house-rules: text output carries the same fields as --json.
         """
         # GIVEN a listed shape
-        self.rec("ls -la", 3)
+        self.rec("lint-tool -q", 3)
         # WHEN the report runs in text mode
         r = agent_cli(self.p, "repeats", "--since", "3650d", env={"AGENT_CLI_SHAPES_DIR": str(self.store)})
         # THEN a header with every field, then the row
         head, row = r.stdout.splitlines()
         self.assertEqual(head.split(), ["sessions", "count", "exit_fail_share", "first", "last", "shape"])
-        self.assertEqual(row.split()[:3] + row.split()[5:], ["3", "3", "0.00", "ls", "-la"])
+        self.assertEqual(row.split()[:3] + row.split()[5:], ["3", "3", "0.00", "lint-tool", "-q"])
+
+
+ENV_CHAINS = ["export PATH=/opt/bin:$PATH && set -a && . .env && set +a && mkdir -p out && cp a.txt out/ && cat out/a.txt",
+              "set -a; . .env; set +a; git add a.txt && git commit -m 'msg'",
+              "mkdir -p /tmp/x && . .env && export FOO=bar && cat /tmp/x/y | grep -n key",
+              ". .env && cp a b && git add . && git commit -m 'wip' && git push"]
+CHORES = "set -a; . .env; sleep 30; git log origin/main.. --oneline; git log HEAD..origin/main; deploy-tool push; cat a.txt"
+
+
+class Steps(StoreCase):
+    def rows(self, *args):
+        r, rows = self.repeats(*args)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        return [(x["shape"], x["sessions"], x["count"]) for x in rows]
+
+    def env_commands(self):
+        """The 4 env-load chains over 6 sessions (chains 1 and 2 twice each), as --commands input."""
+        return self.write_commands([{"ts": "2026-04-02T12:00:00Z", "session": f"s{i}", "cmd": ENV_CHAINS[i % 4]}
+                                    for i in range(6)])
+
+    def test_env_load_chains_collapse_to_one_step_row(self):
+        """Chains that load `.env` among shell basics give one `. .env` row with its true session count, and
+        no row for cat, export, set, mkdir, cp, git add or git commit.
+
+        Whole-command shapes spread one chore over a shape per chain, so `. .env` in 6 sessions showed as
+        rows of 1 or 2 sessions; a naive step split would instead put the shell basics on top. Neither
+        tells anyone which chore to wrap.
+        """
+        # GIVEN 4 different env-load chains typed in 6 sessions
+        cmds = self.env_commands()
+        # WHEN the report ranks steps (the default unit)
+        # THEN `. .env` is the only row, seen in all 6 sessions
+        self.assertEqual(self.rows("--commands", str(cmds), "--covered", "none"), [(". .env", 6, 6)])
+
+    def test_unit_command_keeps_whole_shapes_and_basic_commands(self):
+        """--unit command ranks whole command shapes as before steps existed: no step split, no basic drop.
+
+        A caller that compares against older reports needs the old unit; a split or a dropped basic there
+        would change numbers the caller thinks are like for like.
+        """
+        # GIVEN the env-load chains (no whole chain in 3 sessions), and `ls -la` in 3 sessions in the store
+        cmds = self.env_commands()
+        self.rec("ls -la", 3)
+        # WHEN the report runs with --unit command over each, and over the store with the default unit
+        # THEN no chain repeats as a whole, `ls -la` is listed whole, and the step unit drops it as a read
+        self.assertEqual(self.rows("--commands", str(cmds), "--covered", "none", "--unit", "command"), [])
+        self.assertEqual(self.rows("--since", "3650d", "--unit", "command"), [("ls -la", 3, 3)])
+        self.assertEqual(self.rows("--since", "3650d"), [])
+
+    def test_old_rows_without_steps_fall_back_to_steps_of_shape(self):
+        """A store row written before rows carried `steps` is split from its shape, and its steps count
+        together with the same steps of new rows.
+
+        The store keeps 45 days of rows from the old recorder; skipping them would empty the report for
+        two weeks, and keying them apart would split one chore into two rows.
+        """
+        # GIVEN two old rows (shape only, a path in it) and one new row of the same chore, in 3 sessions
+        self.rec("set -a && deploy-tool ./dist", ["s2"])
+        for s in ("s0", "s1"):
+            record.append_line(self.store / "2026-04-02.jsonl", json.dumps(
+                {"ts": "2026-04-02T12:00:00Z", "session": s, "shape": "set -a; deploy-tool <path> 2>&1",
+                 "rules": [], "bypassed": []}))
+        # WHEN the report runs
+        # THEN one row holds all 3 sessions, the path folded and the redirect dropped as in steps()
+        self.assertEqual(self.rows("--since", "3650d"), [("deploy-tool <arg>", 3, 3)])
+
+    def test_a_step_is_covered_when_half_its_runs_matched_a_rule(self):
+        """Under --covered live a step is dropped when a rule matched at least half of the runs holding it;
+        one in four leaves it listed.
+
+        A rule matches the whole command, so every step of a ruled run counts as ruled; with the half bar a
+        chore that a rule caught once inside some other chain still shows.
+        """
+        # GIVEN a raw-text rule, one chain ruled in 2 of 4 sessions and another ruled in 1 of 4
+        rules = json.dumps([{"id": "demo-rule", "mode": "warn", "on": "raw", "match": "DEMO_TOKEN",
+                             "message": "use the demo command"}])
+        (self.p / ".claude/agent-cli-hooks/pretooluse-rules.json").write_text(rules)
+        rows = []
+        for i in range(4):
+            rows += [{"ts": "2026-04-02T12:00:00Z", "session": f"s{i}",
+                      "cmd": "set -a && deploy-tool push" + ("  # DEMO_TOKEN" if i < 2 else "")},
+                     {"ts": "2026-04-02T12:00:00Z", "session": f"s{i}",
+                      "cmd": "set -a; ship-tool go" + ("  # DEMO_TOKEN" if i < 1 else "")}]
+        cmds = self.write_commands(rows)
+        # WHEN the report runs live and with none
+        # THEN live keeps only the 1-in-4 step; none keeps both
+        self.assertEqual(self.shapes("--commands", str(cmds)), ["ship-tool <arg>"])
+        self.assertEqual(self.shapes("--commands", str(cmds), "--covered", "none"),
+                         ["deploy-tool <arg>", "ship-tool <arg>"])
+
+    def test_a_step_whose_command_word_is_covered_is_dropped(self):
+        """Under --covered live a step whose command is on the `commands:` line is dropped, even inside a
+        chain whose first command is something else.
+
+        Before steps the command word was the chain's first word (`set`), so a project CLI typed after
+        `set -a &&` was never seen as covered.
+        """
+        # GIVEN a project CLI typed after a basic in 3 sessions, and project-rules.md naming it
+        self.rec("set -a && tasker-tool sync", 3)
+        (self.p / ".claude/project-rules.md").write_text("## repeats\ncommands: tasker-tool\n")
+        # WHEN the report runs live and with none
+        # THEN dropped live, listed with none
+        self.assertEqual(self.shapes("--since", "3650d"), [])
+        self.assertEqual(self.shapes("--since", "3650d", "--covered", "none"), ["tasker-tool <arg>"])
+
+    def test_report_lists_sleep_and_on_main_checks_but_no_basic_steps(self):
+        """The report lists `sleep <n>` and `git log` steps that name origin/<arg> next to real chores, and
+        drops the other basics (`set -a`, `cat <arg>`).
+
+        Waiting and checking what is on main are chores an agent repeats by hand and a command can do;
+        they are basic for the warning, but the report must still be able to rank them.
+        """
+        # GIVEN a chain of chores and basics in 3 sessions
+        self.rec(CHORES, 3)
+        # WHEN the report runs
+        # THEN the env load, the tool, both on-main checks and the sleep are listed, and no other basic
+        self.assertEqual(self.shapes("--since", "3650d"),
+                         [". .env", "deploy-tool <arg>", "git log <arg>..origin/<arg>",
+                          "git log origin/<arg> --oneline", "sleep <n>"])
+
+    def test_cache_leaves_out_basic_and_report_only_steps(self):
+        """--write-cache keys the cache by step and leaves out every basic step, sleep and on-main checks
+        included.
+
+        The warning reads this cache; a `sleep 30` or `git log origin/main..` on it would tell agents to
+        wrap a wait or a read in a new command on almost every session.
+        """
+        # GIVEN the same chain of chores and basics in 3 sessions
+        self.rec(CHORES, 3)
+        # WHEN the cache is written
+        r, _ = self.repeats("--since", "3650d", "--write-cache")
+        # THEN it holds only the env load and the tool, each with its counts
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(json.loads((self.store / "repeats-cache.json").read_text()),
+                         {". .env": {"sessions": 3, "count": 3}, "deploy-tool <arg>": {"sessions": 3, "count": 3}})
 
 
 class Speed(StoreCase):

@@ -1,9 +1,16 @@
-"""`agent-cli repeats`: command shapes typed by hand in 3+ sessions that no command or hook rule covers yet.
+"""`agent-cli repeats`: steps typed by hand in 3+ sessions that no command or hook rule covers yet.
 
 Reads the shape recorder's store (record.py), or with --commands a JSONL of raw {ts, session, cmd} rows
 that it shapes and rule-matches in memory; the raw text is never written anywhere.
 
-Covered (--covered live): a shape is covered when (a) a hook rule matched at least half of its runs,
+Unit: a step (shape.steps, one pipeline of a chain, loop body or $( ) body) by default, so `. .env` in
+40 different chains is one row; store rows from before rows carried `steps` are split from their shape.
+Those old rows keep the masking they were recorded with, so for up to the 14-day window one chore can
+sit under an old and a new step key; accepted, with no shape-version field, until that window clears.
+Shell basics (hook.basic) are dropped, except sleeps and on-main git reads (hook.report_only).
+--unit command ranks whole command shapes, as before steps.
+
+Covered (--covered live): a step or shape is covered when (a) a hook rule matched at least half of its runs,
 counting a rule a run skipped with `# agent-cli: allow <id>` (a deny rule blocks its command, so the
 recorder only sees a denied chore when an agent bypassed it on purpose, and the rule's command already
 exists for it). Half, not any: a generic shape (`python3 - <heredoc>`) holds many chores, and one run
@@ -16,22 +23,27 @@ import json
 import re
 import sys
 
-from . import core, hook, record
+from . import core, hook, record, shape
 from .core import Exit
 from .shape import prefix_re
 
 EXAMPLES = ["agent-cli repeats --since 14d",
             "agent-cli repeats --from 2026-04-01 --until 2026-04-07T18:00 --json",
             "agent-cli repeats --commands commands.jsonl --covered none --top 25",
-            "agent-cli repeats --since 14d --write-cache"]
+            "agent-cli repeats --since 14d --write-cache",
+            "agent-cli repeats --since 7d --unit command --covered none"]
 CACHE = "repeats-cache.json"
 FIELDS = ("sessions", "count", "exit_fail_share", "first", "last", "shape")
 TS = "%Y-%m-%dT%H:%M:%SZ"
 STORE_TS = re.compile(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ")
 DESCRIPTION = """\
-Lists command shapes run in --min-sessions or more distinct sessions inside the window, minus covered
-shapes, ranked by sessions, then runs, then shape. A shape is a command with every value masked
-(`gh pr <arg> <n> --json <v>`); see `agent-cli hook posttooluse`.
+Lists steps run in --min-sessions or more distinct sessions inside the window, minus covered steps,
+ranked by sessions, then runs, then step. A step is one pipeline of a command (each part of a `&&` or
+`;` chain, a loop body, a $( ) body) with every value masked (`gh pr view <n> --json <v>`); see
+`agent-cli hook posttooluse`. A run adds once to each distinct step it holds. Shell basics and generic
+reads (cat, export, set -a, mkdir, git add, inline python) are never listed, except waits (`sleep <n>`)
+and git log/show of origin/<arg>. --unit command ranks whole command shapes instead, basics included;
+the `shape` field holds the step, or the command shape with --unit command.
 
 Source: the recorder's store (${AGENT_CLI_SHAPES_DIR:-~/.claude/agent-cli/shapes}), or with --commands a
 JSONL file of {"ts", "session", "cmd"} rows (optional "repo", "exit") shaped in memory; nothing from it
@@ -40,16 +52,17 @@ unless a window is given), or --from/--until in local time, YYYY-MM-DD or YYYY-M
 inclusive; --until with a time is exclusive (a run at exactly that minute is out); a bare --until date
 includes that whole day.
 
-Covered (--covered live, the default): a hook rule matched at least half of the shape's runs (a run
+Covered (--covered live, the default): a hook rule matched at least half of the step's runs (a run
 that skipped the rule with `# agent-cli: allow <id>` counts: the rule's command exists), or its
 command word, after the command-prefixes seam words, is agent-cli or a name on the `commands:` line
 under `## repeats` in .claude/project-rules.md. --covered none lists them too (a window from before
 the commands existed).
 
-Per shape: sessions, count (runs), exit_fail_share (failed runs / runs with a known exit; null when
+Per step: sessions, count (runs), exit_fail_share (failed runs / runs with a known exit; null when
 none is known), first and last (UTC). --write-cache also writes <store>/repeats-cache.json
-{shape: {sessions, count}} with every listed shape, --top ignored (the warning hook reads it; so
-it takes the store with the live filter, never --commands, --covered none or --repo).
+{step: {sessions, count}} with every listed step but sleeps and origin reads, --top ignored (the warning
+hook reads it; so it takes the store with the live filter and the step unit, never --commands,
+--covered none, --repo or --unit command).
 
 Exit codes (agent-cli's shared table): 0 ok: the report ran, an empty list included; 2 refused: bad
 usage; 3 blocked: the store or the --commands file cannot be read, a --commands line is not a
@@ -57,43 +70,45 @@ usage; 3 blocked: the store or the --commands file cannot be read, a --commands 
 
 
 def register(sub):
-    p = core.subcommand(sub, "repeats", "command shapes typed in 3+ sessions that no command or hook rule "
+    p = core.subcommand(sub, "repeats", "command steps typed in 3+ sessions that no command or hook rule "
                         "covers yet (read-only unless --write-cache)", EXAMPLES)
     p.description = DESCRIPTION
     p.add_argument("--since", help="window back from now, e.g. 14d (not with --from/--until)")
     p.add_argument("--from", dest="from_", metavar="WHEN", help="local YYYY-MM-DD[THH:MM], inclusive")
     p.add_argument("--until", metavar="WHEN", help="local YYYY-MM-DD (whole day) or YYYY-MM-DDTHH:MM (exclusive)")
-    p.add_argument("--min-sessions", type=int, default=3, help="distinct sessions a shape needs (default 3)")
-    p.add_argument("--top", type=int, default=25, help="print the first N shapes (default 25)")
+    p.add_argument("--min-sessions", type=int, default=3, help="distinct sessions a step needs (default 3)")
+    p.add_argument("--top", type=int, default=25, help="print the first N steps (default 25)")
     p.add_argument("--repo", help="only runs from this repo (the row's repo name)")
     p.add_argument("--covered", choices=("live", "none"), default="live",
-                   help="live: drop shapes a rule or command covers (default); none: keep them")
+                   help="live: drop steps a rule or command covers (default); none: keep them")
+    p.add_argument("--unit", choices=("step", "command"), default="step",
+                   help="step: each step of a command, basics dropped (default); command: whole command shapes")
     p.add_argument("--commands", metavar="FILE", help="JSONL of raw {ts, session, cmd} rows instead of the store")
     p.add_argument("--write-cache", action="store_true", help="also write <store>/repeats-cache.json")
-    p.add_argument("--json", action="store_true", help="one JSON object per shape")
+    p.add_argument("--json", action="store_true", help="one JSON object per step")
     p.set_defaults(func=run)
 
 
 def run(a):
     if a.min_sessions < 1 or a.top < 1:
         core.die(Exit.REFUSED, "--min-sessions and --top must be 1 or more", EXAMPLES[0])
-    if a.write_cache and (a.commands or a.covered == "none" or a.repo is not None):
-        # the warning hook reads the cache as "the store's uncovered repeats"; any other set would mislead it
-        core.die(Exit.REFUSED, "--write-cache takes the store with the live filter: not with --commands, "
-                 "--covered none or --repo", EXAMPLES[3])
+    if a.write_cache and (a.commands or a.covered == "none" or a.repo is not None or a.unit == "command"):
+        # the warning hook reads the cache as "the store's uncovered repeated steps"; any other set misleads it
+        core.die(Exit.REFUSED, "--write-cache takes the store with the live filter and the step unit: not with "
+                 "--commands, --covered none, --repo or --unit command", EXAMPLES[3])
     lo, hi = window(a)
     live = a.covered == "live"
     rows, skipped = from_commands(a.commands, lo, hi, live) if a.commands else from_store(lo, hi)
     if a.repo is not None:
         rows = [r for r in rows if r.get("repo") == a.repo]
-    groups = group(rows)
+    groups = group(rows, a.unit == "step")
     by_command = command_covered()
     repeated = [(s, g) for s, g in groups.items() if len(g["sessions"]) >= a.min_sessions]
     listed = [(s, g) for s, g in repeated
               if not (live and (2 * g["ruled"] >= g["count"] or by_command(s)))]
     listed.sort(key=lambda sg: (-len(sg[1]["sessions"]), -sg[1]["count"], sg[0]))
     if a.write_cache:
-        cache = {s: {"sessions": len(g["sessions"]), "count": g["count"]} for s, g in listed}
+        cache = {s: {"sessions": len(g["sessions"]), "count": g["count"]} for s, g in listed if not hook.basic(s)}
         try:
             core.write_atomic(record.store_dir() / CACHE, json.dumps(cache, sort_keys=True) + "\n")
         except OSError as e:
@@ -188,26 +203,37 @@ def from_commands(path, lo, hi, live):
     return rows, 0
 
 
-def group(rows):
-    """{shape: {sessions, count, first, last, failed, known, ruled}} over rows (ruled: runs a rule matched,
-    bypassed or not; a row with no session adds to count but not to sessions)."""
-    groups = {}
+def group(rows, by_step=True):
+    """{key: {sessions, count, first, last, failed, known, ruled}} over rows (ruled: runs a rule matched,
+    bypassed or not; a row with no session adds to count but not to sessions). key: by_step, each distinct
+    step of the row that the report may list (`not basic or report_only`; a row without `steps` is split
+    from its shape, once per distinct shape), else the row's whole shape."""
+    groups, split = {}, {}
     for r in rows:
         s = r.get("shape")
         if not s:
             continue
-        g = groups.get(s)
-        if g is None:
-            g = groups[s] = {"sessions": set(), "count": 0, "first": r["ts"], "last": r["ts"], "failed": 0,
-                             "known": 0, "ruled": 0}
-        if r.get("session"):
-            g["sessions"].add(r["session"])
-        g["count"] += 1
-        g["first"], g["last"] = min(g["first"], r["ts"]), max(g["last"], r["ts"])
-        if "exit" in r:
-            g["known"] += 1
-            g["failed"] += r["exit"] != 0
-        g["ruled"] += bool(r.get("rules") or r.get("bypassed"))
+        keys = (s,)
+        if by_step:
+            keys = r.get("steps")
+            if not isinstance(keys, list):  # a row recorded before rows carried steps
+                if s not in split:
+                    split[s] = shape.steps_of_shape(s)
+                keys = split[s]
+            keys = [k for k in dict.fromkeys(keys) if not hook.basic(k) or hook.report_only(k)]
+        for k in keys:
+            g = groups.get(k)
+            if g is None:
+                g = groups[k] = {"sessions": set(), "count": 0, "first": r["ts"], "last": r["ts"], "failed": 0,
+                                 "known": 0, "ruled": 0}
+            if r.get("session"):
+                g["sessions"].add(r["session"])
+            g["count"] += 1
+            g["first"], g["last"] = min(g["first"], r["ts"]), max(g["last"], r["ts"])
+            if "exit" in r:
+                g["known"] += 1
+                g["failed"] += r["exit"] != 0
+            g["ruled"] += bool(r.get("rules") or r.get("bypassed"))
     return groups
 
 

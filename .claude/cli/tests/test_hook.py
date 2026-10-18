@@ -776,8 +776,8 @@ class QuietShapes(RepeatCase):
                  "git diff <path> -- <path>": "git diff a/b -- c/d"}
         loud = {"python3 <path>/report.py --day <n>": "python3 tools/report.py --day 3",
                 "cat <path> | deploy-tool <arg>": "cat a/b | deploy-tool push"}
-        # GIVEN every one of those shapes cached
-        self.write_cache({s: {"sessions": 9, "count": 40} for s in {**quiet, **loud}})
+        # GIVEN every step of those shapes cached (the cache is keyed by step)
+        self.write_cache({st: {"sessions": 9, "count": 40} for s in {**quiet, **loud} for st in shape.steps_of_shape(s)})
         for i, (s, cmd) in enumerate({**quiet, **loud}.items()):
             with self.subTest(shape=s):
                 # WHEN its command is typed (the test checks the hook shaped it as cached)
@@ -801,6 +801,100 @@ class QuietShapes(RepeatCase):
                         ("cat <path> | jq <str>", False)):
             with self.subTest(shape=s):
                 self.assertIs(hook.quiet(s), want)
+
+
+class StepBridge(RepeatCase):
+    """Until the multi-step lookup lands, the warning looks up a one-step command's step in the step-keyed
+    cache and stays silent for longer chains."""
+
+    def test_a_one_step_command_warns_on_its_step_key(self):
+        """A one-step command whose path folds to <arg> warns with the step the cache is keyed by.
+
+        The cache is keyed by step, and steps fold <path> into <arg>; looking up the whole shape
+        (`deploy-tool <arg> <path>`) would miss and the warning would go quiet for most chores.
+        """
+        # GIVEN the cache holding the step `deploy-tool <arg>`, and nothing under the whole shape
+        self.write_cache({"deploy-tool <arg>": {"sessions": 4, "count": 7}})
+        # WHEN a command whose shape is `deploy-tool <arg> <path>` is typed, twice
+        first = self.ask("deploy-tool push ./dist")
+        again = self.ask("deploy-tool push ./out")
+        # THEN it warns once, naming the step
+        self.assertEqual(shape.shape("deploy-tool push ./dist", (), ()), "deploy-tool <arg> <path>")
+        self.assertIn("`deploy-tool <arg>` was hand-written 7 times across 4 sessions", first["additionalContext"])
+        self.assertIsNone(again)
+
+    def test_a_chain_of_two_steps_is_silent_even_with_a_cached_step(self):
+        """A command of two or more steps gives no warning, even when one of its steps is cached (control:
+        the same step alone warns).
+
+        Which step of a chain to name is the multi-step lookup's job; guessing here could warn about the
+        wrong step.
+        """
+        # GIVEN a cached step
+        self.write_cache({CHORE_SHAPE: {"sessions": 4, "count": 6}})
+        # WHEN it is typed inside a chain, and alone
+        chain = self.ask("set -a && " + CHORE)
+        alone = self.ask(CHORE, session="live2")
+        # THEN the chain is silent and the lone step warns
+        self.assertIsNone(chain)
+        self.assertIn("hand-written 6 times", alone["additionalContext"])
+
+    def test_a_basic_step_never_warns_even_when_cached(self):
+        """A one-step command that is basic (inline interpreter code after a flag, git add, mkdir) never
+        warns, even when a cache lists it.
+
+        quiet() let `python3 -I - <heredoc>` through, and a stale or hand-made cache can still hold such
+        a step; the warning must not tell agents to wrap a shell basic in a command.
+        """
+        cmds = {"python3 -I - <heredoc>": "python3 -I - <<'EOF'\nprint(1)\nEOF", "git -C <arg> add <arg>": "git -C ../wt add a.txt",
+                "mkdir -p <arg>": "mkdir -p out/x"}
+        # GIVEN every one of those steps cached
+        self.write_cache({s: {"sessions": 9, "count": 40} for s in cmds})
+        for i, (s, cmd) in enumerate(cmds.items()):
+            with self.subTest(step=s):
+                # WHEN its command is typed (the test checks it is that one step)
+                self.assertEqual(shape.steps(cmd, (), ()), [s])
+                # THEN nothing is printed
+                self.assertIsNone(self.ask(cmd, session=f"b{i}"))
+
+
+class BasicSteps(unittest.TestCase):
+    def test_basic_is_true_only_when_every_pipeline_segment_is_basic(self):
+        """basic(step) is true for shell basics, quiet reads, git housekeeping (after git's global options)
+        and inline interpreter code (after short flags), when every `|` segment is one; one real tool in
+        the pipeline makes it false.
+
+        The report drops basic steps and the cache never holds them; a basic that slips through tops the
+        list (cat, export), and a real chore marked basic (`echo <str> | psql`) disappears from it.
+        """
+        # GIVEN steps, WHEN each is checked, THEN only all-basic ones are basic
+        for step, want in (("export PATH=<v>", True), ("set -a", True), ("mkdir -p <arg>", True), ("cp <arg>", True),
+                           ("git add <arg>", True), ("git commit -m <str>", True), ("git -C <arg> add <arg>", True),
+                           ("git --no-pager diff", True), ("cat <arg> | grep <arg>", True), ("cat <arg>", True),
+                           ("do mkdir -p <arg>", True), ("FOO=<v> cp <arg>", True), ("python3 -I - <heredoc>", True),
+                           ("python3 -c <str>", True), ("node -e <str>", True), ("python3 <heredoc>", True),
+                           ("sleep <n>", True), ("git log origin/<arg>", True), ("echo <str> | psql <arg>", False),
+                           (". .env", False), ("python3 <path>/loop.py", False), ("python3 -m <arg>", False),
+                           ("<path>/cp <arg>", False), ("git worktree add <arg>", False), ("deploy-tool <arg>", False),
+                           ("pnpm db:query <str> | tail <n>", False), ("git -C <arg> worktree list", False)):
+            with self.subTest(step=step):
+                self.assertIs(hook.basic(step), want)
+
+    def test_report_only_is_a_lone_sleep_or_a_git_read_naming_origin(self):
+        """report_only(step) is true for a step that is only a sleep, and for git log/show naming
+        origin/<arg> (after git's global options); never for a step that is not basic.
+
+        The report must list waits and on-main checks (chores a command can do) while the cache leaves
+        them out; marking a real pipeline report-only would keep it off the cache.
+        """
+        # GIVEN steps, WHEN each is checked, THEN only waits and on-main reads are report-only
+        for step, want in (("sleep <n>", True), ("git log origin/<arg>", True), ("git log <arg>..origin/<arg>", True),
+                           ("git -C <arg> show origin/<arg>", True), ("git log origin/<arg> | head <n>", True),
+                           ("git log --oneline", False), ("git fetch origin <arg>", False), ("cat <arg>", False),
+                           ("deploy-tool origin/<arg>", False), ("git log origin/<arg> | psql <arg>", False),
+                           ("sleep <n> | deploy-tool <arg>", False)):
+            with self.subTest(step=step):
+                self.assertIs(hook.report_only(step), want)
 
 
 class UserPromptSubmit(HookCase):
