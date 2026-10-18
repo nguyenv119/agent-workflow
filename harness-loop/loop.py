@@ -248,7 +248,7 @@ PROTECTED = re.compile(r"^\.claude/(skills/(reviewer-[^/]+|test-runner|standards
 # needs no exam, except a skill's or agent's frontmatter (name, description), which every session sees.
 # test_loop derives this list.
 WORK_LOADED = ("AGENTS.md", ".claude/settings.json", ".claude/hooks/", ".claude/commands/work.md",
-               ".claude/agents/implementer.md", ".claude/agents/quick-reviewer.md",
+               ".claude/commands/pr.md", ".claude/agents/implementer.md", ".claude/agents/quick-reviewer.md",
                *(f".claude/skills/{s}/" for s in ("coordinator", "implementer", "reviewer-correctness",
                                                   "reviewer-tests", "reviewer-architecture", "test-runner",
                                                   "standards", "quick", "win-condition", "blast-radius",

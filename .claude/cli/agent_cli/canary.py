@@ -49,7 +49,7 @@ PREREQS = ("needs Docker running and the plan token: CLAUDE_CODE_OAUTH_TOKEN (fr
            "holding it named by HARNESS_EXAM_ENV_FILE or `exam-env-file:` under `## harness` in project-rules.md")
 # harness-loop/loop.py's WORK_LOADED and FRONTMATTER_FILE (a test pins they match): what a /work run loads.
 WORK_LOADED = ("AGENTS.md", ".claude/settings.json", ".claude/hooks/", ".claude/commands/work.md",
-               ".claude/agents/implementer.md", ".claude/agents/quick-reviewer.md",
+               ".claude/commands/pr.md", ".claude/agents/implementer.md", ".claude/agents/quick-reviewer.md",
                *(f".claude/skills/{s}/" for s in ("coordinator", "implementer", "reviewer-correctness",
                                                   "reviewer-tests", "reviewer-architecture", "test-runner",
                                                   "standards", "quick", "win-condition", "blast-radius",

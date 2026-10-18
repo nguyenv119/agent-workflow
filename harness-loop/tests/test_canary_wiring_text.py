@@ -79,7 +79,8 @@ class CanaryWiringText(unittest.TestCase):
         # GIVEN / WHEN pr.md's text / THEN both are there and the coordinator points to it
         text = PR.read_text()
         self.assertIn("more than 2 hours old", text)
-        self.assertIn("`DEFAULT_PATHS` in `.claude/cli/agent_cli/harness_edit.py`", text)
+        self.assertIn("`DEFAULT_PATHS` in agent-cli's `harness_edit.py`", text)
+        self.assertIn("`canary.state` is `error`", text)
         self.assertIn("follow `/pr` step 8", COORDINATOR.read_text())
 
     def test_coordinator_skill_still_loads(self):
