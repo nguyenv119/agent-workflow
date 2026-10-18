@@ -6,6 +6,7 @@ import contextlib
 import io
 import json
 import os
+import signal
 import sys
 import unittest
 import unittest.mock
@@ -32,20 +33,27 @@ if argv[:2] == ["pr", "view"]:
     fields = argv[argv.index("--json") + 1].split(",") if "--json" in argv else []
     print(json.dumps({k: v for k, v in json.loads(os.environ["FAKE_GH_PR"]).items() if k in fields}))
 """
-FAKE_LOOP = """import json, os, subprocess, sys
+FAKE_LOOP = """import json, os, signal, subprocess, sys, time
 from pathlib import Path
 argv = sys.argv[1:]
+gh_log = Path(os.environ.get("FAKE_GH_LOG", "/nonexistent"))
+posted = [a[a.index("-f") + 1] for a in map(json.loads, gh_log.read_text().splitlines()) if a[0] == "api"] \\
+    if gh_log.is_file() else []
 cand = Path(argv[argv.index("--candidate-installed") + 1]) if "--candidate-installed" in argv else None
 pin = cand / ".claude/HARNESS_VERSION" if cand else None
 with open(os.environ["FAKE_LOOP_LOG"], "a") as fh:
     fh.write(json.dumps({"argv": argv, "cwd": os.getcwd(), "home": os.environ.get("HARNESS_LOOP_HOME"),
-        "env_file": os.environ.get("HARNESS_EXAM_ENV_FILE"),
+        "env_file": os.environ.get("HARNESS_EXAM_ENV_FILE"), "posted_before": posted,
         "head": subprocess.run(["git", "rev-parse", "HEAD"], capture_output=True, text=True).stdout.strip(),
         "cand_pin": json.loads(pin.read_text()) if pin and pin.is_file() else None,
         "cand_files": sorted(p.relative_to(cand).as_posix() for p in cand.rglob("*") if p.is_file()) if cand else None})
         + "\\n")
+if os.environ.get("FAKE_LOOP_SIGINT_PARENT"):  # Ctrl-C reaching the canary while the exam runs
+    os.kill(os.getppid(), signal.SIGINT)
+    time.sleep(10)
 sys.exit(int(os.environ.get("FAKE_LOOP_EXIT", "0")))
 """
+PAUSED = "could not run: paused (usage limit or no plan token); run the canary again"
 FAKE_FETCH = """import os, sys
 with open(os.environ["FAKE_LOOP_LOG"] + ".fetch", "a") as fh:
     fh.write(" ".join(sys.argv[1:]) + "\\n")
@@ -166,7 +174,8 @@ class Canary(TmpCase):
         # THEN the canary row is one line, and the subcommand help names Docker and every exit code
         (i,) = [n for n, line in enumerate(listing) if line.strip().startswith("canary ")]
         self.assertFalse(listing[i + 1].startswith(" " * 8), listing[i:i + 2])
-        for part in ("Docker", "CLAUDE_CODE_OAUTH_TOKEN", "0 pass", "1 fail", "3 gh", "4 paused", "5 could not run"):
+        for part in ("Docker", "CLAUDE_CODE_OAUTH_TOKEN", "pending", "0 pass", "1 fail", "3 gh", "4 paused",
+                     "5 could not run"):
             self.assertIn(part, " ".join(top.split()))
 
     def test_default_clone_source_is_the_public_url(self):
@@ -237,16 +246,17 @@ class Canary(TmpCase):
     def test_pr_touching_only_a_project_skill_is_not_needed_and_clones_nothing(self):
         """
         What: a PR changing the body of a project skill /work never loads posts success "not needed (no loaded
-        file)" on the PR head in the PR's repo, exit 0, with no clone, fetch or exam.
+        file)" on the PR head in the PR's repo (after the run's pending), exit 0, with no clone, fetch or exam.
         Why: the merge gate needs the status on every PR. Breaks: a docs-only PR waits on a laptop.
         """
         # GIVEN a PR changing only a project skill's body
         head = self.pr({".claude/skills/deploy/SKILL.md": SKILL.format("deploy", "Ship it carefully.")})
         # WHEN the canary runs
         r = self.canary("--pr", "7")
-        # THEN success "not needed" on the head, nothing cloned, fetched or run
+        # THEN pending, then success "not needed" on the head, nothing cloned, fetched or run
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
-        self.assertEqual(self.statuses(), [self.status(head, "success", "not needed (no loaded file)")])
+        self.assertEqual(self.statuses(), [self.status(head, "pending", "running"),
+                                           self.status(head, "success", "not needed (no loaded file)")])
         self.assertEqual(self.loops(), [])
         self.assertFalse(self.fetched())
 
@@ -269,7 +279,7 @@ class Canary(TmpCase):
         a = call["argv"]
         self.assertEqual((a[a.index("--status-repo") + 1], a[a.index("--status-sha") + 1]), ("owner/app", head))
         self.assertIn("--post-status", a)
-        self.assertEqual(self.statuses(), [])  # loop.py posts the verdict, not agent-cli
+        self.assertEqual(self.statuses(), [self.status(head, "pending", "running")])  # loop.py posts the verdict
         self.assertFalse(self.fetched())
 
     def test_pr_is_scored_as_it_would_land_on_main(self):
@@ -303,7 +313,8 @@ class Canary(TmpCase):
         r = self.canary("--pr", "7")
         # THEN failure "stale", exit 1, nothing run
         self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
-        self.assertEqual(self.statuses(), [self.status(head, "failure", "stale, rebase the PR onto main")])
+        self.assertEqual(self.statuses(), [self.status(head, "pending", "running"),
+                                           self.status(head, "failure", "stale, rebase the PR onto main")])
         self.assertIn("stale, rebase the PR onto main", r.stderr)
         self.assertEqual(self.loops(), [])
 
@@ -320,6 +331,93 @@ class Canary(TmpCase):
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         self.assertEqual(len(self.loops()), 1)
         self.assertNotIn("--post-status", self.loops()[0]["argv"])
+
+    def test_pending_is_posted_before_the_exam_runs(self):
+        """
+        What: a --pr run posts pending "running" on the PR head before loop.py starts.
+        Why: `agent-cli pr wait` keeps a harness PR WAITING while the status is missing or pending; with only final
+        states, "missing" could not tell "nobody runs it" from "it is running", and a coordinator would start a
+        second canary or idle to its cap. Breaks: a running canary reads as one nobody started.
+        """
+        # GIVEN a PR that needs the exam
+        head = self.pr({"AGENTS.md": "# Agents v2\n"})
+        # WHEN the canary runs
+        r = self.canary("--pr", "7")
+        # THEN loop.py started after pending was on GitHub
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        (call,) = self.loops()
+        self.assertEqual(call["posted_before"], ["state=pending"])
+        self.assertEqual(self.statuses(), [self.status(head, "pending", "running")])
+
+    def test_exam_exits_0_1_5_leave_the_final_state_to_loop_py(self):
+        """
+        What: when loop.py exits 0, 1 or 5 the canary posts nothing after pending, and passes the code through.
+        Why: loop.py posts success, failure or error itself on those exits. Breaks: a second status overwrites
+        loop.py's verdict (an error over a real failure, or over a pass).
+        """
+        head = self.pr({"AGENTS.md": "# Agents v2\n"})
+        for code in (0, 1, 5):
+            with self.subTest(exit=code):
+                # GIVEN an exam ending with this code
+                self.gh_log.unlink(missing_ok=True)
+                # WHEN the canary runs
+                r = self.canary("--pr", "7", env={"FAKE_LOOP_EXIT": str(code)})
+                # THEN only the run's pending was posted by agent-cli, and the code passes through
+                self.assertEqual(r.returncode, code, r.stdout + r.stderr)
+                self.assertEqual(self.statuses(), [self.status(head, "pending", "running")])
+
+    def test_exam_exit_without_a_verdict_replaces_pending_with_error(self):
+        """
+        What: loop.py exiting 4 (paused) posts error "could not run: paused ..."; any other code outside 0, 1, 5
+        posts error "could not run: the exam exited <rc>"; the exit code passes through unchanged.
+        Why: those exits post no final state, so the run's pending would stay. Breaks: `pr wait` sees a canary
+        "running" forever and idles to its cap.
+        """
+        head = self.pr({"AGENTS.md": "# Agents v2\n"})
+        for code, desc in ((4, PAUSED), (2, "could not run: the exam exited 2")):
+            with self.subTest(exit=code):
+                # GIVEN an exam ending with this code
+                self.gh_log.unlink(missing_ok=True)
+                # WHEN the canary runs
+                r = self.canary("--pr", "7", env={"FAKE_LOOP_EXIT": str(code)})
+                # THEN pending, then error with the reason; the code passes through
+                self.assertEqual(r.returncode, code, r.stdout + r.stderr)
+                self.assertEqual(self.statuses(), [self.status(head, "pending", "running"),
+                                                   self.status(head, "error", desc)])
+
+    def test_no_status_posts_nothing_even_when_the_exam_pauses(self):
+        """
+        What: --no-status posts neither pending nor the paused error.
+        Why: --no-status is for trial runs on a PR whose status must not change. Breaks: a trial run leaves a
+        status on someone's PR.
+        """
+        # GIVEN a PR that needs the exam and an exam that pauses
+        self.pr({"AGENTS.md": "# Agents v2\n"})
+        # WHEN the canary runs with --no-status
+        r = self.canary("--pr", "7", "--no-status", env={"FAKE_LOOP_EXIT": "4"})
+        # THEN exit 4 and nothing posted
+        self.assertEqual(r.returncode, 4, r.stdout + r.stderr)
+        self.assertEqual(self.statuses(), [])
+
+    def test_ctrl_c_during_the_exam_posts_error_interrupted_and_reraises(self):
+        """
+        What: a Ctrl-C (SIGINT) while loop.py runs posts error "could not run: interrupted" and re-raises.
+        Why: the run posted pending; a killed run must not leave it. Breaks: `pr wait` waits on a dead canary.
+        """
+        # GIVEN the fake loop.py sending SIGINT to its parent (this test process, its default handler set)
+        head = "a" * 40
+        env = {"PATH": f"{self.bin}{os.pathsep}{os.environ['PATH']}", "FAKE_GH_LOG": str(self.gh_log),
+               "FAKE_LOOP_LOG": str(self.loop_log), "FAKE_LOOP_SIGINT_PARENT": "1"}
+        old = signal.signal(signal.SIGINT, signal.default_int_handler)
+        self.addCleanup(signal.signal, signal.SIGINT, old)
+        stderr = io.StringIO()
+        # WHEN the exam runs
+        with unittest.mock.patch.dict(os.environ, env), contextlib.redirect_stderr(stderr), \
+                self.assertRaises(KeyboardInterrupt):
+            canary.exam([sys.executable, self.src / "harness-loop/loop.py", "exam"], os.environ.copy(), self.tmp,
+                        ("owner/app", head))
+        # THEN error "interrupted" on the head
+        self.assertEqual(self.statuses(), [self.status(head, "error", "could not run: interrupted")])
 
     def test_laptop_only_exits_5_before_gh_or_clone(self):
         """
@@ -377,7 +475,8 @@ class Canary(TmpCase):
         r = self.canary("--pr", "7")
         # THEN exit 5 with an error status on the head, nothing run
         self.assertEqual(r.returncode, 5, r.stdout + r.stderr)
-        (status,) = self.statuses()
+        pending, status = self.statuses()
+        self.assertEqual(pending, self.status(head, "pending", "running"))
         self.assertEqual((status[0], status[1]["state"]), (f"repos/owner/app/statuses/{head}", "error"))
         self.assertTrue(status[1]["description"].startswith("could not run: "), status)
         self.assertEqual(self.loops(), [])
@@ -435,6 +534,37 @@ class Canary(TmpCase):
 class SourceTree(TmpCase):
     """agent-workflow's own checkout (no HARNESS_VERSION): its local loop.py, nothing cloned."""
 
+    def setUp(self):
+        """agent-workflow's checkout with fake loop.py and fetch_cache.py, a fake gh, and a same-repo PR 9."""
+        super().setUp()
+        self.app = make_project(self.tmp / "aw")
+        (self.app / "harness-loop/tasks").mkdir(parents=True)
+        (self.app / "harness-loop/loop.py").write_text(FAKE_LOOP)
+        (self.app / "harness-loop/tasks/fetch_cache.py").write_text(FAKE_FETCH)
+        self.bin = self.tmp / "bin"
+        self.bin.mkdir()
+        (self.bin / "gh").write_text(FAKE_GH)
+        (self.bin / "gh").chmod(0o755)
+        self.log, self.gh_log = self.tmp / "loop.jsonl", self.tmp / "gh"
+        self.pr = {"isCrossRepository": False, "headRefOid": "f" * 40, "baseRefName": "main",
+                   "url": "https://github.com/nguyenv119/agent-workflow/pull/9"}
+
+    def canary(self, *args, env=None):
+        return agent_cli(self.app, "harness", "canary", "--pr", "9", *args,
+                         env={"PATH": f"{self.bin}{os.pathsep}{os.environ['PATH']}", "FAKE_GH_LOG": str(self.gh_log),
+                              "FAKE_LOOP_LOG": str(self.log), "FAKE_GH_PR": json.dumps(self.pr),
+                              "CLAUDE_CODE_REMOTE": None, **(env or {})})
+
+    def loops(self):
+        return [json.loads(x) for x in self.log.read_text().splitlines()]
+
+    def statuses(self):
+        calls = [json.loads(x) for x in self.gh_log.read_text().splitlines()] if self.gh_log.is_file() else []
+        return [dict(c[i + 1].split("=", 1) for i, x in enumerate(c) if x == "-f") for c in calls if c[0] == "api"]
+
+    def status(self, state, desc):
+        return {"state": state, "context": "harness-canary", "description": desc}
+
     def test_pr_runs_the_local_loop_with_the_canary_flags(self):
         """
         What: --pr N runs the local `loop.py exam --pr N --tasks tasks/canary-2026-10.json --subscription-only
@@ -442,30 +572,45 @@ class SourceTree(TmpCase):
         Why: agent-workflow's own PRs are exam-ed from source; loop.py fetches after its gate.
         Breaks: a clone of the public repo instead, or a download before the gate.
         """
-        # GIVEN agent-workflow's checkout with fake loop.py and fetch_cache.py, and a same-repo PR
-        app = make_project(self.tmp / "aw")
-        (app / "harness-loop/tasks").mkdir(parents=True)
-        (app / "harness-loop/loop.py").write_text(FAKE_LOOP)
-        (app / "harness-loop/tasks/fetch_cache.py").write_text(FAKE_FETCH)
-        bin_ = self.tmp / "bin"
-        bin_.mkdir()
-        (bin_ / "gh").write_text(FAKE_GH)
-        (bin_ / "gh").chmod(0o755)
-        log = self.tmp / "loop.jsonl"
-        pr = {"isCrossRepository": False, "headRefOid": "f" * 40, "baseRefName": "main",
-              "url": "https://github.com/nguyenv119/agent-workflow/pull/9"}
+        # GIVEN agent-workflow's checkout (setUp)
         # WHEN the canary runs
-        r = agent_cli(app, "harness", "canary", "--pr", "9",
-                      env={"PATH": f"{bin_}{os.pathsep}{os.environ['PATH']}", "FAKE_GH_LOG": str(self.tmp / "gh"),
-                           "FAKE_LOOP_LOG": str(log), "FAKE_GH_PR": json.dumps(pr), "CLAUDE_CODE_REMOTE": None})
+        r = self.canary()
         # THEN the local loop.py got the canary flags, from harness-loop/, and nothing was fetched
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
-        (call,) = [json.loads(x) for x in log.read_text().splitlines()]
+        (call,) = self.loops()
         self.assertEqual(call["argv"], ["exam", "--pr", "9", "--post-status", "--status-repo",
                                         "nguyenv119/agent-workflow", "--tasks", "tasks/canary-2026-10.json",
                                         "--subscription-only", "--rerun-on-fail", "1"])
-        self.assertEqual(Path(call["cwd"]).resolve(), (app / "harness-loop").resolve())
-        self.assertFalse(Path(str(log) + ".fetch").exists())
+        self.assertEqual(Path(call["cwd"]).resolve(), (self.app / "harness-loop").resolve())
+        self.assertFalse(Path(str(self.log) + ".fetch").exists())
+
+    def test_pending_is_posted_on_the_pr_head_before_the_local_loop_runs(self):
+        """
+        What: in the source tree too, pending "running" lands on the PR head before loop.py starts, and an exam
+        that passes adds nothing after it (loop.py posts its own verdict).
+        Why: agent-workflow's own harness PRs wait on the same canary. Breaks: its PRs read "nobody runs it".
+        """
+        # GIVEN agent-workflow's checkout (setUp)
+        # WHEN the canary runs
+        r = self.canary()
+        # THEN pending was on GitHub when loop.py started, on PR 9's head in its repo
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        (call,) = self.loops()
+        self.assertEqual(call["posted_before"], ["state=pending"])
+        self.assertEqual(self.statuses(), [self.status("pending", "running")])
+        self.assertIn(f"repos/nguyenv119/agent-workflow/statuses/{'f' * 40}", self.gh_log.read_text())
+
+    def test_local_loop_paused_replaces_pending_with_error(self):
+        """
+        What: the local loop.py exiting 4 (paused) posts error "could not run: paused ..." and exits 4.
+        Why: loop.py posts nothing on a pause, so the run's pending would stay. Breaks: `pr wait` idles to its cap.
+        """
+        # GIVEN agent-workflow's checkout and an exam that pauses
+        # WHEN the canary runs
+        r = self.canary(env={"FAKE_LOOP_EXIT": "4"})
+        # THEN pending, then the paused error, exit 4
+        self.assertEqual(r.returncode, 4, r.stdout + r.stderr)
+        self.assertEqual(self.statuses(), [self.status("pending", "running"), self.status("error", PAUSED)])
 
 
 if __name__ == "__main__":
