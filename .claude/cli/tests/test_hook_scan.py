@@ -16,6 +16,9 @@ HITS = [
     ("hand-worktree-add-other", "wt_other.sh", "git worktree add ../wt existing-branch\n"),
     ("hand-sleep-poll", "wait_flag.sh", "until test -f done.flag; do\n  sleep 30\ndone\n"),
     ("hand-loop-log", "log.sh", 'echo "step done" >> .claude/loop-x.log\n'),
+    ("hand-pr-status", "pr_state.sh", "#!/bin/bash\ngh pr view 12 --json state,mergeStateStatus\n"),
+    ("hand-worktree-list-rm", "wt_list.sh", "git worktree list --porcelain\n"),
+    ("hand-bare-sleep", "settle.sh", "#!/bin/bash\ndeploy-tool push\nsleep 120\n"),
 ]
 # Near misses: each looks like a rule's chore but is not one.
 NEAR = {
@@ -23,6 +26,7 @@ NEAR = {
     "short_sleep.sh": "while true; do sleep 1; done\n",
     "detach.sh": "git worktree add --detach ../wt HEAD\n",
     "for_list.sh": "for n in 1 2 3; do gh pr checks $n; sleep 30; done\n",
+    "for_body.sh": "for n in 1 2 3; do\n  gh pr view $n --json state\n  sleep 30\ndone\n",
 }
 
 
@@ -254,11 +258,13 @@ class Files(ScanCase):
         # WHEN scanned
         start = time.monotonic()
         r, hits, _ = self.scan(str(self.tree))
-        # THEN it is fast, and the hit is on the first `while` whose bounded (2,000-char) body reaches the
-        # sleep: 2,000 chars of 27-char code lines (the comment is stripped) back from line 30,001
+        # THEN it is fast, and the loop hit is on the first `while` whose bounded (2,000-char) body reaches the
+        # sleep: 2,000 chars of 27-char code lines (the comment is stripped) back from line 30,001; no `done`
+        # follows the sleep, so it is also a bare sleep on its own line
         self.assertLess(time.monotonic() - start, 10)
         self.assertEqual(r.returncode, 0, r.stderr)
-        self.assertEqual([(h["rule"], h["line"]) for h in hits], [("hand-sleep-poll", 30001 - 2000 // 27)])
+        self.assertEqual([(h["rule"], h["line"]) for h in hits],
+                         [("hand-sleep-poll", 30001 - 2000 // 27), ("hand-bare-sleep", 30001)])
 
     def test_a_1mb_file_of_assignments_scans_in_under_10s(self):
         """250,000 `X=1` lines then one worktree add finish in under 10 s.

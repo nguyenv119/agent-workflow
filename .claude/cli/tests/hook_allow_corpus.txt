@@ -3,11 +3,15 @@
 # `---` lines. A line expected to warn ends with `  # expect-warn: <rule-id>`.
 # Every bead that adds a rule adds 5+ near-miss commands for it here.
 git status
-git worktree list
-git worktree remove x
-git worktree list --porcelain
-git worktree remove ../x
+git worktree list  # expect-warn: hand-worktree-list-rm
+git worktree remove x  # expect-warn: hand-worktree-list-rm
+git worktree list --porcelain  # expect-warn: hand-worktree-list-rm
+git worktree remove ../x  # expect-warn: hand-worktree-list-rm
 git worktree prune
+git worktree lock ../x
+git log --grep "worktree remove"
+grep -rn "git worktree list" .claude/
+cat docs/worktree-list.md
 git log --grep "worktree add"
 grep -rn "git worktree add" .claude/
 git commit -m "docs: replace git worktree add with agent-cli wt new"
@@ -17,14 +21,24 @@ agent-cli wt new 42 add-user-login --base origin/main
 git log --oneline -5
 git diff --stat origin/main...HEAD
 git commit -m "fix: echo the WIN line from the verdict lib, not by hand"
-gh pr checks 12
-gh pr view 12 --json state
-gh pr checks 12 --json name,bucket
-sleep 60
+gh pr checks 12  # expect-warn: hand-pr-status
+gh pr view 12 --json state  # expect-warn: hand-pr-status
+gh pr view 12
+gh pr view 12 --web
+gh pr list --json number,title
+gh pr diff 12
+git commit -m "use agent-cli pr status, not gh pr view 12 --json state"
+gh pr checks 12 --json name,bucket  # expect-warn: hand-pr-status
+sleep 60  # expect-warn: hand-bare-sleep
+sleep 19
+sleep 10s
+sleep 0.5
+echo "sleep 60"
+for i in 1 2 3; do sleep 30; done
 gh pr list --state open
-git commit -m "retry for flaky test" && git push && sleep 20 && gh pr view 12 --json url
+git commit -m "retry for flaky test" && git push && sleep 15 && gh pr view 12 --json url  # expect-warn: hand-pr-status
 for n in 53 54; do gh pr view $n --json state; done
-while read f; do wc -l "$f"; done < list.txt; sleep 30; gh pr view 12 --json url
+while read f; do wc -l "$f"; done < list.txt; sleep 30; gh pr view 12 --json url  # expect-warn: hand-pr-status
 for i in 1 2 3; do gh pr checks $i; sleep 5; done
 agent-cli pr wait 12 --cap 40m
 gh api repos/o/r/pulls/12 --jq .mergeable_state
