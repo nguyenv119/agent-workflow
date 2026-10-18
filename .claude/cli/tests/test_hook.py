@@ -239,6 +239,7 @@ class Warn(HookCase):
             ("agent-cli wait --until 'test -s out' --cap 10m 2>&1 | tail -5", (0, piped)),
             ("agent-cli pr wait 12 --cap 40m | tail -3", (0, piped)),
             ("agent-cli wait --until x |& head", (0, piped)),
+            (".claude/bin/agent-cli wait --until x --cap 5m | tail -1", (0, piped)),
         ])
 
     def test_near_misses_of_the_wait_rules_are_silent(self):
@@ -256,6 +257,7 @@ class Warn(HookCase):
             ("agent-cli wait --until x --cap 5m || echo timed out", (0, [])),
             ("agent-cli wait --until x --cap 5m > out.json", (0, [])),
             ("agent-cli wait --help | head", (0, [])),
+            ("agent-cli wait --until x 2>&1 | tail -1; echo ${PIPESTATUS[0]}", (0, [])),
             ("gh api repos/o/r/commits/abc123/status --jq .state", (0, [])),
             ("for i in $(seq 1 3); do echo $i; done", (0, [])),
             ("for i in $(seq 1 5); do sleep 1; done", (0, [])),

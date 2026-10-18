@@ -89,8 +89,8 @@ def builtin(cmd):
          "message": "Waiting on something? agent-cli wait --until '<status cmd>' --every 60 --cap 30m "
                     "(run_in_background) stops on success, passes through refused/blocked, exits 4 on timeout."},
         {"id": "piped-wait", "mode": "warn", "requires": "agent-cli", "on": "code", "needs": r"\bwait\b",
-         "match": cmd + r"agent-cli\s+(?:pr\s+)?wait\b(?:[<>]&|[^;&|\n])*\|(?!\|)",  # | or |&, never ||
-         "unless": r"--help\b|\bpipefail\b",
+         "match": cmd + r"(?:\S*/)?agent-cli\s+(?:pr\s+)?wait\b(?!-)(?:[<>]&|[^;&|\n])*\|(?!\|)",  # | or |&, never ||
+         "unless": r"--help\b|\bpipefail\b|\bPIPESTATUS\b",  # these keep the wait's exit
          "message": "Don't pipe agent-cli wait: the pipe's exit is the last command's, so a timeout (exit 4) or "
                     "a failure (exit 3) reads as 0. Run it unpiped with run_in_background; add --json for one "
                     "line per attempt."},
