@@ -99,6 +99,13 @@ def _branch(top):
     return f"on {branch}" if branch == default.removeprefix("origin/") else None
 
 
+def harness_globs():
+    """The harness-paths globs: the `harness-paths:` line under `## harness` in project-rules.md, else
+    DEFAULT_PATHS. The one list for this hook and the canary rule of `agent-cli pr`."""
+    value = core.rules_line("harness", "harness-paths")
+    return core.names(value) if value else list(DEFAULT_PATHS)
+
+
 def first(paths, cwd, removed=()):
     """Why writing one of paths breaks the rule, for the first that does, or None to allow.
 
@@ -107,8 +114,7 @@ def first(paths, cwd, removed=()):
     that checkout): removing or replacing that dir rewrites the harness files under it, while a write into a
     dir above the checkout (`cp x ..`) does not. On macOS names compare case-folded."""
     fold = str.lower if sys.platform == "darwin" else str  # its default file system ignores case
-    value = core.rules_line("harness", "harness-paths")
-    globs = [fold(g) for g in (core.names(value) if value else DEFAULT_PATHS)]
+    globs = [fold(g) for g in harness_globs()]
     fixed = [re.split(r"[*?[]", g)[0] for g in globs]  # each glob's text before its first wildcard
     base, verdicts = os.environ.get("CLAUDE_PROJECT_DIR"), {}
     tops = {_top(os.path.realpath(d)) for d in (cwd, base) if d} - {None}

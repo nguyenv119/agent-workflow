@@ -172,3 +172,96 @@ def set_env(case, **values):
             os.environ.pop(k, None)
         else:
             os.environ[k] = v
+
+
+# REVIEW: mocking core dependency (gh / the GitHub API, which has no local or test-mode equivalent).
+# It replays $FAKE_GH/view.json and checks.json (no checks.json = gh's "no checks reported", exit 1;
+# view.err = a failing gh pr view; a `slow` file = sleep that many seconds first; `gh repo view` prints the
+# `repo` file, no file = a failing call), appends every argv to calls.log and each `gh pr merge` argv to merge.log.
+# `gh api` (an api.err file makes every one fail): .../pulls/N/files applies pr.py's --jq to files.json (REST
+# objects, none = []); .../contents/<path>?ref= prints a sha when <path> is a line of contents.txt, else HTTP 404;
+# .../commits/<sha>/status prints status.json (none = no statuses).
+FAKE_GH = r'''#!/usr/bin/env python3
+import json, os, sys, time
+d, a = os.environ["FAKE_GH"], sys.argv[1:]
+open(f"{d}/calls.log", "a").write(json.dumps(a) + "\n")
+read = lambda name, default: open(f"{d}/{name}").read() if os.path.exists(f"{d}/{name}") else default
+if os.path.exists(f"{d}/slow"):
+    time.sleep(float(open(f"{d}/slow").read()))
+if a[:2] == ["pr", "view"]:
+    if os.path.exists(f"{d}/view.err"):
+        sys.stderr.write(open(f"{d}/view.err").read()); sys.exit(1)
+    print(open(f"{d}/view.json").read())
+elif a[:2] == ["pr", "checks"]:
+    if not os.path.exists(f"{d}/checks.json"):
+        sys.stderr.write("no checks reported on the 'feature' branch\n"); sys.exit(1)
+    print(open(f"{d}/checks.json").read())
+elif a[:2] == ["pr", "merge"]:
+    open(f"{d}/merge.log", "a").write(json.dumps(a) + "\n")
+elif a[:2] == ["repo", "view"]:
+    if not os.path.exists(f"{d}/repo"):
+        sys.stderr.write("no git remotes found\n"); sys.exit(1)
+    print(open(f"{d}/repo").read())
+elif a[:1] == ["api"]:
+    if os.path.exists(f"{d}/api.err"):
+        sys.stderr.write(open(f"{d}/api.err").read()); sys.exit(1)
+    path, jq = next(x for x in a if x.startswith("repos/")), a[a.index("--jq") + 1] if "--jq" in a else None
+    if path.endswith("/files") and jq == ".[] | .filename, (.previous_filename // empty)":
+        for f in json.loads(read("files.json", "[]")):
+            print(f["filename"]); f.get("previous_filename") and print(f["previous_filename"])
+    elif "/contents/" in path:
+        if path.split("/contents/", 1)[1].split("?")[0] not in read("contents.txt", "").split():
+            sys.stderr.write("gh: Not Found (HTTP 404)\n"); sys.exit(1)
+        print("0123abcd")
+    elif path.endswith("/status") and jq is None:
+        print(read("status.json", '{"statuses": []}'))
+    else:
+        sys.exit(2)
+else:
+    sys.exit(2)
+'''
+
+
+def view(state="OPEN", merge="CLEAN", head="a" * 40):
+    """A `gh pr view --json` object for PR 42 of o/r."""
+    return {"baseRefName": "main", "headRefOid": head, "mergeStateStatus": merge, "state": state,
+            "url": "https://github.com/o/r/pull/42"}
+
+
+def check(name, bucket, link=""):
+    """A `gh pr checks --json` row."""
+    return {"name": name, "bucket": bucket, "state": bucket.upper(), "link": link or f"https://ci.example/{name}"}
+
+
+class GhCase(TmpCase):
+    """A project (self.p) with a fake gh on PATH; set_pr() writes what gh will report."""
+
+    def setUp(self):
+        super().setUp()
+        self.p = make_project(self.tmp / "proj")
+        self.gh = self.tmp / "gh-data"
+        self.gh.mkdir()
+        bin_ = self.tmp / "bin"
+        bin_.mkdir()
+        (bin_ / "gh").write_text(FAKE_GH)
+        (bin_ / "gh").chmod(0o755)
+        self.env = {"PATH": f"{bin_}{os.pathsep}{os.environ['PATH']}", "FAKE_GH": str(self.gh)}
+
+    def set_pr(self, view_obj, checks=None):
+        (self.gh / "view.json").write_text(json.dumps(view_obj))
+        if checks is not None:
+            (self.gh / "checks.json").write_text(json.dumps(checks))
+
+    def rules(self, text):
+        (self.p / ".claude/project-rules.md").write_text(text)
+
+    def cli(self, *args):
+        return agent_cli(self.p, "pr", *args, env=self.env)
+
+    def calls(self):
+        f = self.gh / "calls.log"
+        return [json.loads(x) for x in f.read_text().splitlines()] if f.exists() else []
+
+    def merges(self):
+        f = self.gh / "merge.log"
+        return [json.loads(x) for x in f.read_text().splitlines()] if f.exists() else []

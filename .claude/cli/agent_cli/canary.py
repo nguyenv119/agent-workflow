@@ -29,11 +29,10 @@ from pathlib import Path
 
 from . import core
 from .core import Exit
-from .pr import GhError, gh
+from .pr import CANARY as CONTEXT, GhError, gh
 
 PUBLIC_SOURCE = "https://github.com/nguyenv119/agent-workflow"
 MANIFEST = "tasks/canary-2026-10.json"  # relative to harness-loop/
-CONTEXT = "harness-canary"
 EXAMPLE = "agent-cli harness canary --pr 91"
 EXITS = ("exit: 0 pass or not needed; 1 fail (after one rerun) or stale; 2 usage or refused config; 3 gh could not "
          "read the PR; 4 paused or no plan token; 5 could not run (laptop-only, fork PR, git or clone failed, the PR "
