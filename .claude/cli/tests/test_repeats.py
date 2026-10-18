@@ -1376,6 +1376,19 @@ class Polls(StoreCase):
         # THEN both keys have one sequence each, ranked by name on the tie
         self.assertEqual(self.steps(runs), ["gh pr checks <n>", "sleep <n>"])
 
+    def test_pnpm_global_options_are_skipped_so_scripts_poll_apart(self):
+        """`pnpm --filter web typecheck` and `pnpm --filter web lint`, each run 3 times minutes apart, are two
+        checks, `pnpm typecheck` and `pnpm lint`, as git's global options are skipped.
+
+        Cut at the option's masked value, both would be one key `pnpm --filter <v>`, and two different chores
+        would read as one poll.
+        """
+        # GIVEN a typecheck and a lint, each run 3 times 2 minutes apart, with a --filter option
+        runs = self.at([0, 120, 240], "pnpm --filter web typecheck") + self.at([60, 180, 300], "pnpm --filter web lint")
+        # WHEN --polls runs
+        # THEN one key per script, past the option
+        self.assertEqual(self.steps(runs), ["pnpm lint", "pnpm typecheck"])
+
     def test_two_agents_interleaving_one_step_poll_each_on_their_own(self):
         """Two agents of one session alternate a check, each agent's own runs 2 to 3 minutes apart: one
         sequence per agent (gaps 120, 180, 120, 120: median 120 s, mean 135 s), and the session counts once.

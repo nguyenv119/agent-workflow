@@ -149,6 +149,9 @@ CASES = [
     ("gh api user", "gh api user"),
     ("gh api octocat", "gh api <arg>"),
     ("gh api / --jq .x", "gh api <path> --jq <v>"),
+    ("gh api 'repos/o/r/pulls?per_page=100'", "gh api <str>"),  # a quoted endpoint is quoted text
+    ("gh api https://api.example.test/repos/o/r/pulls", "gh api <url:api.example.test>"),
+    ("gh api repos/o/r/check-runs/99/annotations", "gh api repos/<arg>/<arg>/check-runs/<n>/annotations"),
     ("git a:b", "git <arg>"),
     ("yarn db:c324f28ab", "yarn <arg>"),
     ("yarn run2024:x", "yarn <arg>"),
@@ -259,7 +262,7 @@ class Shape(unittest.TestCase):
                     f"git log origin/{s}", f"git log {s}..origin/{s}",
                     f"pnpm --filter {w} typecheck", f"pnpm --filter=@{w}/x lint", f"pnpm -C {w} exec {w}",
                     f"pnpm dlx {w}", f"gh api repos/{w}/{w}/pulls", f"gh api {w}", f"gh api /orgs/{w}/members",
-                    f"gh api repos/o/r/pulls?{w}=1", f"gh api repos/o/r/{w}/{s}", f"echo $(cat {w})", f"echo \"$(tool {s})\"",
+                    f"gh api repos/o/r/pulls?{w}=1", f"gh api repos/o/r/{w}/{s}", f"gh api '{w}/{s}'", f"echo $(cat {w})", f"echo \"$(tool {s})\"",
                     f"echo $(({w}+1))", f"source .env.prod && deploy --token {s} -m '{w}'"]
         for command in commands:
             with self.subTest(command=command):

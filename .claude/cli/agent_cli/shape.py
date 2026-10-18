@@ -46,12 +46,12 @@ COLON_TOOLS = {("yarn",), ("npm", "run"), ("yarn", "run"),  # script names: test
 GLOBAL_OPTS = {"git": {"-C": True, "-c": True, "--git-dir": True, "--work-tree": True, "--no-pager": False},
                "pnpm": {"--filter": True, "-F": True, "-C": True, "--dir": True, "-r": False, "--recursive": False,
                         "-w": False, "--workspace-root": False, "-s": False, "--silent": False}}
-GIT_GLOBAL = GLOBAL_OPTS["git"]  # hook.py reads git's
 # GitHub REST resource words kept in a `gh api` endpoint; every other segment is masked.
 GH_WORDS = frozenset("""repos pulls issues comments reviews requested_reviewers actions runs jobs logs attempts
 check-runs check-suites commits status statuses branches protection contents releases workflows artifacts
 labels milestones git refs heads tags trees blobs user users orgs members teams search code events timeline
-files merge compare deployments environments hooks collaborators assignees notifications graphql""".split())
+files merge compare deployments environments hooks collaborators assignees notifications graphql
+annotations rulesets readme""".split())
 GH_NAMED = {"repos": 2, "users": 1, "orgs": 1}  # segments after these are owner/repo/login names, always masked
 ENV_FILE = re.compile(r"[\w.-]{0,40}\.env|\.env\.[\w.-]{1,40}")  # .env, prod.env, .env.local
 PLUS_FLAGS = re.compile(r"\+[A-Za-z]|\+[a-z]{2,4}")  # `set +a`, the off switch of -a
@@ -240,6 +240,8 @@ def _push(words, w):
 def _endpoint(t):
     """A `gh api` endpoint with GH_WORDS kept and every other segment masked: names after GH_NAMED words and
     unknown words -> <arg>, numbers -> <n>, hex ids -> <id>, a query -> ?<v>; a leading / is dropped."""
+    if URL.match(t):  # a full URL endpoint: masked as any URL
+        return _value(t, False)
     path, query, _ = t.lstrip("/").partition("?")  # query: "?" when the endpoint has one
     out, named = [], 0
     for seg in path.split("/"):

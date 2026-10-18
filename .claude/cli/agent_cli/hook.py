@@ -282,18 +282,20 @@ CUT_CHARS = re.compile(r"-[cb](?:<v>)?|--(?:characters|bytes)(?:=<v>)?")  # cut 
 
 def _words(seg):
     """A step segment's words from its command word: past a leading shell keyword and VAR=<v> words, and
-    for git past its global options (`git -C <arg> add <arg>` -> [git, add, <arg>])."""
-    from .shape import GIT_GLOBAL, LEAD_KEYWORDS
+    for git and pnpm past their global options (`git -C <arg> add <arg>` -> [git, add, <arg>],
+    `pnpm --filter <v> typecheck` -> [pnpm, typecheck])."""
+    from .shape import GLOBAL_OPTS, LEAD_KEYWORDS
     words = seg.split()
     if words and (words[0] in LEAD_KEYWORDS or words[0] in CLOSE_KEYWORDS):
         words = words[1:]
     while words and ASSIGN_WORD.match(words[0]):
         words = words[1:]
-    if words[:1] == ["git"]:
+    opts = GLOBAL_OPTS.get(words[0]) if words else None
+    if opts:
         i = 1
-        while i < len(words) and (words[i] in GIT_GLOBAL or words[i].split("=", 1)[0] in ("--git-dir", "--work-tree")):
-            i += 1 + GIT_GLOBAL.get(words[i], False)
-        words = ["git"] + words[i:]
+        while i < len(words) and (words[i] in opts or words[i].startswith("--") and opts.get(words[i].split("=", 1)[0])):
+            i += 1 + opts.get(words[i], False)  # `--dir=<v>` holds its value
+        words = words[:1] + words[i:]
     return words
 
 
