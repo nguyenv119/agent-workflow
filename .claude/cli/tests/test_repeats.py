@@ -67,10 +67,11 @@ class Threshold(StoreCase):
             self.rec("uptime", 2)
         # WHEN the report runs over the window holding them
         r, rows = self.repeats("--from", "2026-04-02", "--until", "2026-04-02", env=UTC_ENV)
-        # THEN only the 3-session shape is listed, with its counts and times
+        # THEN only the 3-session shape is listed, with its counts and times, as a group of one spelling
         self.assertEqual(r.returncode, 0, r.stderr)
-        self.assertEqual(rows, [{"shape": "lint-tool -q", "sessions": 3, "count": 3, "first": "2026-04-02T12:00:00Z",
-                                 "last": "2026-04-02T12:00:00Z", "exit_fail_share": 0.0}])
+        row = {"shape": "lint-tool -q", "sessions": 3, "count": 3, "first": "2026-04-02T12:00:00Z",
+               "last": "2026-04-02T12:00:00Z", "exit_fail_share": 0.0}
+        self.assertEqual(rows, [dict(row, group="lint-tool", spellings=[row], spellings_total=1)])
 
     def test_min_sessions_flag_lowers_the_bar(self):
         """--min-sessions 2 lists the 2-session shape too.
@@ -382,8 +383,9 @@ class Window(StoreCase):
         r, rows = self.repeats("--commands", str(cmds))
         # THEN the shape is listed with its first and last times, and no fail share (the input has no exit)
         self.assertEqual(r.returncode, 0, r.stderr)
-        self.assertEqual(rows, [{"shape": "make <arg>", "sessions": 3, "count": 3, "first": "2020-01-01T10:00:00Z",
-                                 "last": "2020-01-03T10:00:00Z", "exit_fail_share": None}])
+        row = {"shape": "make <arg>", "sessions": 3, "count": 3, "first": "2020-01-01T10:00:00Z",
+               "last": "2020-01-03T10:00:00Z", "exit_fail_share": None}
+        self.assertEqual(rows, [dict(row, group="make", spellings=[row], spellings_total=1)])
 
 
 class Privacy(StoreCase):
@@ -553,7 +555,7 @@ class Usage(StoreCase):
 
     def test_usage_errors_exit_2_with_an_example(self):
         """--since with --from, a bad date, --from after --until, --write-cache with --commands, --covered
-        none, --repo or --unit command, an unknown --unit, and a zero --min-sessions or --top each exit 2
+        none, --repo or --unit command, an unknown --unit, and a zero --min-sessions, --top or --spellings each exit 2
         with an example.
 
         Each is a caller mistake that a correct invocation fixes; exit 2 tells the agent to fix the call.
@@ -564,7 +566,7 @@ class Usage(StoreCase):
                      ("--from", "2026-04-03", "--until", "2026-04-02"), ("--commands", str(cmds), "--write-cache"),
                      ("--write-cache", "--covered", "none"), ("--write-cache", "--repo", "x"),
                      ("--write-cache", "--unit", "command"), ("--unit", "word"),
-                     ("--min-sessions", "0"), ("--top", "0"), ("--covered", "some")):
+                     ("--min-sessions", "0"), ("--top", "0"), ("--spellings", "0"), ("--covered", "some")):
             with self.subTest(args=args):
                 # GIVEN a bad combination
                 # WHEN the report runs
@@ -731,10 +733,13 @@ class Steps(StoreCase):
         # GIVEN a chain of chores and basics in 3 sessions
         self.rec(CHORES, 3)
         # WHEN the report runs
-        # THEN the env load, the tool, both on-main checks and the sleep are listed, and no other basic
-        self.assertEqual(self.shapes("--since", "3650d"),
-                         [". .env", "deploy-tool <arg>", "git log <arg>..origin/<arg>",
-                          "git log origin/<arg> --oneline", "sleep <n>"])
+        # THEN the env load, the tool, the on-main checks (one `git log` group) and the sleep are listed, and
+        # no other basic
+        r, rows = self.repeats("--since", "3650d")
+        self.assertEqual([(x["shape"], [s["shape"] for s in x["spellings"]]) for x in rows],
+                         [(". .env", [". .env"]), ("deploy-tool <arg>", ["deploy-tool <arg>"]),
+                          ("git log <arg>..origin/<arg>", ["git log <arg>..origin/<arg>", "git log origin/<arg> --oneline"]),
+                          ("sleep <n>", ["sleep <n>"])])
 
     def test_cache_leaves_out_basic_and_report_only_steps(self):
         """--write-cache keys the cache by step and leaves out every basic step, sleep and on-main checks
@@ -754,7 +759,7 @@ class Steps(StoreCase):
 
     def test_cache_keys_quiet_tail_variants_by_their_chore_while_the_report_keeps_pipelines(self):
         """`x-tool run`, `x-tool run | head -5` and `x-tool run | grep ok`, one per session in 3 sessions, write
-        one cache key `x-tool <arg>` in 3 sessions; the report still lists the three full pipelines.
+        one cache key `x-tool <arg>` in 3 sessions; the report still lists the three full pipelines as spellings.
 
         Keyed by pipeline, each variant sat in 1 session and never reached the cache, or, once common, warned
         on its own and spent the per-session cap; the report keeps the pipeline so a reader sees how it is typed.
@@ -768,8 +773,9 @@ class Steps(StoreCase):
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertEqual(json.loads((self.store / "repeats-cache.json").read_text()),
                          {"x-tool <arg>": {"sessions": 3, "count": 3}})
-        self.assertEqual(self.shapes("--since", "3650d", "--min-sessions", "1"),
-                         ["x-tool <arg>", "x-tool <arg> | grep <arg>", "x-tool <arg> | head <n>"])
+        _, rows = self.repeats("--since", "3650d", "--min-sessions", "1")
+        self.assertEqual([[s["shape"] for s in x["spellings"]] for x in rows],
+                         [["x-tool <arg>", "x-tool <arg> | grep <arg>", "x-tool <arg> | head <n>"]])
 
     def test_cache_of_runs_in_process_on_replayed_commands(self):
         """cache_of() over from_commands() rows gives the same chore-keyed cache, a run adding once to a key
@@ -788,6 +794,297 @@ class Steps(StoreCase):
         # THEN the chore counts each run once, and the recipe keeps its pipeline
         self.assertEqual(cache, {"x-tool <arg>": {"sessions": 3, "count": 3},
                                  "y-tool <arg> | tr <arg>": {"sessions": 3, "count": 3}})
+
+
+class WordPair(unittest.TestCase):
+    def check(self, cases):
+        for step, want in cases:
+            with self.subTest(step=step):
+                self.assertEqual(repeats.word_pair(step), want)
+
+    def test_key_is_the_tool_and_its_next_name_word(self):
+        """A step's group key is its command word plus the next word when that word is a name, past VAR=<v>
+        words and git's global options, from the first `|` segment only.
+
+        Spellings of one chore differ in their values, flags and tails (`bd show <arg> | head <n>`, `git
+        worktree remove <arg> --force`); keyed on the whole step each sat in too few sessions to be listed.
+        """
+        # GIVEN steps with tails, flags, masked values and lead words
+        # WHEN each is keyed
+        # THEN the key is the tool and its subcommand or name
+        self.check([(". <path>/.env", ". .env"), (". .env", ". .env"), ("bd show <arg> | head <n>", "bd show"),
+                    ("git worktree list | head <n>", "git worktree"), ("git worktree remove <arg> --force", "git worktree"),
+                    ("git -C <arg> worktree list", "git worktree"), ("FOO=<v> deploy-tool push", "deploy-tool push"),
+                    ("yarn test:unit <arg>", "yarn test:unit")])
+
+    def test_a_flag_or_masked_value_ends_the_key(self):
+        """A word starting with `-`, a masked value or a redirect ends the key, so `pkill -f <v>` is `pkill`.
+
+        A flag or a value is how a chore is typed this time, not which chore it is; keeping it would split
+        one chore again.
+        """
+        # GIVEN steps whose second word is a flag, a value or a redirect
+        # WHEN each is keyed
+        # THEN the key stops before it
+        self.check([("pkill -f <v>", "pkill"), ("curl -s -H <str> <url:h.example.test>", "curl"), ("sleep <n>", "sleep"),
+                    ("<path>/deploy.sh <arg>", "deploy.sh"), ("make 2>&1", "make"), ("ship-tool X=<v>", "ship-tool")])
+
+    def test_gh_and_npm_run_keep_the_command_after_the_group(self):
+        """gh's group word (`pr`, `api`, ...) and npm/yarn `run` take one more name: `gh pr view` and `gh pr
+        checks` are two keys; git's two-level groups do not (`git worktree list` is `git worktree`).
+
+        Every gh command is `gh <group> <command>`: reading a PR and waiting on its checks are different chores,
+        and one `gh pr` key would merge them. git's worktree chores are one: list then remove.
+        """
+        # GIVEN gh, npm and git steps with a group word
+        # WHEN each is keyed
+        # THEN gh and npm run keep the command, git keeps two words
+        self.check([("gh pr view <n> --json <v>", "gh pr view"), ("gh pr checks <n>", "gh pr checks"),
+                    ("gh api <arg>", "gh api"), ("gh auth status", "gh auth"), ("npm run test:unit", "npm run test:unit"),
+                    ("git stash list", "git stash")])
+
+    def test_an_interpreter_keys_on_its_script_so_two_scripts_stay_apart(self):
+        """An interpreter's key is the interpreter and its script, past flags (`python3 -u loop.py` -> `python3
+        loop.py`); with no script name it is the interpreter alone (`python3 -m <v>`).
+
+        A key of `python3` plus its next word would put `-u` in the key, and a key of `python3` alone would
+        merge every script, the chores a reader must tell apart.
+        """
+        # GIVEN interpreter steps with and without a script
+        # WHEN each is keyed
+        # THEN scripts keep their names and differ from each other
+        self.check([("python3 -u loop.py", "python3 loop.py"), ("python3 <path>/loop.py --n <n>", "python3 loop.py"),
+                    ("python3 <path>/sync.py", "python3 sync.py"), ("python3 -m <v> <arg>", "python3"),
+                    ("<path>/node server.js", "node server.js")])
+
+    def test_a_feeder_pipeline_keys_on_its_first_non_basic_segment(self):
+        """A pipeline keys on its first `|` segment that is not a shell basic, so `echo <arg> | psql <arg>` is
+        `psql`; when every segment is basic it keys on the first (`git show origin/<arg> | head <n>`).
+
+        Keyed on the first segment, a feeder (`cat`, `echo`) would merge unrelated tools into one row: `cat
+        <arg> | jq <str>` and `cat <arg> | psql <arg>` are two chores.
+        """
+        # GIVEN feeder pipelines, a tool with a quiet tail and all-basic steps
+        # WHEN each is keyed
+        # THEN the key is the first non-basic segment's tool, or the first segment's when all are basic
+        self.check([("echo <arg> | psql <arg>", "psql"), ("cat <arg> | jq <str>", "jq"), ("cat <arg> | psql <arg>", "psql"),
+                    ("bd show <arg> | head <n>", "bd show"), ("git show origin/<arg> | head <n>", "git show"),
+                    ("sleep <n>", "sleep")])
+
+    def test_path_spellings_of_one_tool_or_script_share_a_key(self):
+        """The tool word and a kept second word or script key on their last path part: `<path>/gh pr view <n>`
+        is `gh pr view`, `python3 <path>/loop.py` and `python3 loop.py` are `python3 loop.py`, `. <path>/.env`
+        and `. .env` are `. .env`.
+
+        One tool or script typed by path and by name is one chore; keyed on the spelling it splits in two.
+        """
+        # GIVEN path and bare spellings of one tool, script and env file
+        # WHEN each is keyed
+        # THEN both spellings share a key
+        self.check([("<path>/gh pr view <n>", "gh pr view"), ("gh pr view <n>", "gh pr view"),
+                    ("python3 <path>/loop.py", "python3 loop.py"), ("python3 loop.py", "python3 loop.py"),
+                    (". <path>/.env", ". .env"), (". .env", ". .env")])
+
+    def test_a_placeholder_command_word_keys_the_step_alone(self):
+        """A step whose command word is masked (`<arg> --x`) is its own key, unchanged.
+
+        There is no literal tool to group on; keying it `<arg>` would merge every masked command into one row
+        that mixes tools.
+        """
+        # GIVEN steps with a masked command word
+        # WHEN each is keyed
+        # THEN each is its own key
+        self.check([("<arg> --x", "<arg> --x"), ("<path> run", "<path> run")])
+
+
+def runs(*pairs):
+    """--commands rows from (cmd, sessions) pairs: cmd once in each named session."""
+    return [{"ts": "2026-04-02T12:00:00Z", "session": s, "cmd": c} for c, ss in pairs for s in ss]
+
+
+class Groups(StoreCase):
+    def groups(self, pairs, *args):
+        r, rows = self.repeats("--commands", str(self.write_commands(runs(*pairs))), *args)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        return rows
+
+    def test_spellings_each_under_the_cut_join_into_one_listed_group(self):
+        """Two spellings of `bd show`, each in 2 sessions with one session in both, are one group in 3 distinct
+        sessions, listed at the default bar; its shape is the top spelling.
+
+        This is the point of grouping: a chore typed several ways never reached the top 25 because each
+        spelling fell under 3 sessions. Counting s1 twice would inflate the merged count.
+        """
+        # GIVEN `bd show <arg> --json` in s0, s1 and `bd show <arg> | head <n>` in s1, s2
+        pairs = [("bd show x-1 --json", ["s0", "s1"]), ("bd show x-1 | head -3", ["s1", "s2"])]
+        # WHEN the report runs
+        rows = self.groups(pairs, "--covered", "none")
+        # THEN one group in 3 sessions and 4 runs
+        self.assertEqual([(x["group"], x["shape"], x["sessions"], x["count"]) for x in rows],
+                         [("bd show", "bd show <arg> --json", 3, 4)])
+
+    def test_a_run_holding_two_spellings_of_one_group_counts_once(self):
+        """A chain that types two spellings of one group adds 1 run to the group, not 2.
+
+        count is runs, the second rank key; a chain listing a worktree then removing one would double it.
+        """
+        # GIVEN a chain with both worktree spellings in 3 sessions
+        pairs = [("git worktree list | head -5 && git worktree remove /x/wt --force", ["s0", "s1", "s2"])]
+        # WHEN the report runs
+        rows = self.groups(pairs, "--covered", "none")
+        # THEN one `git worktree` group with 3 runs, each spelling with its own 3
+        self.assertEqual([(x["group"], x["count"], [(s["shape"], s["count"]) for s in x["spellings"]]) for x in rows],
+                         [("git worktree", 3, [("git worktree list | head <n>", 3),
+                                               ("git worktree remove <arg> --force", 3)])])
+
+    def test_a_covered_spelling_is_left_out_of_its_group(self):
+        """Under --covered live a spelling a rule covers adds nothing to its group; the uncovered spelling is
+        listed alone, and the summary counts the covered one.
+
+        A covered spelling already has its command; adding its sessions would push the group over the bar
+        on runs that need nothing new.
+        """
+        # GIVEN `gh pr view <n> --json <v>` (hand-pr-status covers it) in 3 sessions, `--web` in 2 of them
+        pairs = [("gh pr view 12 --json state", ["s0", "s1", "s2"]), ("gh pr view 12 --web", ["s0", "s1"])]
+        cmds = self.write_commands(runs(*pairs))
+        # WHEN the report runs live from 2 sessions, and at the default bar
+        r, rows = self.repeats("--commands", str(cmds), "--min-sessions", "2")
+        _, default = self.repeats("--commands", str(cmds))
+        # THEN the group holds the --web spelling only, and the default bar drops it
+        self.assertEqual([(x["group"], x["sessions"], [s["shape"] for s in x["spellings"]]) for x in rows],
+                         [("gh pr view", 2, ["gh pr view <n> --web"])])
+        self.assertIn("2 steps in 2+ sessions, 1 covered", r.stderr)
+        self.assertEqual(default, [])
+
+    def test_gh_pr_view_and_gh_pr_checks_are_separate_groups(self):
+        """`gh pr view` and `gh pr checks` are two groups.
+
+        One reads a PR, the other waits on CI; one `gh pr` row would ask for one command doing both.
+        """
+        # GIVEN both in 3 sessions
+        pairs = [("gh pr view 12 --web", ["s0", "s1", "s2"]), ("gh pr checks 12", ["s0", "s1", "s2"])]
+        # WHEN the report runs
+        # THEN two groups
+        self.assertEqual([x["group"] for x in self.groups(pairs, "--covered", "none")], ["gh pr checks", "gh pr view"])
+
+    def test_two_different_tools_never_share_a_group(self):
+        """`pkill -f <v>` and `pgrep -f <v>`, and two python scripts, stay four groups.
+
+        A group is one tool's chore; a row merging two tools would point at a command nobody types.
+        """
+        # GIVEN four tools or scripts, each in 3 sessions
+        ss = ["s0", "s1", "s2"]
+        pairs = [("pkill -f a", ss), ("pgrep -f a", ss), ("python3 /x/loop.py", ss), ("python3 /x/sync.py", ss)]
+        # WHEN the report runs
+        # THEN four groups, one per tool or script
+        self.assertEqual([x["group"] for x in self.groups(pairs, "--covered", "none")],
+                         ["pgrep", "pkill", "python3 loop.py", "python3 sync.py"])
+
+    def test_two_tools_fed_by_one_feeder_are_two_groups(self):
+        """`cat x | jq .a` and `cat x | psql db`, each in 3 sessions, are two groups: `jq` and `psql`.
+
+        Keyed on the feeder both would be one `cat` row merging a JSON read with a database query.
+        """
+        # GIVEN two cat-fed pipelines, each in 3 sessions
+        ss = ["s0", "s1", "s2"]
+        pairs = [("cat /x/a.json | jq .a", ss), ("cat /x/q.sql | psql db", ss)]
+        # WHEN the report runs
+        # THEN two groups
+        self.assertEqual([x["group"] for x in self.groups(pairs, "--covered", "none")], ["jq", "psql"])
+
+    def test_the_bar_counts_distinct_sessions_not_summed_spelling_sessions(self):
+        """Two spellings each in s0 and s1 sum to 4 spelling-sessions but 2 distinct sessions: not listed at 3.
+
+        Summing per-spelling sessions would list a chore only 2 sessions typed.
+        """
+        # GIVEN `bd show <arg> --json` and `bd show <arg> -q`, both in s0 and s1
+        pairs = [("bd show x-1 --json", ["s0", "s1"]), ("bd show x-1 -q", ["s0", "s1"])]
+        # WHEN the report runs at the default bar
+        # THEN nothing is listed
+        self.assertEqual(self.groups(pairs, "--covered", "none"), [])
+
+    def test_spellings_flag_caps_json_spellings_and_total_counts_them_all(self):
+        """--spellings N keeps a group's top N spellings in --json; spellings_total counts every uncovered one.
+
+        On a real 14-day store one group held 735 spellings and the default --json printed 520 KB; the total
+        still tells a reader how many ways the chore was typed.
+        """
+        # GIVEN four bd show spellings in 2, 1, 1 and 1 sessions
+        pairs = [("bd show x-1 --json", ["s0", "s1"]), ("bd show x-1 | head -3", ["s2"]), ("bd show x-1 -q", ["s3"]),
+                 ("bd show x-1 --long", ["s4"])]
+        # WHEN the report runs with --spellings 2, and with the default
+        capped = self.groups(pairs, "--covered", "none", "--spellings", "2")
+        default = self.groups(pairs, "--covered", "none")
+        # THEN the top 2 spellings and a total of 4; the default (10) keeps all 4
+        self.assertEqual([([s["shape"] for s in x["spellings"]], x["spellings_total"]) for x in capped],
+                         [(["bd show <arg> --json", "bd show <arg> --long"], 4)])
+        self.assertEqual([(len(x["spellings"]), x["spellings_total"]) for x in default], [(4, 4)])
+
+    def test_groups_rank_by_merged_sessions_and_top_counts_groups(self):
+        """Groups rank by merged sessions, then runs, then key; --top keeps the first N groups, not spellings.
+
+        Test A reads the top 25 groups; a cut over spellings would print fewer chores than asked.
+        """
+        # GIVEN a 2-spelling group in 4 sessions, a 1-spelling tool in 3 sessions
+        pairs = [("bd show x-1 --json", ["s0", "s1"]), ("bd show x-1 | head -3", ["s2", "s3"]),
+                 ("ship-tool go", ["s0", "s1", "s2"])]
+        # WHEN the report runs, and with --top 1
+        # THEN bd show first; --top 1 keeps that group with both spellings
+        self.assertEqual([x["group"] for x in self.groups(pairs, "--covered", "none")], ["bd show", "ship-tool"])
+        top = self.groups(pairs, "--covered", "none", "--top", "1")
+        self.assertEqual([(x["group"], len(x["spellings"])) for x in top], [("bd show", 2)])
+
+    def test_json_spellings_hold_every_spelling_with_its_own_fields(self):
+        """--json spellings lists every uncovered spelling of the group with its own fields, ranked by its
+        sessions, runs, then text; a spelling in 1 session is kept.
+
+        A reader writing the command needs every way it was typed, not only the common ones.
+        """
+        # GIVEN three bd show spellings in 2, 1 and 1 sessions
+        pairs = [("bd show x-1 --json", ["s0", "s1"]), ("bd show x-1 | head -3", ["s2"]), ("bd show x-1 -q", ["s3"])]
+        # WHEN the report runs
+        rows = self.groups(pairs, "--covered", "none")
+        # THEN each spelling is a full row, the 2-session one first, then by text
+        self.assertEqual(rows[0]["spellings"],
+                         [{"shape": "bd show <arg> --json", "sessions": 2, "count": 2, "first": "2026-04-02T12:00:00Z",
+                           "last": "2026-04-02T12:00:00Z", "exit_fail_share": None},
+                          {"shape": "bd show <arg> -q", "sessions": 1, "count": 1, "first": "2026-04-02T12:00:00Z",
+                           "last": "2026-04-02T12:00:00Z", "exit_fail_share": None},
+                          {"shape": "bd show <arg> | head <n>", "sessions": 1, "count": 1,
+                           "first": "2026-04-02T12:00:00Z", "last": "2026-04-02T12:00:00Z", "exit_fail_share": None}])
+
+    def test_text_mode_indents_the_top_3_spellings_under_a_group(self):
+        """In text mode a group of 2+ spellings prints its key in the shape column, then its top 3 spellings
+        indented 4 spaces with their own fields; a 1-spelling group prints one line as before.
+
+        house-rules: text carries the same fields as --json; the indent tells a group line from a spelling.
+        """
+        # GIVEN four bd show spellings and one single-spelling tool
+        cmds = self.write_commands(runs(("bd show x-1 --json", ["s0", "s1"]), ("bd show x-1 | head -3", ["s2"]),
+                                        ("bd show x-1 -q", ["s3"]), ("bd show x-1 --long", ["s4"]),
+                                        ("ship-tool go", ["s0", "s1", "s2"])))
+        # WHEN the report runs in text mode
+        r = agent_cli(self.p, "repeats", "--commands", str(cmds), "--covered", "none",
+                      env={"AGENT_CLI_SHAPES_DIR": str(self.store)})
+        # THEN the header, the group with 3 indented spellings, the plain row, and the summary
+        t = "2026-04-02T12:00:00Z  2026-04-02T12:00:00Z"
+        self.assertEqual(r.stdout.splitlines(),
+                         ["sessions  count  exit_fail_share  first  last  shape", f"5  5  -  {t}  bd show",
+                          f"    2  2  -  {t}  bd show <arg> --json", f"    1  1  -  {t}  bd show <arg> --long",
+                          f"    1  1  -  {t}  bd show <arg> -q", f"3  3  -  {t}  ship-tool <arg>"])
+        self.assertIn("repeats: 8 runs in window, 1 steps in 3+ sessions, 0 covered, 2 groups in 3+ sessions, 2 printed", r.stderr)
+
+    def test_unit_command_rows_are_not_grouped(self):
+        """--unit command keeps one row per whole shape, with no group or spellings field.
+
+        It is the old unit callers compare against; merging there would change numbers they read as like for like.
+        """
+        # GIVEN two bd show shapes in 3 sessions each
+        ss = ["s0", "s1", "s2"]
+        # WHEN the report runs with --unit command
+        rows = self.groups([("bd show x-1 --json", ss), ("bd show x-1 -q", ss)], "--covered", "none", "--unit", "command")
+        # THEN two plain rows
+        self.assertEqual([sorted(x) for x in rows], [sorted(repeats.FIELDS)] * 2)
 
 
 PY_DB = "python3 - <<'EOF'\nimport os; os.environ['DATABASE_URL']\nEOF"  # an inline query: a basic step
