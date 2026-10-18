@@ -23,7 +23,10 @@ the step is ssh, eval or a shell given -c, wrapped or not (`psql 'postgres://u:p
 backslash (`pa\\$SW0RD`). A URL whose `user:password` authority holds / # or ? takes its host after the first
 @, and none when the text before that @ holds = or & (a query). Names the shell itself assigns in the command
 (NAME=, read NAME, for NAME in, local/declare NAME) are the script's own variables and are dropped; they are
-read from the shell level only, never from inside inline code.
+read from the shell level and from heredoc bodies a shell reads (`bash <<EOF`, or a written file a shell
+runs), never from inside inline code. effects(text, code=True) reads a script body no shell reads (a .py
+file the recorder opens) as one code span: URLs, code env reads, .env words and DB_CODE count, `$NAME` and
+assignments do not. ran(text) lists the files the command runs, for the recorder to read.
 Effects feed the weekly count (`agent-cli repeats --by effect`), never the live warning.
 """
 import itertools
@@ -65,6 +68,12 @@ OUT_REDIR = re.compile(r"&>>?|>>|>\||>(?!&)")
 URL = re.compile(r"(?<![\w+.-])[A-Za-z][\w+.-]*://([^\s\"'`]*)")
 AUTHORITY = re.compile(r"[^/?#]*")
 SHELL_C = re.compile(r"-[A-Za-z]*c[A-Za-z]*")  # a shell's -c, alone or in a cluster (-lc)
+# Flags that hand a runner inline code (or a module) instead of a file: a shell's -c, python's -c/-m after
+# only its no-argument letters, and -e/-E/-p/--eval/--print for the rest (node, perl, ruby, tsx, bun) after
+# only perl/ruby switch letters (-ne, -lane, -pe). bash's -e (errexit), python's -X/-W and perl/ruby's
+# -M/-r (an option or module, then the file) are not.
+INLINE = {"sh": SHELL_C, "py": re.compile(r"-[bBdEhiIOPqsSuvx]*[cm].*"),
+          "": re.compile(r"-[lnapiw0-9]*[eEp]|--(?:eval|print)(?:=.*)?")}
 # a single-quoted span, past # comments (an apostrophe in `# don't` opens nothing), escapes and "..."
 SINGLE = re.compile(r"(?:^|(?<=[\s;&|(]))#[^\n]*|\\.|\"(?:\\.|[^\"\\])*\"|'[^']*'", re.S | re.M)
 # grep-family tools: (flags whose value is the pattern, flags taking another value, flags naming a pattern
@@ -77,15 +86,17 @@ PATTERN_TOOLS = {**dict.fromkeys(("grep", "egrep", "fgrep"), (("-e", "--regexp")
                  **dict.fromkeys(("awk", "gawk"), ((), ("-F", "-v"), ("-f",)))}
 
 
-def effects(text, prefixes=None):
+def effects(text, prefixes=None, code=False):
     """The command's effect signals, sorted, at most MAX_EFFECTS. prefixes: wrapper words to strip before
-    the command word (None reads the command-prefixes seam)."""
-    if prefixes is None:
-        prefixes = core.seam_lines("command-prefixes")
-    spans, code, writes, runs, found = [], [], [], [], set()
-    _ignore(text, prefix_re(tuple(prefixes)), 0, spans, code, (writes, runs, found))
-    _unrun(writes, runs, spans, code)
-    view = _cut(_cut(text, code, lambda t: t.replace("$", "_")), spans, lambda t: " ")
+    the command word (None reads the command-prefixes seam). code: text is a script body no shell reads (a
+    .py or .mjs file): one code span, where `$NAME` is text and no name is assigned."""
+    spans, codes, found, assigned = [], [(0, len(text))] if code else [], set(), set()
+    if not code:
+        writes, runs, bodies = [], [], []
+        _ignore(text, _cmd_re(prefixes), 0, spans, codes, (writes, runs, found, bodies))
+        _unrun(writes, runs, spans, codes, bodies)
+        assigned = _assigned(text).union(*(_assigned(text[a:b]) for a, b in bodies))
+    view = _cut(_cut(text, codes, lambda t: t.replace("$", "_")), spans, lambda t: " ")
     for m in URL.finditer(view):
         auth = AUTHORITY.match(m[1])[0]
         if "@" not in auth and "@" in m[1] and ":" in auth and not auth.rsplit(":", 1)[1].isdigit():
@@ -96,7 +107,6 @@ def effects(text, prefixes=None):
             found.add(DB)
     if DB_CODE.search(view):
         found.add(DB)
-    assigned = _assigned(text)
     for m in ENV_READ.finditer(view):
         name = m[1] or m[2] or m[3]
         if ENV_NAME.fullmatch(name) and name not in STOP and name not in assigned and not DIGITS4.search(name):
@@ -106,6 +116,18 @@ def effects(text, prefixes=None):
         if ENV_FILE.fullmatch(base) and base not in ENV_CODE and not DIGITS4.search(base):
             found.add("envfile:" + base)
     return sorted(found)[:MAX_EFFECTS]
+
+
+def ran(text, prefixes=None):
+    """(path, by a shell) of each file the command runs, in order (_ran of each step, $( ) bodies included);
+    the path as written, unexpanded."""
+    runs = []
+    _ignore(text, _cmd_re(prefixes), 0, [], [], ([], runs, set(), []))
+    return [r[1:] for r in sorted(runs, key=lambda r: r[0])]
+
+
+def _cmd_re(prefixes):
+    return prefix_re(tuple(core.seam_lines("command-prefixes") if prefixes is None else prefixes))
 
 
 def _host(raw, found, whole=False):
@@ -136,10 +158,10 @@ def _assigned(text):
     return names
 
 
-def _unrun(writes, runs, out, code):
-    """Add to out each file heredoc no later step runs, and to code the quoted ones only a non-shell runs.
-    writes: (at, path, heredoc spans, quoted ones, their single-quoted spans, text when a shell runs the
-    file); runs: (at, path, by a shell). One pass from the end, so
+def _unrun(writes, runs, out, code, shell):
+    """Add to out each file heredoc no later step runs, to code the quoted ones only a non-shell runs, and to
+    shell the ones a shell runs. writes: (at, path, heredoc spans, quoted ones, their single-quoted spans,
+    text when a shell runs the file); runs: (at, path, by a shell). One pass from the end, so
     `seen` holds exactly the later runs: keyed by path, by basename, and by basename of relative paths."""
     seen = {}
     for at, path, *rest in sorted(writes + runs, key=lambda e: e[0], reverse=True):
@@ -151,19 +173,27 @@ def _unrun(writes, runs, out, code):
         hits = [seen[k] for k in [(0, path), (2, b)] + [(1, b)] * rel if k in seen]
         out += rest[0] if not hits else []
         code += (rest[2] if any(hits) else rest[1]) if hits else []
+        shell += rest[0] if any(hits) else []
 
 
 def _ran(s, word, args):
     """(path, by a shell) of the file this step runs, or None: an interpreter's first non-flag argument (past
-    npx, `<runner> exec` and deno/bun run), or the command word itself when it is a path."""
-    name, rest = word.rsplit("/", 1)[-1], [s[a:b].strip("\"'") for a, b in args if not s[a:b].startswith("-")]
-    if name == "npx" or rest[:1] == ["exec"]:
-        rest = rest[rest[:1] == ["exec"]:]
-        name, rest = (rest[0], rest[1:]) if rest else ("", [])
-    if name in ("deno", "bun") and rest[:1] == ["run"]:
+    npx, `<runner> exec` and deno/bun run), or the command word itself when it is a path. None too when a
+    flag before that argument gives inline code (INLINE: bash -c, python3 -m, node -e/-p/--eval, perl -ne):
+    such a run reads no file."""
+    name, ws = word.rsplit("/", 1)[-1], [s[a:b].strip("\"'") for a, b in args]
+    rest = [k for k, w in enumerate(ws) if not w.startswith("-")]  # where the non-flag arguments sit
+    lo = 0  # the runner's own flags start here
+    if name == "npx" or rest and ws[rest[0]] == "exec":
+        rest = rest[bool(rest) and ws[rest[0]] == "exec":]
+        name, lo, rest = (ws[rest[0]], rest[0] + 1, rest[1:]) if rest else ("", 0, [])
+    if name in ("deno", "bun") and rest and ws[rest[0]] == "run":
         rest = rest[1:]
     if RUNNERS.fullmatch(name):
-        return (rest[0], name in SHELLS or name in (".", "source")) if rest else None
+        inline = INLINE["sh" if name in SHELLS else "py" if name.startswith("python") else ""]
+        if not rest or any(inline.fullmatch(w) for w in ws[lo:rest[0]]):
+            return None
+        return ws[rest[0]], name in SHELLS or name in (".", "source")
     return (word.strip("\"'"), word.endswith(".sh")) if "/" in word else None
 
 
@@ -171,7 +201,8 @@ def _ignore(s, cmd_re, base, out, code, files):
     """Append to out the (start, end) spans of s (offset by base) that name things without touching them,
     and to code the quoted heredoc bodies no shell reads (their `$NAME` is text); recurse into the $( ) and
     backtick bodies outside those spans. files: (writes, runs) for _unrun, the file heredocs and the files
-    the command runs, then found, the effect set, which gets each step's db:postgres and -h host."""
+    the command runs, then found, the effect set, which gets each step's db:postgres and -h host, then the
+    spans of heredoc bodies a shell in the pipeline reads (their assignments are shell names)."""
     line, pipe, words, cmd = [], [], [], _Cmd()  # line: the pipelines since the last newline
     pending, start, redir, i = [], None, None, 0
 
@@ -323,6 +354,7 @@ def _judge(s, pipe, cmd_re, base, out, code, files):
                              singles))
         else:
             code += literal
+            files[3].extend((base + a, base + b) for a, b in c.heredocs if shell)
         p = _expander(s, c.words)  # no shell expands single quotes before it: `'pa$SW0RD'` is a value
         code += [(base + a, base + b) for a, b in c.single if a < p]
         if run := word and _ran(s, word, args):

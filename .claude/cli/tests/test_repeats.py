@@ -536,15 +536,20 @@ class Usage(StoreCase):
 
         A replay over a broken extract must stop, not report a partial list as if it were the window.
         """
-        # GIVEN a missing file and a file whose second line lacks session
+        # GIVEN a missing file, a file whose second line lacks session, and one whose script is not a string
         bad = self.write_commands([{"ts": "2026-04-02T12:00:00Z", "session": "a", "cmd": "ls"},
                                    {"ts": "2026-04-02T12:00:00Z", "cmd": "ls"}])
         # WHEN the report runs on each
         missing, _ = self.repeats("--commands", str(self.tmp / "nope.jsonl"))
         broken, _ = self.repeats("--commands", str(bad))
-        # THEN both exit 3; the bad one names line 2
-        self.assertEqual((missing.returncode, broken.returncode), (3, 3))
+        bad.write_text(json.dumps({"ts": "2026-04-02T12:00:00Z", "session": "a", "cmd": "ls", "script": 5}) + "\n")
+        bad_script, _ = self.repeats("--commands", str(bad))
+        # THEN all exit 3; the bad ones name their line
+        self.assertEqual((missing.returncode, broken.returncode, bad_script.returncode), (3, 3, 3))
         self.assertIn("line 2", broken.stderr)
+        self.assertIn("line 1", bad_script.stderr)
+        self.assertIn("script, when present, must be a string", bad_script.stderr)
+        self.assertNotIn('"script": 5', bad_script.stderr)
 
     def test_usage_errors_exit_2_with_an_example(self):
         """--since with --from, a bad date, --from after --until, --write-cache with --commands, --covered
@@ -815,6 +820,21 @@ class Effects(StoreCase):
         rows = self.effects("--commands", str(cmds), "--covered", "none")
         # THEN its own step is the carrier
         self.assertEqual([(x["effect"], x["steps"]) for x in rows], [("env:DATABASE_URL", ["python3 - <heredoc>"])])
+
+    def test_script_field_feeds_a_replays_effects(self):
+        """A --commands row's `script` (the body of the script the command runs) adds that body's effects.
+
+        Replays have no files on disk; without the body, `python3 <path>/q.py` in 3 sessions shows no effect
+        and the hand-made .env parser rewritten in each session never reaches the report.
+        """
+        # GIVEN the same script run in 3 sessions with its body attached, and in 3 more without
+        body = "import os\nopen('.env')\nos.environ['DATABASE_URL']\n"
+        cmds = self.write_commands([{"ts": "2026-04-02T12:00:00Z", "session": f"s{i}", "cmd": "python3 /gone/q.py",
+                                     **({"script": body} if i < 3 else {})} for i in range(6)])
+        # WHEN the report runs by effect
+        rows = self.effects("--commands", str(cmds), "--covered", "none")
+        # THEN the body's effects, from the 3 sessions that carried it
+        self.assertEqual([(x["effect"], x["sessions"]) for x in rows], [("env:DATABASE_URL", 3), ("envfile:.env", 3)])
 
     def test_effect_covered_live_when_half_its_runs_have_every_listed_step_covered(self):
         """Under --covered live an effect is dropped when at least half its runs have every listed step covered

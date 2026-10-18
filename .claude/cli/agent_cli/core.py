@@ -10,6 +10,7 @@ import functools
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -264,6 +265,12 @@ def path_dirs():
     f = find_seam("path")
     root = f.parents[2] if f else None
     return [str(BIN)] + [str(root / d) if not os.path.isabs(d) else d for d in seam_lines("path")]
+
+
+def on_path(word):
+    """True when word is an executable on $PATH or in path_dirs(), the dirs `self env` adds for the agent's
+    own commands (a hook process does not get them)."""
+    return bool(shutil.which(word) or shutil.which(word, path=os.pathsep.join(path_dirs())))
 
 
 def child_env(drop=()):

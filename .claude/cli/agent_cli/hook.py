@@ -167,7 +167,7 @@ def _project_rule(r, cmd, body, taken):
 def active(rule):
     """A rule with `requires` fires only when that command is on PATH or in the dirs `self env` adds."""
     req = rule.get("requires")
-    return not req or bool(shutil.which(req) or shutil.which(req, path=os.pathsep.join(core.path_dirs())))
+    return not req or core.on_path(req)
 
 
 def evaluate(command, rules, honor_bypass=True):
