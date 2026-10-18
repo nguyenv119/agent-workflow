@@ -5,15 +5,12 @@ as subprocesses with a fake `gh` on PATH that replays gh JSON recorded from a pu
 The hand-pr-poll hook rule is tested in test_hook.py (Deny).
 """
 import json
-import os
-import shutil
 import sys
-import tempfile
 import time
 import unittest
 from pathlib import Path
 
-from helpers import CLAUDE, GIT, FakeClock, agent_cli, make_project, run
+from helpers import CLAUDE, GIT, FakeClock, GhCase, check, run, view
 
 sys.path.insert(0, str(CLAUDE / "cli"))
 from agent_cli import pr  # noqa: E402
@@ -21,48 +18,12 @@ from agent_cli.core import Exit  # noqa: E402
 
 FIX = Path(__file__).resolve().parent / "fixtures/pr"
 REQ = {"required": ["lint", "govulncheck"], "advisory": [], "preview": None}
-DEFAULT = {"required": None, "advisory": [], "preview": None}
-
-# REVIEW: mocking core dependency (gh / the GitHub API, which has no local or test-mode equivalent).
-# It replays $FAKE_GH/view.json and checks.json (no checks.json = gh's "no checks reported", exit 1;
-# view.err = a failing gh pr view; a `slow` file = sleep that many seconds first; `gh repo view` prints the
-# `repo` file, no file = a failing call), appends every argv to calls.log and each `gh pr merge` argv to merge.log.
-FAKE_GH = r'''#!/usr/bin/env python3
-import json, os, sys, time
-d, a = os.environ["FAKE_GH"], sys.argv[1:]
-open(f"{d}/calls.log", "a").write(json.dumps(a) + "\n")
-if os.path.exists(f"{d}/slow"):
-    time.sleep(float(open(f"{d}/slow").read()))
-if a[:2] == ["pr", "view"]:
-    if os.path.exists(f"{d}/view.err"):
-        sys.stderr.write(open(f"{d}/view.err").read()); sys.exit(1)
-    print(open(f"{d}/view.json").read())
-elif a[:2] == ["pr", "checks"]:
-    if not os.path.exists(f"{d}/checks.json"):
-        sys.stderr.write("no checks reported on the 'feature' branch\n"); sys.exit(1)
-    print(open(f"{d}/checks.json").read())
-elif a[:2] == ["pr", "merge"]:
-    open(f"{d}/merge.log", "a").write(json.dumps(a) + "\n")
-elif a[:2] == ["repo", "view"]:
-    if not os.path.exists(f"{d}/repo"):
-        sys.stderr.write("no git remotes found\n"); sys.exit(1)
-    print(open(f"{d}/repo").read())
-else:
-    sys.exit(2)
-'''
+AUTO = {"canary": "harness-canary", "canary_auto": True}  # no canary-check line: required on harness repos
+DEFAULT = {"required": None, "advisory": [], "preview": None, **AUTO}
 
 
 def load(name):
     return json.loads((FIX / name).read_text())
-
-
-def view(state="OPEN", merge="CLEAN", head="a" * 40):
-    return {"baseRefName": "main", "headRefOid": head, "mergeStateStatus": merge, "state": state,
-            "url": "https://github.com/o/r/pull/42"}
-
-
-def check(name, bucket, link=""):
-    return {"name": name, "bucket": bucket, "state": bucket.upper(), "link": link or f"https://ci.example/{name}"}
 
 
 class Verdict(unittest.TestCase):
@@ -277,7 +238,8 @@ class Verdict(unittest.TestCase):
         s = pr.verdict(42, view(), [check("lint", "pass")], DEFAULT)
         # THEN the keys match the contract
         self.assertEqual(set(s), {"pr", "url", "head", "merge_state", "verdict", "required", "advisory",
-                                  "missing_required", "preview_url"})
+                                  "missing_required", "preview_url", "canary"})
+        self.assertIsNone(s["canary"])
         self.assertEqual(s["required"], [{"name": "lint", "bucket": "pass", "link": "https://ci.example/lint"}])
 
 
@@ -294,7 +256,7 @@ class Config(unittest.TestCase):
         cfg = pr.config(text)
         # THEN only the coordinator section counts
         self.assertEqual(cfg, {"required": ["test", "lint/typecheck", "Preview Deploy"],
-                               "advisory": ["bot-review"], "preview": "Preview Deploy"})
+                               "advisory": ["bot-review"], "preview": "Preview Deploy", **AUTO})
 
     def test_missing_lines_mean_every_check_required(self):
         """No required-checks line -> required None (every non-skipped check), no advisory, no preview."""
@@ -325,7 +287,7 @@ class Config(unittest.TestCase):
         # WHEN parsed for acme/web and for acme/other
         web, other = pr.config(self.KEYED, "acme/web"), pr.config(self.KEYED, "acme/other")
         # THEN both get the plain coordinator lines
-        plain = {"required": ["test", "quality"], "advisory": ["bot-review"], "preview": "Preview Deploy"}
+        plain = {"required": ["test", "quality"], "advisory": ["bot-review"], "preview": "Preview Deploy", **AUTO}
         self.assertEqual(web, plain)
         self.assertEqual(other, plain)
 
@@ -357,8 +319,9 @@ class Config(unittest.TestCase):
         # WHEN parsed for each repo
         infra, d = pr.config(self.KEYED, "acme/infra"), pr.config(docs, "acme/docs")
         # THEN the unkeyed lines still apply
-        self.assertEqual(infra, {"required": ["unit", "leak"], "advisory": ["bot-review"], "preview": "Preview Deploy"})
-        self.assertEqual(d, {"required": ["test"], "advisory": ["bot"], "preview": "pages"})
+        self.assertEqual(infra, {"required": ["unit", "leak"], "advisory": ["bot-review"], "preview": "Preview Deploy",
+                                 **AUTO})
+        self.assertEqual(d, {"required": ["test"], "advisory": ["bot"], "preview": "pages", **AUTO})
 
 
 class Wait(unittest.TestCase):
@@ -475,42 +438,7 @@ class Wait(unittest.TestCase):
             self.run_wait([pr.GhError("gh pr view 42: not found")])
 
 
-class CliCase(unittest.TestCase):
-    """A project with a fake gh on PATH; set_pr() writes what gh will report."""
-
-    def setUp(self):
-        self.tmp = Path(os.path.realpath(tempfile.mkdtemp(prefix="agent-cli-pr-")))
-        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
-        self.p = make_project(self.tmp / "proj")
-        self.gh = self.tmp / "gh-data"
-        self.gh.mkdir()
-        bin_ = self.tmp / "bin"
-        bin_.mkdir()
-        (bin_ / "gh").write_text(FAKE_GH)
-        (bin_ / "gh").chmod(0o755)
-        self.env = {"PATH": f"{bin_}{os.pathsep}{os.environ['PATH']}", "FAKE_GH": str(self.gh)}
-
-    def set_pr(self, view_obj, checks=None):
-        (self.gh / "view.json").write_text(json.dumps(view_obj))
-        if checks is not None:
-            (self.gh / "checks.json").write_text(json.dumps(checks))
-
-    def rules(self, text):
-        (self.p / ".claude/project-rules.md").write_text(text)
-
-    def cli(self, *args):
-        return agent_cli(self.p, "pr", *args, env=self.env)
-
-    def calls(self):
-        f = self.gh / "calls.log"
-        return [json.loads(x) for x in f.read_text().splitlines()] if f.exists() else []
-
-    def merges(self):
-        f = self.gh / "merge.log"
-        return [json.loads(x) for x in f.read_text().splitlines()] if f.exists() else []
-
-
-class StatusCli(CliCase):
+class StatusCli(GhCase):
     def test_status_json_prints_one_json_line_and_exits_by_verdict(self):
         """`pr status --json` prints one JSON object and exits 0 READY, 1 FAILED, read via project-rules.md
         (house-rules "--json")."""
@@ -587,20 +515,24 @@ class StatusCli(CliCase):
         self.assertEqual(json.loads(r.stdout)["verdict"], "CLOSED")
 
     def test_repo_flag_reaches_both_gh_calls_once_each(self):
-        """`status 42 --repo o/r` makes exactly one gh pr view and one gh pr checks, both with --repo o/r.
+        """`status 42 --repo o/r` makes exactly one gh pr view and one gh pr checks, both with --repo o/r, then one
+        changed-files read with none (gh api names the repo in its path, and rejects --repo).
 
-        A missing --repo on either call reads the wrong repo's PR 42; extra calls spend the shared API budget.
+        A missing --repo on either call reads the wrong repo's PR 42; extra calls spend the shared API budget,
+        and GitHub's default 30-file page would take 4 pages where 100 per page takes 1.
         """
-        # GIVEN a READY PR
+        # GIVEN a READY PR that changes no file
         self.set_pr(view(), [check("lint", "pass")])
         # WHEN status runs with --repo
         r = self.cli("status", "42", "--repo", "o/r")
-        # THEN two gh calls, view then checks, each ending in --repo o/r
+        # THEN view then checks, each ending in --repo o/r, then the files read of o/r's PR 42 alone
         self.assertEqual(r.returncode, 0, r.stderr)
         calls = self.calls()
-        self.assertEqual([c[:3] for c in calls], [["pr", "view", "42"], ["pr", "checks", "42"]])
-        for c in calls:
+        self.assertEqual([c[:3] for c in calls], [["pr", "view", "42"], ["pr", "checks", "42"],
+                                                  ["api", "--paginate", "repos/o/r/pulls/42/files?per_page=100"]])
+        for c in calls[:2]:
             self.assertEqual(c[-2:], ["--repo", "o/r"])
+        self.assertNotIn("--repo", calls[2])
 
     def test_gh_failure_exits_3_with_gh_message(self):
         """A failing gh pr view (no such PR, no auth) exits 3 and passes gh's message on."""
@@ -626,7 +558,7 @@ class StatusCli(CliCase):
         self.assertIn("status", self.cli().stdout)
 
 
-class RepoKeyedCli(CliCase):
+class RepoKeyedCli(GhCase):
     """Repo-keyed check lines through the CLI: which repo a PR is in decides which list judges it."""
 
     RULES = "## coordinator\nrequired-checks: test, quality\nrequired-checks[acme/infra]: unit, leak\n"
@@ -643,12 +575,12 @@ class RepoKeyedCli(CliCase):
         self.set_pr(view(), self.INFRA)
         # WHEN waited with --repo
         r = self.cli("wait", "42", "--cap", "0s", "--json", "--repo", "acme/infra")
-        # THEN READY, exit 0, judged by the keyed list, and only the two pr calls were made
+        # THEN READY, exit 0, judged by the keyed list, and only the two pr calls and the files read were made
         self.assertEqual(r.returncode, Exit.OK, r.stderr)
         s = json.loads(r.stdout)
         self.assertEqual((s["verdict"], s["missing_required"]), ("READY", []))
         self.assertEqual(sorted(c["name"] for c in s["required"]), ["leak", "unit"])
-        self.assertEqual([c[:2] for c in self.calls()], [["pr", "view"], ["pr", "checks"]])
+        self.assertEqual([c[:2] for c in self.calls()], [["pr", "view"], ["pr", "checks"], ["api", "--paginate"]])
 
     def test_a_failed_keyed_required_check_is_failed(self):
         """One keyed required check red is FAILED (exit 1), so a red PR in the other repo is never landed."""
@@ -675,7 +607,8 @@ class RepoKeyedCli(CliCase):
         # THEN READY by the keyed list, after one gh repo view
         self.assertEqual(r.returncode, Exit.OK, r.stderr)
         self.assertEqual(json.loads(r.stdout)["verdict"], "READY")
-        self.assertEqual(sorted(c[:2] for c in self.calls()), [["pr", "checks"], ["pr", "view"], ["repo", "view"]])
+        self.assertEqual(sorted(c[:2] for c in self.calls()),
+                         [["api", "--paginate"], ["pr", "checks"], ["pr", "view"], ["repo", "view"]])
 
     def test_without_a_keyed_line_gh_repo_view_is_never_called(self):
         """With no keyed line in the rules, no `gh repo view` is made: the common case spends no extra API call."""
@@ -685,9 +618,9 @@ class RepoKeyedCli(CliCase):
         self.set_pr(view(), self.INFRA)
         # WHEN status runs without --repo
         r = self.cli("status", "42", "--json")
-        # THEN READY with exactly the two pr calls
+        # THEN READY with exactly the two pr calls and the files read
         self.assertEqual(r.returncode, Exit.OK, r.stderr)
-        self.assertEqual([c[:2] for c in self.calls()], [["pr", "view"], ["pr", "checks"]])
+        self.assertEqual([c[:2] for c in self.calls()], [["pr", "view"], ["pr", "checks"], ["api", "--paginate"]])
 
     def test_a_failing_gh_repo_view_falls_back_to_the_plain_line(self):
         """When `gh repo view` fails, the plain line judges the PR (gh pr view surfaces any real error itself)."""
@@ -725,9 +658,9 @@ class RepoKeyedCli(CliCase):
         self.set_pr(view(), self.INFRA)
         # WHEN status runs without --repo
         r = self.cli("status", "42", "--json")
-        # THEN READY by the plain line, with exactly the two pr calls
+        # THEN READY by the plain line, with exactly the two pr calls and the files read
         self.assertEqual(r.returncode, Exit.OK, r.stderr)
-        self.assertEqual([c[:2] for c in self.calls()], [["pr", "view"], ["pr", "checks"]])
+        self.assertEqual([c[:2] for c in self.calls()], [["pr", "view"], ["pr", "checks"], ["api", "--paginate"]])
 
     def test_land_dry_run_with_repo_uses_the_keyed_list(self):
         """`land --dry-run --repo acme/infra` sees READY by the keyed list, so a green PR in that repo can land."""
@@ -742,7 +675,7 @@ class RepoKeyedCli(CliCase):
         self.assertEqual(self.merges(), [])
 
 
-class WaitCli(CliCase):
+class WaitCli(GhCase):
     def test_wait_on_a_green_pr_exits_0(self):
         """`pr wait` on a green PR prints the status line and exits 0 at once."""
         # GIVEN a READY PR
@@ -820,7 +753,7 @@ class WaitCli(CliCase):
         self.assertIn("example:", r.stderr)
 
 
-class LandCli(CliCase):
+class LandCli(GhCase):
     def test_land_refuses_a_pr_that_is_not_ready(self):
         """`pr land --yes` on a non-READY PR exits 2 and never calls gh pr merge."""
         # GIVEN a pending PR
@@ -880,7 +813,7 @@ class LandCli(CliCase):
         self.assertEqual(self.merges(), [["pr", "merge", "42", "--squash", "--match-head-commit", "b" * 40]])
 
 
-class PatchId(CliCase):
+class PatchId(GhCase):
     """--verified-head: a rebased head is landed only when its patch equals the verified one."""
 
     def setUp(self):

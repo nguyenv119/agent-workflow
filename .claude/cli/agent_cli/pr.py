@@ -9,12 +9,20 @@ Check names come from optional lines under `## coordinator` in .claude/project-r
 A line keyed by repo, e.g. `required-checks[<owner>/<repo>]: x, y`, replaces the plain line of the same key
 for PRs in that repo (--repo, else the repo gh targets from the cwd; slug case ignored); when gh cannot name
 the cwd's repo, a stderr warning says so and the plain lines apply.
+Harness canary: a PR whose changed files (a rename by both names) match the `harness-paths:` globs under
+`## harness` (the harness-edit hook's list) also needs commit status `harness-canary`, which `agent-cli harness
+canary --pr N` posts; it is read from its `gh pr checks` row. Success passes, failure or error is FAILED; missing
+or pending keeps it WAITING, and once every required check passed blocked_on names the next step (on a fork PR:
+that the canary cannot run there). `canary-check: <status>` names that status (`none`/`off`: never needed); without
+the line it is needed only when the PR's repo has .claude/HARNESS_VERSION or harness-loop/loop.py at the base ref
+(asked of GitHub once per process). Other PRs, and merged or closed ones, never wait for it.
 """
 import json
 import re
 import subprocess
 import sys
 import time
+from urllib.parse import quote
 
 from . import core, wait
 from .core import Exit
@@ -32,7 +40,11 @@ class GhError(Exception):
     pass
 
 
-KEYS = ("required-checks", "advisory-checks", "preview-check")
+KEYS = ("required-checks", "advisory-checks", "preview-check", "canary-check")
+CANARY = "harness-canary"  # the status `agent-cli harness canary` posts
+HARNESS_MARKERS = (".claude/HARNESS_VERSION", "harness-loop/loop.py")  # an installing repo; the harness source
+FILES_JQ = ".[] | .filename, (.previous_filename // empty)"
+_harness_repos = {}  # (slug, base) -> bool, so `pr wait` asks once
 
 
 def cwd_repo():
@@ -45,7 +57,8 @@ def cwd_repo():
 
 
 def config(text=None, repo=None):
-    """{required: [names] or None (= every non-skipped check), advisory: [names], preview: name or None}.
+    """{required: [names] or None (= every non-skipped check), advisory: [names], preview: name or None,
+    canary: status name or None, canary_auto: True when no canary-check line (needed only on harness repos)}.
 
     For a PR in repo (None: the cwd's, asked of gh only when ## coordinator has a keyed line), `key[repo]:` beats
     `key:`; when gh cannot name the cwd's repo, a stderr warning says so and the plain lines apply."""
@@ -56,9 +69,11 @@ def config(text=None, repo=None):
                              f"ignored; pass --repo, e.g. {EX_STATUS}\n")
     repo = "/".join((repo or "").strip().strip("/").split("/")[-2:]) or None  # HOST/OWNER/REPO -> OWNER/REPO
     line = lambda key: core.rules_line("coordinator", key, text, scope=repo)  # noqa: E731
-    req, adv = line("required-checks"), line("advisory-checks")
+    req, adv, can = line("required-checks"), line("advisory-checks"), line("canary-check")
     return {"required": core.names(req) if req is not None else None, "advisory": core.names(adv or ""),
-            "preview": line("preview-check") or None}
+            "preview": line("preview-check") or None,
+            "canary": CANARY if can is None else None if can.lower() in ("", "none", "off") else can,
+            "canary_auto": can is None}
 
 
 def gh(args, repo, timeout=120):
@@ -72,14 +87,15 @@ def gh(args, repo, timeout=120):
 def fetch(n, repo, timeout=120):
     """(view, checks) from one `gh pr view` and one `gh pr checks`, each killed after timeout seconds;
     gh's "no checks reported" -> []."""
-    r = gh(["pr", "view", str(n), "--json", "baseRefName,headRefOid,mergeStateStatus,state,url"], repo, timeout)
+    r = gh(["pr", "view", str(n), "--json", "baseRefName,headRefOid,isCrossRepository,mergeStateStatus,state,url"],
+           repo, timeout)
     try:
         if r.returncode:
             raise ValueError(r.stderr.strip())
         view = json.loads(r.stdout)
     except ValueError as e:
         raise GhError(f"gh pr view {n}: {e}")
-    r = gh(["pr", "checks", str(n), "--json", "name,bucket,state,link"], repo, timeout)
+    r = gh(["pr", "checks", str(n), "--json", "name,bucket,state,description,link"], repo, timeout)
     if "no checks reported" in r.stderr:
         return view, []
     try:
@@ -88,10 +104,63 @@ def fetch(n, repo, timeout=120):
         raise GhError(f"gh pr checks {n}: {r.stderr.strip() or 'no JSON on stdout'}")
 
 
-def verdict(n, view, checks, cfg):
+def api(args, timeout, missing=False):
+    """stdout of `gh api args` (REST; the repo is in the path, so no --repo); with missing, None on HTTP 404.
+    Any other failure raises GhError."""
+    r = gh(["api", *args], None, timeout)
+    if r.returncode == 0:
+        return r.stdout
+    if missing and "HTTP 404" in r.stderr:
+        return None
+    raise GhError(f"gh api {next(x for x in args if x.startswith('repos/'))}: {r.stderr.strip()}")
+
+
+def harness_repo(slug, base, timeout):
+    """True when slug has a HARNESS_MARKERS file at ref base; asked of GitHub once per (slug, base)."""
+    key = (slug.lower(), base)
+    if key not in _harness_repos:
+        _harness_repos[key] = any(api([f"repos/{slug}/contents/{f}?ref={quote(base)}", "--jq", ".sha"], timeout,
+                                      missing=True) is not None for f in HARNESS_MARKERS)
+    return _harness_repos[key]
+
+
+def canary_of(view, cfg, timeout=120):
+    """None when cfg names no canary, else {context, required, paths (first 5 changed harness paths), state and
+    description (None here; verdict fills them from the check row named context), reason (why not required, else
+    None)}."""
+    if not cfg["canary"]:
+        return None
+    from .harness import glob_match  # harness -> canary -> pr: a top-level import would cycle
+    from .harness_edit import harness_globs
+    slug, n = re.search(r"([^/]+/[^/]+)/pull/(\d+)", view["url"]).groups()
+    files = api(["--paginate", f"repos/{slug}/pulls/{n}/files?per_page=100", "--jq", FILES_JQ], timeout).splitlines()
+    globs = harness_globs()
+    paths = [f for f in dict.fromkeys(files) if any(glob_match(g, f) for g in globs)]
+    out = {"context": cfg["canary"], "required": False, "paths": paths[:5], "state": None, "description": None,
+           "reason": "no harness path changed"}
+    if paths and cfg["canary_auto"] and not harness_repo(slug, view["baseRefName"], timeout):
+        out["reason"] = "not a harness repo"
+    elif paths:
+        out.update(required=True, reason=None)
+    return out
+
+
+def verdict(n, view, checks, cfg, canary=None, repo=None):
     """The status object for one PR: READY, MERGED, CLOSED, FAILED, CONFLICT, NO_CHECKS or WAITING.
 
-    A WAITING PR whose required checks all passed carries blocked_on: the merge state holding it back."""
+    A WAITING PR whose required checks all passed carries blocked_on: what still holds the merge. A required canary
+    (canary_of) is judged by its row in checks (state and description copied into it), not as a CI check: failed or
+    errored it is FAILED; missing or pending it keeps the PR WAITING, and blocked_on names it before the merge state
+    (the command to post it, with --repo when repo is given; a fork PR, where it cannot run; or the status to post
+    when canary-check renamed it)."""
+    gate, hit = "success", None
+    if canary and canary["required"]:
+        hit = next((c for c in checks if c["name"] == canary["context"]), None)
+        checks = [c for c in checks if c is not hit]  # judged as the canary below, never as a CI check
+        if cfg["required"] is not None:  # a required-checks line naming it too must not report it missing
+            cfg = {**cfg, "required": [x for x in cfg["required"] if x != canary["context"]]}
+        gate = hit and {"pass": "success", "fail": "failure", "cancel": "failure"}.get(hit["bucket"], "pending")
+        canary = {**canary, "state": hit and hit["state"].lower(), "description": hit and hit["description"]}
     row = lambda c: {"name": c["name"], "bucket": c["bucket"], "link": c.get("link", "")}  # noqa: E731
     adv = set(cfg["advisory"])
     if cfg["required"] is None:
@@ -103,22 +172,35 @@ def verdict(n, view, checks, cfg):
     passed = not missing and {c["bucket"] for c in required} <= {"pass", "skipping"}
     if view["state"] in ("MERGED", "CLOSED"):
         v = view["state"]
-    elif not checks:
+    elif not checks and not hit:
         v = "NO_CHECKS"
-    elif any(c["bucket"] in ("fail", "cancel") for c in required):
+    elif any(c["bucket"] in ("fail", "cancel") for c in required) or gate == "failure":
         v = "FAILED"
     elif ms == "DIRTY":
         v = "CONFLICT"
     elif passed:
-        v = "READY" if ms in GREEN_STATES else "WAITING"
+        v = "READY" if ms in GREEN_STATES and gate == "success" else "WAITING"
     else:
         v = "WAITING"
     preview = next((c.get("link") for c in checks if cfg["preview"] and c["name"] == cfg["preview"]), None)
     out = {"pr": n, "url": view["url"], "head": view["headRefOid"], "merge_state": ms, "verdict": v,
            "required": [row(c) for c in required], "advisory": [row(c) for c in checks if c["name"] in adv],
-           "missing_required": missing, "preview_url": preview or None}
+           "missing_required": missing, "preview_url": preview or None, "canary": canary}
     if v == "WAITING" and passed:
-        out["blocked_on"] = ms
+        ctx = canary and canary["context"]
+        if gate == "pending":
+            out["blocked_on"] = f"{ctx} pending" + (f": {canary['description']}" if canary["description"] else "")
+        elif gate is None and view["isCrossRepository"]:  # agent-cli harness canary refuses forks
+            slug = re.search(r"([^/]+/[^/]+)/pull/", view["url"])[1]
+            out["blocked_on"] = (f"{ctx} cannot run on a fork PR: push the branch to this repo and open the PR from "
+                                 f"it, or set canary-check[{slug}]: none")
+        elif gate is None and ctx == CANARY:
+            out["blocked_on"] = f"{ctx} not posted: run agent-cli harness canary --pr {n}" + (
+                f" --repo {repo}" if repo else "")
+        elif gate is None:
+            out["blocked_on"] = f"{ctx} not posted on {view['headRefOid'][:12]}: post that commit status"
+        else:
+            out["blocked_on"] = ms
     return out
 
 
@@ -162,12 +244,19 @@ def wait_loop(n, poll, cap, every, grace, clock=time.monotonic, sleep=time.sleep
     return Exit.TIMEOUT if got is None else got
 
 
+def judge(n, repo, cfg, timeout=120):
+    """(view, status) of PR n: one fetch, its canary (open PRs only), the verdict."""
+    view, checks = fetch(n, repo, timeout)
+    canary = canary_of(view, cfg, timeout) if view["state"] == "OPEN" else None
+    return view, verdict(n, view, checks, cfg, canary, repo)
+
+
 def status_or_die(a, example):
+    cfg = config(repo=a.repo)
     try:
-        view, checks = fetch(a.pr, a.repo)
+        return judge(a.pr, a.repo, cfg)
     except GhError as e:
         core.die(Exit.BLOCKED, str(e), example)
-    return view, verdict(a.pr, view, checks, config(repo=a.repo))
 
 
 def pr_status(a):
@@ -191,7 +280,7 @@ def pr_wait(a):
                  EX_WAIT + " --every 60")
     cfg = config(repo=a.repo)
     try:
-        code = wait_loop(a.pr, lambda left: verdict(a.pr, *fetch(a.pr, a.repo, max(1, left)), cfg),
+        code = wait_loop(a.pr, lambda left: judge(a.pr, a.repo, cfg, max(1, left))[1],
                          cap, every, grace, out=lambda o: emit_line(o, a.json))
     except GhError as e:
         core.die(Exit.BLOCKED, str(e), EX_WAIT)
@@ -241,6 +330,7 @@ def pr_land(a):
     view, s = status_or_die(a, EX_LAND)
     if s["verdict"] != "READY":
         why = "it is already merged" if s["verdict"] == "MERGED" else f"its verdict is {s['verdict']}, not READY"
+        why += f" (blocked on {s['blocked_on']})" if s.get("blocked_on") else ""
         core.die(Exit.REFUSED, f"PR {a.pr} not landed: {why}", f"agent-cli pr status {a.pr}" if s["verdict"] == "MERGED"
                  else f"agent-cli pr wait {a.pr} --cap 40m, then agent-cli pr land {a.pr} --yes")
     head = s["head"]
@@ -265,7 +355,11 @@ def register(sub):
     p = core.subcommand(ps, "status", "one verdict: READY, FAILED, WAITING, CONFLICT, NO_CHECKS, MERGED or CLOSED "
                         "(exit 0 READY/MERGED, 1 FAILED/CONFLICT/CLOSED, 5 WAITING/NO_CHECKS). READY = every "
                         "required check passes (a skipped one counts) and mergeStateStatus is CLEAN, HAS_HOOKS or "
-                        "UNSTABLE; a WAITING PR with all required checks passed names the merge state in blocked_on",
+                        "UNSTABLE; a WAITING PR with all required checks passed names what holds it in blocked_on (the "
+                        "canary step, else the merge state). An open PR changing harness-paths (## harness) also needs "
+                        "commit status harness-canary in a repo "
+                        "with .claude/HARNESS_VERSION or harness-loop/loop.py (canary-check under ## coordinator "
+                        "names the status and needs it in any repo; none turns it off)",
                         [EX_STATUS, "agent-cli pr status 42 --json"])
     p.set_defaults(func=pr_status)
     pw = core.subcommand(ps, "wait", "poll status until green (0: READY or MERGED), red (1: FAILED, CONFLICT "
@@ -293,5 +387,5 @@ def register(sub):
         q.add_argument("pr", type=int, metavar="<n>", help="the PR number")
         q.add_argument("--repo", metavar="OWNER/NAME", help="the GitHub repo, when not the cwd's; a "
                        "`required-checks[OWNER/NAME]:` line under ## coordinator in project-rules.md (likewise "
-                       "advisory-checks, preview-check) replaces the plain line for PRs in that repo (without "
-                       "--repo, the cwd's repo per gh; plain lines if gh cannot tell)")
+                       "advisory-checks, preview-check, canary-check) replaces the plain line for PRs in that repo "
+                       "(without --repo, the cwd's repo per gh; plain lines if gh cannot tell)")
