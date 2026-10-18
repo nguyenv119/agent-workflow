@@ -524,6 +524,36 @@ class Inventory(TmpCase):
         self.assertEqual(by_cmd[ok_test_f]["status"], "ok")
         self.assertEqual(by_cmd[inert_test_f]["status"], "inert")
 
+    def test_exec_and_command_builtins_resolve_the_program_they_run(self):
+        """
+        `exec` and `command` are shell builtins, not programs: the program is the word after them (and after exec's
+        options, `-a NAME` included). `command -v X` only asks whether X exists, and a bare `exec` (nothing or only a
+        redirection after it) runs nothing, so neither adds a program. A missing program after exec stays unresolved.
+        """
+        # GIVEN the guard-then-exec shape, exec with -a, exec of a missing program, and a bare exec redirection
+        write(self.p, ".claude/hooks/x.py", "x")
+        guarded = ('f="$CLAUDE_PROJECT_DIR/.claude/hooks/x.py"; command -v tool >/dev/null && [ -f "$f" ] || exit 0; '
+                   'exec tool "$f"')
+        exec_a = "exec -a name tool"
+        missing = "exec nosuchprog"
+        bare = "exec 2>/dev/null; tool"
+        self.settings(guarded, exec_a, missing, bare)
+        # WHEN inventory runs with PATH holding only `tool`
+        r, got = self.inventory("--json")
+        # THEN exec/command never appear as programs, tool resolves, and only the missing program is unresolved
+        by_cmd = {h["command"]: h for h in got["hooks"]}
+        tool = {"word": "tool", "path": str(self.bin / "tool")}
+        self.assertEqual(by_cmd[guarded]["status"], "ok")
+        self.assertIn(tool, by_cmd[guarded]["programs"])
+        self.assertFalse({"exec", "command"} & {p["word"] for p in by_cmd[guarded]["programs"]})
+        self.assertEqual(by_cmd[exec_a]["status"], "ok")
+        self.assertEqual(by_cmd[exec_a]["programs"], [tool])
+        self.assertEqual(by_cmd[missing]["status"], "unresolved")
+        self.assertEqual(by_cmd[missing]["programs"], [{"word": "nosuchprog", "path": None}])
+        self.assertEqual(by_cmd[bare]["status"], "ok")
+        self.assertEqual(by_cmd[bare]["programs"], [tool])
+        self.assertEqual(r.returncode, 1)
+
     def test_dangling_skill_symlink_falls_back_to_its_dir_name(self):
         """
         A skill dir linked to a target that went away is still one loadable-looking entry; inventory names it by

@@ -10,8 +10,8 @@ skills/commands named like a project one are shadows; a shadow no owner line mat
 
 inventory lists skills, commands, agents, the sha256 of the instruction files and every settings.json hook with the
 programs it really runs (guards `[ -x X ]` / `test -f X` resolved, `$CLAUDE_PROJECT_DIR`, `$HOME`, `~` and the
-command's own NAME=value assignments expanded): ok, inert (a guard target is missing, so it silently does nothing) or
-unresolved. An unparsable settings.json gives an `error` field, no hooks, and exit 1. Stdlib only.
+command's own NAME=value assignments expanded, the builtins `exec`/`command` looked through to the program they run):
+ok, inert (a guard target is missing, so it silently does nothing) or unresolved. An unparsable settings.json gives an `error` field, no hooks, and exit 1. Stdlib only.
 """
 import fnmatch
 import hashlib
@@ -39,6 +39,8 @@ MERGED_FIX = "edit the add-on's settings.add.json (or .skipbase) instead, then r
 ORIGINS = ("base", "addon", "base+addon")
 SEPARATORS = {"&&", "||", ";", "|", "&", "|&"}
 SKIP_WORDS = {"[", "test", "exit", "echo", "sleep", "cat", "true", ":"}
+PREFIX_BUILTINS = ("exec", "command")
+REDIRECT = re.compile(r"[<>&]*[<>][<>&]*")
 GUARD_TESTS = {"-x": lambda p: os.path.isfile(p) and os.access(p, os.X_OK), "-f": os.path.isfile,
                "-e": os.path.exists}
 
@@ -290,7 +292,17 @@ def resolve_hook(command, root):
             unresolved |= path is None
             inert |= path is not None and not GUARD_TESTS[seg[1]](path)
             continue
-        if seg[0] in SKIP_WORDS:
+        while seg and seg[0] in PREFIX_BUILTINS:  # the program is the word after exec/command and their options
+            if seg[0] == "command" and seg[1:2] in (["-v"], ["-V"]):
+                seg = []  # only asks whether a program exists
+                break
+            seg = seg[1:]
+            while seg and seg[0].startswith("-"):
+                seg = seg[2:] if seg[0] == "-a" else seg[1:]
+            # leading redirections (`>f`, `2>/dev/null`): a bare `exec 2>/dev/null` runs nothing
+            while seg and (REDIRECT.fullmatch(seg[0]) or seg[0].isdigit() and REDIRECT.fullmatch("".join(seg[1:2]))):
+                seg = seg[2:] if REDIRECT.fullmatch(seg[0]) else seg[3:]
+        if not seg or seg[0] in SKIP_WORDS:
             continue
         word = expand(seg[0], env)
         if word is None:
