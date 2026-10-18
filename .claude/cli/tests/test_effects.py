@@ -482,7 +482,7 @@ class CodeMode(unittest.TestCase):
 
 class Ran(unittest.TestCase):
     def test_ran_lists_each_file_the_command_runs_and_whether_a_shell_runs_it(self):
-        """ran() gives (path, by a shell) for each script a step runs, in order, past wrapper words.
+        """ran() gives (path, by a shell, "") for each script a step runs, in order, past wrapper words.
 
         The recorder reads those files to add their steps and effects; a shell script is read as shell, any
         other as code, so the flag picks the reader.
@@ -491,8 +491,8 @@ class Ran(unittest.TestCase):
         cmd = "wrapx python3 -u /tmp/q.py && bash ./x.sh; source ~/env.sh; ./run.py arg; ls -la"
         # WHEN read
         # THEN each run file, in order
-        self.assertEqual(ran(cmd, WRAP), [("/tmp/q.py", False), ("./x.sh", True), ("~/env.sh", True),
-                                          ("./run.py", False)])
+        self.assertEqual(ran(cmd, WRAP), [("/tmp/q.py", False, ""), ("./x.sh", True, ""), ("~/env.sh", True, ""),
+                                          ("./run.py", False, "")])
 
     def test_ran_lists_no_file_for_inline_code(self):
         """An interpreter given inline code (-c, -e, -p, -m, --eval, --print) runs no file: ran() lists none.
@@ -522,8 +522,236 @@ class Ran(unittest.TestCase):
                "python3 -Wmodule w.py; perl -Mopen x.pl; ruby -rset x.rb")
         # WHEN read
         # THEN each file
-        self.assertEqual(ran(cmd, ()), [("x.sh", True), ("x.mjs", False), ("q.py", False), ("i.py", False),
-                                        ("w.py", False), ("x.pl", False), ("x.rb", False)])
+        self.assertEqual(ran(cmd, ()), [("x.sh", True, ""), ("x.mjs", False, ""), ("q.py", False, ""),
+                                        ("i.py", False, ""), ("w.py", False, ""), ("x.pl", False, ""),
+                                        ("x.rb", False, "")])
+
+    def test_a_flag_that_takes_the_next_word_never_gives_its_value_as_the_script(self):
+        """A runner flag whose value is the next word (python -W/-X, node -r/--env-file, bash -o/-O/+o) is
+        skipped with its value, so the script after it is listed.
+
+        Taking the first non-flag word listed `ignore`, `dotenv/config` or `pipefail` as the script: the
+        recorder read no file (or a wrong one) and the script's steps and effects went uncounted.
+        """
+        cases = [("python3 -W ignore x.py", "x.py"), ("python3 -X dev x.py", "x.py"),
+                 ("python3 -Wignore x.py", "x.py"), ("python3 -Xdev x.py", "x.py"),
+                 ("node -r dotenv/config x.js", "x.js"), ("node --require dotenv/config x.js", "x.js"),
+                 ("node --env-file .env x.mjs", "x.mjs"), ("node --env-file=.env x.mjs", "x.mjs"),
+                 ("node --import tsx/esm x.ts", "x.ts"), ("node --loader ts-node/esm x.ts", "x.ts"),
+                 ("node --experimental-loader l.mjs x.mjs", "x.mjs"), ("node -C dev x.js", "x.js"),
+                 ("node --conditions dev x.js", "x.js"), ("node --input-type module x.mjs", "x.mjs"),
+                 ("node --title job x.js", "x.js"), ("tsx --env-file .env x.ts", "x.ts"),
+                 ("ts-node -r tsconfig-paths/register x.ts", "x.ts"), ("bun --env-file .env x.ts", "x.ts"),
+                 ("bun run --env-file .env x.ts", "x.ts"), ("bash -o pipefail x.sh", "x.sh"),
+                 ("bash -O extglob x.sh", "x.sh"), ("bash +o posix x.sh", "x.sh"), ("bash +O extglob x.sh", "x.sh"),
+                 ("bash +x x.sh", "x.sh"), ("bash --rcfile rc.sh x.sh", "x.sh"),
+                 ("bash --init-file rc.sh x.sh", "x.sh")]
+        for cmd, want in cases:
+            with self.subTest(cmd=cmd):
+                # GIVEN a run whose flag takes a value
+                # WHEN read
+                # THEN the script, never the flag's value
+                self.assertEqual([p for p, *_ in ran(cmd, ())], [want])
+        # an inline-code flag after a value flag still gives no file
+        self.assertEqual(ran("python3 -X dev -m mod", ()), [])
+
+    def test_uv_run_and_sudo_read_the_rest_as_their_own_command(self):
+        """`uv run [flags] <cmd ...>` and `sudo [flags] <cmd ...>` run the command after their own flags, so
+        that command's script is listed; `uv run x.py` runs x.py with python, not a shell.
+
+        These wrappers hid the script: `sudo bash x.sh` and `uv run python x.py` listed nothing, so a chore
+        run under them was never read.
+        """
+        cases = [("uv run python x.py", [("x.py", False, "")]), ("uv run x.py", [("x.py", False, "")]),
+                 ("uv run --with requests --python 3.12 python3 x.py", [("x.py", False, "")]),
+                 ("uv run -p 3.12 --project p --directory d --env-file .env x.py", [("x.py", False, "")]),
+                 ("uv run --group dev --extra e --package pk --index i --with-requirements r.txt x.py",
+                  [("x.py", False, "")]),
+                 ("uv run pytest", []), ("uv run python -m pytest", []), ("uv run", []), ("uv run --with x", []),
+                 ("sudo", []), ("sudo -v", []),
+                 ("sudo bash x.sh", [("x.sh", True, "")]), ("sudo -u root python3 x.py", [("x.py", False, "")]),
+                 ("sudo -g g -C 3 -D d -p pw -r r -t t -U u -h h -E bash x.sh", [("x.sh", True, "")]),
+                 ("sudo -u root uv run python x.py", [("x.py", False, "")]),
+                 ("npx tsx x.ts", [("x.ts", False, "")]), ("yarn exec tsx x.ts", [("x.ts", False, "")]),
+                 ("deno run -A x.ts", [("x.ts", False, "")])]
+        for cmd, want in cases:
+            with self.subTest(cmd=cmd):
+                # GIVEN a wrapped run
+                # WHEN read
+                # THEN the inner command's script
+                self.assertEqual(ran(cmd, ()), want)
+
+    def test_a_script_run_inside_echo_or_printf_substitution_is_listed(self):
+        """A $( ) body inside an echo/printf argument still runs, so its script is listed; the echo text
+        itself stays ignored for effects, while a git commit body stays ignored whole.
+
+        `echo $(bash x.sh)` listed nothing because every echo argument was masked, bodies included.
+        """
+        # GIVEN scripts run in $( ) inside echo and printf
+        # WHEN read
+        # THEN each script
+        self.assertEqual(ran("echo $(bash x.sh)", ()), [("x.sh", True, "")])
+        self.assertEqual(ran("printf '%s' \"$(python3 q.py)\"", ()), [("q.py", False, "")])
+        # the echo text itself still names nothing
+        self.assertEqual(fx('echo "see https://h.example.test"'), [])
+        # a Postgres CLI in echo's $( ) is a real run; the echoed URL text is not
+        self.assertEqual(fx('echo "https://h.example.test $(psql -h db.example.test -c q)"'),
+                         ["db:postgres", "host:db.example.test"])
+        # a commit body's $( ) runs nothing the recorder should read
+        self.assertEqual(ran('git commit -m "$(bash x.sh)"', ()), [])
+
+    def test_a_cd_earlier_in_the_command_moves_later_relative_scripts(self):
+        """A cd or pushd earlier in the same command moves later relative script paths into its dir; two cds
+        compose, an absolute or ~ one replaces, and absolute or ~ run paths are never rewritten. Each joined
+        path carries the dir it was joined to, which the recorder allows as a root for that read.
+
+        The recorder resolves paths against the event's cwd, so `cd sub && python3 x.py` read <cwd>/x.py,
+        the wrong file or none; and a cd into a sibling dir gave a path the cwd-only fence refused.
+        """
+        cases = [("cd sub && python3 x.py", "sub/x.py", "sub"),
+                 ("cd /abs/dir; bash x.sh", "/abs/dir/x.sh", "/abs/dir"),
+                 ("cd ~/proj && ./run.py", "~/proj/run.py", "~/proj"),
+                 ("cd a && cd b && python3 x.py", "a/b/x.py", "a/b"),
+                 ("cd a && cd /c && python3 x.py", "/c/x.py", "/c"),
+                 ("pushd sub && bash ./x.sh", "sub/x.sh", "sub"), ("cd sub && python3 /tmp/q.py", "/tmp/q.py", ""),
+                 ("cd sub && python3 ~/q.py", "~/q.py", ""), ("cd -P sub && python3 x.py", "sub/x.py", "sub"),
+                 ("cd sub && echo $(bash x.sh)", "sub/x.sh", "sub")]
+        for cmd, want, d in cases:
+            with self.subTest(cmd=cmd):
+                # GIVEN a cd, then a run
+                # WHEN read
+                # THEN the path from the cd's dir, and that dir (none for a path not joined to it)
+                self.assertEqual([(p, x) for p, _, x in ran(cmd, ())], [(want, d)])
+
+    def test_a_cd_to_an_unknown_dir_leaves_later_paths_as_written(self):
+        """After a cd whose target is unknown ($X, a backtick or $( ), a paren, `-`, a bare cd, popd) later relative
+        paths stay exactly as written, and a cd inside $( ) moves only the runs in that body.
+
+        Guessing a dir would point the recorder at a wrong file; as written is what it read before.
+        """
+        cases = [("cd $D && python3 x.py", "x.py"), ('cd "$D" && python3 x.py', "x.py"),
+                 ("cd `pwd` && python3 x.py", "x.py"), ("cd $(git rev-parse --show-toplevel) && python3 x.py",
+                                                         "x.py"),
+                 ("cd - && python3 x.py", "x.py"), ("cd && python3 x.py", "x.py"),
+                 ("cd a && cd $D && python3 x.py", "x.py"), ("cd $D && cd b && python3 x.py", "x.py"),
+                 ("cd $D && cd /c && python3 x.py", "/c/x.py"), ("pushd a && popd && python3 x.py", "x.py"),
+                 ("echo $(cd sub; pwd); python3 x.py", "x.py"), ('cd "a(b" && python3 x.py', "x.py")]
+        for cmd, want in cases:
+            with self.subTest(cmd=cmd):
+                # GIVEN an unknown cd, then a run
+                # WHEN read
+                # THEN the path as written
+                self.assertEqual([p for p, *_ in ran(cmd, ())], [want])
+        # a path left as written was joined to no dir, so the recorder allows no extra one
+        self.assertEqual(ran("cd $D && python3 x.py", ()), [("x.py", False, "")])
+
+    def test_in_a_command_with_case_each_paren_makes_the_dir_unknown(self):
+        """With the word `case` in the command, every bare paren makes the dir unknown until a / or ~ cd.
+
+        A case pattern's `)` read as a group's closed the group early: `cd a; (cd b; case ... y) ...;; esac;
+        ./x.sh)` read a/x.sh, though the shell ran a/b/x.sh. Tracking which `)` is a pattern's kept missing
+        forms (`then case`, `do case`, `{ case`, `in` on its own line, `;&`, a case in `$( )`), so the scanner
+        no longer tries: paths after the paren stay as written, never in a wrong dir.
+        """
+        body = ["case $1 in\ny) ./p.sh ;;\nesac\n", "if true; then case $1 in\ny) ./p.sh ;;\nesac\nfi\n",
+                "for f in 1; do case $f in\ny) ./p.sh ;;\nesac\ndone\n", "{ case $1 in\ny) ./p.sh ;;\nesac; }\n",
+                "! case $1 in\ny) ./p.sh ;;\nesac\n", "case $1\nin\ny) ./p.sh ;;\nesac\n",
+                "case $1 in\ny) case $2 in\nz) ./q.sh ;;\nesac ;;\nesac\n", "case $1 in\ny) ;&\nz) ;;\nesac\n",
+                "v=$(case $1 in y) echo 1;; esac); ", "case $1 in (y) ./p.sh ;; esac; "]
+        for b in body:
+            with self.subTest(body=b):
+                # GIVEN a case inside a group with a cd, then a run
+                got = [r for r in ran("cd a; (cd b; " + b + "./x.sh)", ()) if r[0].endswith("x.sh")]
+                # THEN the run stays as written: never a/x.sh
+                self.assertEqual(got, [("./x.sh", True, "")])
+        # AND a top-level case loses the fold too (as written, as before cds were folded); a / cd restores it
+        self.assertEqual(ran("cd sub; case $x in a) ;; esac; python3 x.py", ()), [("x.py", False, "")])
+        self.assertEqual(ran("case $x in a) ;; esac; cd /w; python3 x.py", ()), [("/w/x.py", False, "/w")])
+        self.assertEqual(ran("cd sub; python3 case.py", ()), [("sub/case.py", False, "sub")])
+
+    def test_a_cd_inside_a_subshell_group_moves_only_the_runs_in_that_group(self):
+        """A cd inside `( )` moves the runs inside that group, up to its matching `)`, and nothing after it;
+        groups nest, and a quoted paren is no group paren.
+
+        The subshell's cd dies with it: folding it into later steps read other/scripts/x.sh for
+        `(cd ../other && git pull) && ./scripts/x.sh`, a file never run, under a root the cd let in.
+        """
+        cases = [("(cd ../other && git pull) && ./scripts/x.sh", [("./scripts/x.sh", True, "")]),
+                 ("(cd sub && make) && python3 q.py", [("q.py", False, "")]),
+                 ("(cd sub && python3 x.py); python3 y.py", [("sub/x.py", False, "sub"), ("y.py", False, "")]),
+                 ("(cd sub && python3 x.py)", [("sub/x.py", False, "sub")]),
+                 ("cd a && (cd b && python3 x.py) && python3 y.py", [("a/b/x.py", False, "a/b"),
+                                                                       ("a/y.py", False, "a")]),
+                 ("(cd sub\npython3 x.py)\npython3 y.py", [("sub/x.py", False, "sub"), ("y.py", False, "")]),
+                 ('(cd sub && echo ")" && python3 x.py); python3 y.py', [("sub/x.py", False, "sub"),
+                                                                         ("y.py", False, "")])]
+        for cmd, want in cases:
+            with self.subTest(cmd=cmd):
+                # GIVEN a cd in a group, then runs
+                # WHEN read
+                # THEN only the runs in the group are moved
+                self.assertEqual(ran(cmd, ()), want)
+
+    def test_a_cd_in_a_pipeline_or_in_the_background_moves_nothing(self):
+        """A cd that is one command of a pipeline of 2+ commands, or is ended by `&` (not `&&`), runs in its
+        own subshell, so later relative paths stay as written; a redirect's `&` is no background.
+
+        `cd sub | cat; python3 x.py` runs <cwd>/x.py; joining it to sub read a file the shell never ran.
+        """
+        cases = [("cd sub | cat; python3 x.py", "x.py"), ("cat f | cd sub && python3 x.py", "x.py"),
+                 ("cd sub & python3 x.py", "x.py"), ("cd sub &\npython3 x.py", "x.py"),
+                 ("cd sub && python3 x.py | cat", "sub/x.py"), ("cd sub 2>&1 && python3 x.py", "sub/x.py"),
+                 ("cd sub &>/dev/null && python3 x.py", "sub/x.py")]
+        for cmd, want in cases:
+            with self.subTest(cmd=cmd):
+                # GIVEN a piped or backgrounded cd, then a run
+                # WHEN read
+                # THEN the path as the shell runs it
+                self.assertEqual([p for p, *_ in ran(cmd, ())], [want])
+
+    def test_runs_before_and_after_a_cd_keep_their_order_and_dirs(self):
+        """A run before a cd stays as written; one after it is joined; a `cd ..` back to the start leaves the
+        dir "." (normalised), so the next path names the file in the cwd; a quoted target with a space resolves.
+
+        A run before a cd moved, or `sub/..` kept as the dir, would point the recorder at the wrong file.
+        """
+        # GIVEN runs on both sides of a cd
+        # WHEN read
+        # THEN each in order, with its own dir
+        self.assertEqual(ran("python3 a.py && cd sub && python3 b.py", ()),
+                         [("a.py", False, ""), ("sub/b.py", False, "sub")])
+        self.assertEqual(ran("cd sub && python3 a.py && cd .. && python3 b.py", ()),
+                         [("sub/a.py", False, "sub"), ("b.py", False, ".")])
+        self.assertEqual(ran('cd "my dir" && python3 x.py', ()), [("my dir/x.py", False, "my dir")])
+
+    def test_sudo_skips_its_env_assignments_before_the_command(self):
+        """`sudo VAR=x ... <cmd>` sets env vars for cmd: the VAR=x words are skipped, so cmd's script is listed.
+
+        `sudo FOO=1 bash x.sh` listed nothing, so the script's steps and effects went uncounted.
+        """
+        cases = [("sudo FOO=1 bash x.sh", [("x.sh", True, "")]),
+                 ("sudo -E FOO=1 BAR=2 python3 x.py", [("x.py", False, "")]), ("sudo FOO=1", [])]
+        for cmd, want in cases:
+            with self.subTest(cmd=cmd):
+                # GIVEN sudo with env assignments
+                # WHEN read
+                # THEN the inner command's script
+                self.assertEqual(ran(cmd, ()), want)
+
+    def test_a_substitution_inside_echo_counts_in_full(self):
+        """The body of a $( ) inside an echo/printf argument is a real command: its URLs, env reads and .env
+        names count, while the echo text around it stays ignored and a git body stays ignored whole.
+
+        Masking the whole echo argument hid `echo $(curl https://api.example.test/x)`'s host.
+        """
+        # GIVEN calls inside echo/printf substitutions
+        # WHEN read
+        # THEN their effects
+        self.assertEqual(fx("echo $(curl https://api.example.test/x)"), ["host:api.example.test"])
+        self.assertEqual(fx('printf "%s see https://h.example.test" "$(cat .env; tool $TOKEN_A)"'),
+                         ["env:TOKEN_A", "envfile:.env"])
+        self.assertEqual(fx('echo "see https://h.example.test"'), [])
+        self.assertEqual(fx('git commit -m "$(curl https://api.example.test/x)"'), [])
 
 
 class SingleQuotes(unittest.TestCase):
@@ -676,13 +904,27 @@ class Speed(unittest.TestCase):
         The recorder hook has a 5s timeout; a URL scan that restarts at every char of a long word is
         quadratic and loses the whole row.
         """
-        for cmd in ("a" * 40000, "curl '" + "a" * 30000, "a " * 20000, "sh " * 20000):
+        for cmd in ("a" * 40000, "curl '" + "a" * 30000, "a " * 20000, "sh " * 20000, "sudo " * 20000):
             with self.subTest(n=len(cmd)):
                 # WHEN read
                 t = time.monotonic()
                 fx(cmd)
                 # THEN quickly
                 self.assertLess(time.monotonic() - t, 0.5)
+
+    def test_many_cds_list_their_runs_in_linear_time(self):
+        """A 448 KB command of 32K `cd a; ./x.sh` steps lists its runs in well under the hook's 5s timeout.
+
+        A cd dir that grows without a cap and is normalised per run made this quadratic (4.3s).
+        """
+        # GIVEN many cds into a nested dir, each followed by a run
+        cmd = "cd a; ./x.sh; " * 32000
+        # WHEN listed
+        t = time.monotonic()
+        got = ran(cmd, ())
+        # THEN quickly, and a dir past 4096 chars is unknown, so later paths stay as written
+        self.assertLess(time.monotonic() - t, 3.0)  # quadratic was 4.3s; linear ~0.6-2s under load
+        self.assertEqual(got[-1], ("./x.sh", True, ""))
 
     def test_a_long_command_reads_in_linear_time(self):
         """A 200 KB command of many quoted parts and heredocs reads in well under a second.

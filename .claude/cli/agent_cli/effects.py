@@ -14,7 +14,8 @@ heredoc written to a file by cat or tee (cat > f, cat >> f, tee [-a] f), unless 
 command runs that file (an interpreter word, through npx or `<runner> exec`, then the path; the path as the command
 word; `.` or `source`), matched as written or, when either side is relative, by basename; quoted strings, $( )
 bodies and heredoc bodies anywhere in a pipeline that runs git or gh (commit and PR bodies; bare words there
-still count); the pattern argument of grep/rg/sed/awk; every argument of echo/printf; # comments; and `$NAME`
+still count); the pattern argument of grep/rg/sed/awk; every argument of echo/printf (a $( ) in one still
+runs and counts); # comments; and `$NAME`
 (not os.environ or process.env) in a quoted heredoc (`<<'EOF'`) fed to anything but a shell, which no shell
 expands: Python that edits a shell script (a written file counts as fed to a shell when bash/sh/zsh,
 `.`/`source` or a `.sh` path at command position runs it), or in single quotes, unless an earlier word of
@@ -26,16 +27,20 @@ backslash (`pa\\$SW0RD`). A URL whose `user:password` authority holds / # or ? t
 read from the shell level and from heredoc bodies a shell reads (`bash <<EOF`, or a written file a shell
 runs), never from inside inline code. effects(text, code=True) reads a script body no shell reads (a .py
 file the recorder opens) as one code span: URLs, code env reads, .env words and DB_CODE count, `$NAME` and
-assignments do not. ran(text) lists the files the command runs, for the recorder to read.
+assignments do not. ran(text) lists the files the command runs (past flag values and the npx, sudo,
+`uv run` wrappers; moved by an earlier cd in the same shell, with that cd's dir), for the recorder to read.
 Effects feed the weekly count (`agent-cli repeats --by effect`), never the live warning.
 """
 import itertools
+import posixpath
 import re
 
 from . import core, hook
-from .shape import COLON_TOOLS, DIGITS4, ENV_FILE, HOST, INTERPRETER, REDIR, prefix_len, prefix_re
+from .shape import ASSIGN, COLON_TOOLS, DIGITS4, ENV_FILE, HOST, INTERPRETER, REDIR, prefix_len, prefix_re
 
 MAX_EFFECTS = 32
+CASE = re.compile(r"(?<![\w-])case(?![\w-])")  # the word `case` anywhere: its pattern `)`s look like group parens
+MAX_DIR = 4096  # a longer cd dir is unknown: each run joined to it costs its length
 ENV_NAME = re.compile(r"[A-Z][A-Z0-9_]{2,63}")
 Q_ = r"\\?[\"']"  # a quote, maybe escaped inside a double-quoted shell string
 # `\$X` is never expanded; `\\$X` is (an odd run of 3+ backslashes still reads as a name)
@@ -68,6 +73,15 @@ OUT_REDIR = re.compile(r"&>>?|>>|>\||>(?!&)")
 URL = re.compile(r"(?<![\w+.-])[A-Za-z][\w+.-]*://([^\s\"'`]*)")
 AUTHORITY = re.compile(r"[^/?#]*")
 SHELL_C = re.compile(r"-[A-Za-z]*c[A-Za-z]*")  # a shell's -c, alone or in a cluster (-lc)
+# runner flags whose value is the next word (the attached -Wignore or --env-file=.env needs no skip), by
+# runner kind, node's for tsx, ts-node and bun too; then the wrappers' own, before their command
+_NODE = frozenset("-r --require --import --loader --experimental-loader -C --conditions --input-type --title "
+                  "--env-file".split())
+VALUES = {"py": ("-W", "-X"), "sh": ("-o", "-O", "+o", "+O", "--rcfile", "--init-file"),
+          **dict.fromkeys(("node", "tsx", "ts-node", "bun"), _NODE),
+          "uv": ("--with", "--with-requirements", "--python", "-p", "--project", "--directory", "--env-file",
+                 "--group", "--extra", "--package", "--index"),
+          "sudo": ("-u", "-g", "-C", "-D", "-p", "-r", "-t", "-U", "-h")}
 # Flags that hand a runner inline code (or a module) instead of a file: a shell's -c, python's -c/-m after
 # only its no-argument letters, and -e/-E/-p/--eval/--print for the rest (node, perl, ruby, tsx, bun) after
 # only perl/ruby switch letters (-ne, -lane, -pe). bash's -e (errexit), python's -X/-W and perl/ruby's
@@ -93,7 +107,7 @@ def effects(text, prefixes=None, code=False):
     spans, codes, found, assigned = [], [(0, len(text))] if code else [], set(), set()
     if not code:
         writes, runs, bodies = [], [], []
-        _ignore(text, _cmd_re(prefixes), 0, spans, codes, (writes, runs, found, bodies))
+        _ignore(text, _cmd_re(prefixes), 0, spans, codes, (writes, runs, found, bodies, []))
         _unrun(writes, runs, spans, codes, bodies)
         assigned = _assigned(text).union(*(_assigned(text[a:b]) for a, b in bodies))
     view = _cut(_cut(text, codes, lambda t: t.replace("$", "_")), spans, lambda t: " ")
@@ -119,11 +133,33 @@ def effects(text, prefixes=None, code=False):
 
 
 def ran(text, prefixes=None):
-    """(path, by a shell) of each file the command runs, in order (_ran of each step, $( ) bodies included);
-    the path as written, unexpanded."""
-    runs = []
-    _ignore(text, _cmd_re(prefixes), 0, [], [], ([], runs, set(), []))
-    return [r[1:] for r in sorted(runs, key=lambda r: r[0])]
+    """(path, by a shell, dir) of each file the command runs, in order (_ran of each step, $( ) bodies
+    included); the path as written, unexpanded, but for a relative one after a cd/pushd outside $( ): joined
+    to its dir (normalised), which is the third item ("" when not joined: `cd sub && ./x.sh` gives
+    ("sub/x.sh", True, "sub"); cds compose, an absolute or ~ one replaces, `cd sub && cd ..` leaves ".").
+    A cd inside a ( ) group moves only the runs up to that group's `)`; one in a pipeline of 2+ commands or
+    ended by `&` moves nothing. After a cd to an unknown dir (a $, backtick, quote or paren left in it, `-`,
+    +N, none, over MAX_DIR chars) or a popd, relative paths stay as written until an absolute or ~ cd, or
+    the `)` of the group it sits in. A case pattern's `)` reads like a group's, so in a command holding the
+    word `case`, each paren makes the dir unknown (as an unknown cd does)."""
+    runs, moves, out, d, saved, opened = [], [], [], "", [], False
+    _ignore(text, _cmd_re(prefixes), 0, [], [], ([], runs, set(), [], moves))
+    case = CASE.search(text)
+    for at, *e in sorted(runs + moves, key=lambda r: r[0]):  # a run: (at, path, by a shell)
+        if e in (["("], [")"]) and case:  # a paren may be a group's or a case pattern's: dir unknown till a / or ~ cd
+            d = None
+        elif e == ["("]:  # a group saves the dir its `)` restores
+            saved.append(d)
+            opened = True
+        elif e == [")"]:  # unmatched after a group: a stray `)`, so the dir is unknown
+            d = saved.pop() if saved else None if opened else d
+        elif len(e) == 1:  # a cd: (at, target)
+            d = _cd(d, e[0])
+        elif d and not e[0].startswith(("/", "~")):
+            out.append((posixpath.normpath(posixpath.join(d, e[0])), e[1], d))
+        else:
+            out.append((e[0], e[1], ""))
+    return out
 
 
 def _cmd_re(prefixes):
@@ -177,32 +213,73 @@ def _unrun(writes, runs, out, code, shell):
 
 
 def _ran(s, word, args):
-    """(path, by a shell) of the file this step runs, or None: an interpreter's first non-flag argument (past
-    npx, `<runner> exec` and deno/bun run), or the command word itself when it is a path. None too when a
-    flag before that argument gives inline code (INLINE: bash -c, python3 -m, node -e/-p/--eval, perl -ne):
-    such a run reads no file."""
-    name, ws = word.rsplit("/", 1)[-1], [s[a:b].strip("\"'") for a, b in args]
-    rest = [k for k, w in enumerate(ws) if not w.startswith("-")]  # where the non-flag arguments sit
-    lo = 0  # the runner's own flags start here
-    if name == "npx" or rest and ws[rest[0]] == "exec":
-        rest = rest[bool(rest) and ws[rest[0]] == "exec":]
-        name, lo, rest = (ws[rest[0]], rest[0] + 1, rest[1:]) if rest else ("", 0, [])
-    if name in ("deno", "bun") and rest and ws[rest[0]] == "run":
-        rest = rest[1:]
-    if RUNNERS.fullmatch(name):
-        inline = INLINE["sh" if name in SHELLS else "py" if name.startswith("python") else ""]
-        if not rest or any(inline.fullmatch(w) for w in ws[lo:rest[0]]):
+    """(path, by a shell) of the file this step runs, or None: the command word itself when it is a path, or a
+    runner's first argument past its flags and the values of those that take one (VALUES: python -W ignore,
+    node -r m, bash -o pipefail; a shell's +o/+x are flags too), past the wrappers npx, sudo, `uv run` and
+    `<runner> exec`, each read as its own command (`uv run x.py` runs x.py with python; `sudo FOO=1 cmd`
+    skips FOO=1), and deno/bun run.
+    None too when a flag before that argument gives inline code (INLINE: bash -c, python3 -m, node
+    -e/-p/--eval, perl -ne): such a run reads no file."""
+    return _run(word.strip("\"'"), [s[a:b].strip("\"'") for a, b in args])
+
+
+def _run(word, ws):
+    """_ran of the command word word and its argument words ws, quotes stripped. A loop, not recursion, and
+    ws is never copied: `sudo sudo ...` stays linear."""
+    j, uv = 0, False  # ws[j:]: word's arguments; uv: word is what `uv run` runs
+    while True:
+        name = word.rsplit("/", 1)[-1]
+        values = VALUES.get(name, ())
+        k = _arg(ws, j, values, env=name == "sudo")  # `sudo FOO=1 cmd`
+        if k is None or not (name in ("npx", "sudo") or ws[k] == "exec" or name == "uv" and ws[k] == "run"):
+            break
+        k = k if name in ("npx", "sudo") else _arg(ws, k + 1, values)
+        if k is None:
             return None
-        return ws[rest[0]], name in SHELLS or name in (".", "source")
-    return (word.strip("\"'"), word.endswith(".sh")) if "/" in word else None
+        word, j, uv = ws[k], k + 1, name == "uv"
+    if not RUNNERS.fullmatch(name):
+        return (word, False) if uv and word.endswith(".py") else (word, word.endswith(".sh")) if "/" in word else None
+    kind = "sh" if name in SHELLS else "py" if name.startswith("python") else ""
+    values, inline = VALUES.get(kind or name, ()), INLINE[kind]
+    k = _arg(ws, j, values, inline, kind == "sh")
+    if name in ("deno", "bun") and k is not None and ws[k] == "run":
+        k = _arg(ws, k + 1, values, inline)
+    return None if k is None else (ws[k], name in SHELLS or name in (".", "source"))
+
+
+def _arg(ws, k, values, inline=None, plus=False, env=False):
+    """Where the first word of ws from k sits that is neither a flag (`+x` too, when plus; VAR=x too, when
+    env) nor the value of one in values, or None: none left, or an inline-code flag (inline) comes first."""
+    while k < len(ws):
+        w = ws[k]
+        if inline and inline.fullmatch(w):
+            return None
+        if w in values:
+            k += 2
+        elif w.startswith("-") or plus and w.startswith("+") or env and ASSIGN.match(w):
+            k += 1
+        else:
+            return k
+    return None
+
+
+def _cd(d, t):
+    """The dir after `cd t` from d, normalised ("" for as written, None for unknown: t None, a relative t
+    from an unknown d, or a result over MAX_DIR chars)."""
+    if t is None or d is None and not t.startswith(("/", "~")):
+        return None
+    n = posixpath.normpath(t if t.startswith(("/", "~")) else posixpath.join(d, t))
+    return n if len(n) <= MAX_DIR else None
 
 
 def _ignore(s, cmd_re, base, out, code, files):
     """Append to out the (start, end) spans of s (offset by base) that name things without touching them,
     and to code the quoted heredoc bodies no shell reads (their `$NAME` is text); recurse into the $( ) and
-    backtick bodies outside those spans. files: (writes, runs) for _unrun, the file heredocs and the files
-    the command runs, then found, the effect set, which gets each step's db:postgres and -h host, then the
-    spans of heredoc bodies a shell in the pipeline reads (their assignments are shell names)."""
+    backtick bodies outside those spans (an echo/printf argument's included: it still runs). files: (writes,
+    runs) for _unrun, the file heredocs and the files the command runs, then found, the effect set, which gets
+    each step's db:postgres and -h host, then the spans of heredoc bodies a shell in the pipeline reads (their
+    assignments are shell names), then for ran() the cd steps outside $( ) that are alone in their pipeline
+    and not ended by `&`, (at, dir or None when unknown), and the bare `(` and `)` outside $( ), (at, paren)."""
     line, pipe, words, cmd = [], [], [], _Cmd()  # line: the pipelines since the last newline
     pending, start, redir, i = [], None, None, 0
 
@@ -314,22 +391,25 @@ def _ignore(s, cmd_re, base, out, code, files):
                 end_cmd()
                 i += 1 + (two == "|&")
             else:
+                cmd.bg = c == "&" and two != "&&"  # `cd x &` runs in a subshell
                 end_pipe()
                 i += 2 if two in ("||", "&&", ";;") else 1
-        else:  # space, tab, ( and )
+        else:  # space, tab, ( and ): a bare paren opens or closes a subshell group (quoted ones were consumed)
             end_word(i)
+            if c in "()" and not base:
+                files[4].append((i, c))
             i += 1
     end_line()
 
 
 class _Cmd:
     """One simple command while scanning: its word spans, quoted (and single-quoted) and $( ) body spans,
-    heredoc body spans (and those with a quoted delimiter, in literal), and the file it redirects output to
-    ("" for none)."""
+    heredoc body spans (and those with a quoted delimiter, in literal), the file it redirects output to
+    ("" for none), and whether a lone `&` ends it (bg)."""
 
     def __init__(self):
         self.words, self.quoted, self.single, self.subst, self.heredocs, self.literal = [], [], [], [], [], []
-        self.out = ""
+        self.out, self.bg = "", False
 
 
 def _judge(s, pipe, cmd_re, base, out, code, files):
@@ -344,9 +424,7 @@ def _judge(s, pipe, cmd_re, base, out, code, files):
                    if m[0][0] == "'" for x, y in [m.span()]]  # a shell reading the body leaves these as text
         literal = singles if shell else [(base + a, base + b) for a, b in c.literal]
         spans = c.quoted + c.subst + c.heredocs if git else []
-        if name in ("echo", "printf"):
-            spans += args
-        elif name in PATTERN_TOOLS:
+        if name in PATTERN_TOOLS:
             spans += _patterns(s, args, *PATTERN_TOOLS[name])
         target = c.out if name == "cat" else next((s[a:b] for a, b in args if s[a] != "-"), "")
         if name in ("cat", "tee") and target and c.heredocs:  # kept only if a later step runs it: _unrun
@@ -360,16 +438,34 @@ def _judge(s, pipe, cmd_re, base, out, code, files):
         if run := word and _ran(s, word, args):
             files[1].append((at, *run))
         ws = [s[a:b] for a, b in args]
+        # outside $( ), alone in its pipeline and not backgrounded: any other cd runs in a subshell
+        if name in ("cd", "pushd", "popd") and not base and len(pipe) == 1 and not c.bg:
+            d = "" if name == "popd" else next((w.strip("\"'") for w in ws if not w.startswith("-") or w == "-"), "")
+            files[4].append((at, None if not d or d == "-" or re.search(r"[$`'\"()]|^\+", d) else d))
         # the first 6 args only: the script comes by then, and DB_SCRIPT's alternatives overlap (backtracking)
         if name in PG_CLI or name in DB_RUNNERS and DB_SCRIPT.match(" ".join(ws[:6]) + " "):
             files[2].add(DB)
         for k, t in enumerate(ws if name in PG_CLI else ()):  # -h/--host's value only: never -U, -d or others
             if t in ("-h", "--host") and k + 1 < len(ws) or t.startswith("--host="):
                 _host((t[7:] if t.startswith("--host=") else ws[k + 1]).strip("\"'"), files[2], True)
-        out += [(base + a, base + b) for a, b in spans]
+        # echo/printf text names nothing, but a $( ) in it still runs: its body is left out, and read below
+        out += [(base + a, base + b) for a, b in spans + (_minus(args, c.subst) if name in ("echo", "printf") else [])]
         for a, b in c.subst:
             if not any(x <= a and b <= y for x, y in spans):
                 _ignore(s[a:b], cmd_re, base + a, out, code, files)
+
+
+def _minus(spans, holes):
+    """spans with the holes inside them cut out; both in order, so one pass."""
+    out, k = [], 0
+    for a, b in spans:
+        while k < len(holes) and holes[k][1] <= b:
+            if holes[k][0] >= a:
+                out.append((a, holes[k][0]))
+                a = holes[k][1]
+            k += 1
+        out.append((a, b))
+    return out
 
 
 def _expander(s, words):
