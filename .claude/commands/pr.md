@@ -122,9 +122,17 @@ GOOD  ## Evidence
 
 A PR that changes harness paths cannot land until commit status `harness-canary` is posted on its head, and only a laptop can run the exam. Only this step is laptop-gated; the rest of /pr is unchanged.
 
-**On a laptop (`CLAUDE_CODE_REMOTE` unset):** run `agent-cli pr status <number> --json --repo $REPO`. When `canary.required` is true and `canary.state` is null, start `agent-cli harness canary --pr <number> --repo $REPO` with Bash `run_in_background` (about 30 min; it posts `pending` "running" at once, then the verdict) and say that it started. A non-null `canary.state` means it already ran, or is running (`pending`), for this head: start nothing.
+**On a laptop (`CLAUDE_CODE_REMOTE` unset):** run `agent-cli pr status <number> --json --repo $REPO`. When `canary.required` is true and either
 
-**In a cloud session (`CLAUDE_CODE_REMOTE` set):** do not call `agent-cli pr status` (its `gh pr` GraphQL call returns 403 there) and do not start the canary (it refuses there). When `git diff --name-only origin/main...$BRANCH` touches a harness path (`harness-paths:` under `## harness` in `.claude/project-rules.md`, else `.claude/` skills, commands, agents, hooks, bin, cli, settings.json, CLAUDE.md, project-rules.md, harness-addon, plus AGENTS.md and CLAUDE.md), print:
+- `canary.state` is null (nobody ran it on this head), or
+- `canary.state` is `pending` and the time in its `canary.description` ("running since <time>") is more than 2 hours old (that run was killed: the exam and its one rerun finish well inside 2 hours),
+
+start `agent-cli harness canary --pr <number> --repo $REPO` with Bash `run_in_background` (about 30 min; it posts `pending` "running since <UTC time>" at once, then the verdict) and say that it started. Otherwise start nothing: it passed, failed, errored, or is running on this head.
+
+**In a cloud session (`CLAUDE_CODE_REMOTE` set):** do not call `agent-cli pr status` (its `gh pr` GraphQL call returns 403 there) and do not start the canary (it refuses there). Print the line below when both hold:
+
+- `git diff --name-only origin/main...$BRANCH` touches a harness path: the `harness-paths:` globs under `## harness` in `.claude/project-rules.md`, else `DEFAULT_PATHS` in `.claude/cli/agent_cli/harness_edit.py`.
+- The canary applies to this repo: `canary-check:` under `## coordinator` in `.claude/project-rules.md` (or its `canary-check[<owner>/<repo>]:` form for this repo) is not `none` or `off`; with no canary-check line, the repo has `.claude/HARNESS_VERSION` or `harness-loop/loop.py`.
 
 ```
 harness PR <number> waits for a laptop canary run (the project's daily job or a laptop /pr)
