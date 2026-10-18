@@ -541,6 +541,20 @@ class ChoreLookup(RepeatCase):
         self.assertIn("`x-tool <arg> | tr <arg>` was hand-written 9 times",
                       self.ask("x-tool run | tr a b", session="live2")["additionalContext"])
 
+    def test_two_variants_of_one_chore_in_one_command_warn_once_with_one_mark(self):
+        """A chain holding two tail variants of one chore (`bd show x | head -5; bd show y | grep open`) gives one
+        warning, about the chore, and writes exactly one mark: the variants share one key, so they never spend
+        two of the session's 5 warnings."""
+        # GIVEN the chore cached
+        self.write_cache({"bd show <arg>": {"sessions": 4, "count": 9}})
+        # WHEN one command holds two of its variants
+        out = self.ask("bd show x-1 | head -5; bd show x-2 | grep open")
+        # THEN one warning names the chore, and the session's marks file holds one line
+        self.assertIn("`bd show <arg>` was hand-written 9 times across 4 sessions (one step of this command)",
+                      out["additionalContext"])
+        marks = (self.store / "warned" / "live1.txt").read_text().splitlines()
+        self.assertEqual(marks, [json.dumps(["", "bd show <arg>"])])
+
     def test_the_cap_stays_five_with_tail_variants(self):
         """Six distinct chores each typed with a quiet tail still give at most 5 warnings in a session."""
         # GIVEN six cached chores
