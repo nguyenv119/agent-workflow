@@ -11,7 +11,8 @@ skills/commands named like a project one are shadows; a shadow no owner line mat
 inventory lists skills, commands, agents, the sha256 of the instruction files and every settings.json hook with the
 programs it really runs (guards `[ -x X ]` / `test -f X` resolved, `$CLAUDE_PROJECT_DIR`, `$HOME`, `~` and the
 command's own NAME=value assignments expanded, the builtins `exec`/`command` looked through to the program they run):
-ok, inert (a guard target is missing, so it silently does nothing) or unresolved. An unparsable settings.json gives an `error` field, no hooks, and exit 1. Stdlib only.
+ok, inert (a guard target is missing, so it silently does nothing) or unresolved. An unparsable settings.json gives an
+`error` field, no hooks, and exit 1. Stdlib only.
 """
 import fnmatch
 import hashlib
