@@ -331,6 +331,15 @@ def basic(step):
 
 
 @functools.lru_cache(maxsize=None)
+def chore(step):
+    """The repeat key of a step: its first `|` segment when every later segment is basic (quiet reads,
+    `cut -c`, inline interpreter code), else the step unchanged. `bd show <arg> | grep -n <str> | head <n>`
+    -> `bd show <arg>`; `ls <arg> | tr <str>` stays (tr is a recipe, not basic); a one-segment step stays."""
+    segs = SEGMENT_SEP.split(step)
+    return segs[0] if len(segs) > 1 and all(map(basic, segs[1:])) else step
+
+
+@functools.lru_cache(maxsize=None)
 def report_only(step):
     """True for a basic step the step report still lists, as a chore a command can do: a lone sleep
     (`sleep <n>`), or git log/show naming origin/<arg> (an on-main check, maybe piped into reads)."""
@@ -347,9 +356,10 @@ def report_only(step):
 def _repeat_rule(command, data):
     """The repeated-shape warning as a warn rule, naming one step of command on <store>/repeats-cache.json
     that this session's agent was not yet warned about; None otherwise. The command is split as the
-    recorder splits it (shape.steps, $( ) bodies included) and each step looked up; among the hits the most
-    specific is named: most literal characters (outside <...> placeholders, spaces excluded), then more
-    sessions, then first typed. Once per (agent, step), and at most REPEAT_CAP warnings per session in all,
+    recorder splits it (shape.steps, $( ) bodies included) and each step looked up by its chore key (chore():
+    `x <arg> | head <n>` and `x <arg> | grep <str>` are both `x <arg>`, the cache's key); among the hits the
+    most specific key is named: most literal characters (outside <...> placeholders, spaces excluded), then
+    more sessions, then first typed. Once per (agent, key), and at most REPEAT_CAP warnings per session in all,
     counted as the marks in warned/<session>.txt. Basic steps never warn, and the cache is shared by every
     project on the store, so a step this project covers by a command (its `commands:` line, or agent-cli)
     is dropped too. No session id, a bypass comment, a missing or bad cache, or a store the mark cannot be
@@ -362,7 +372,7 @@ def _repeat_rule(command, data):
             return None
         steps = shape.steps(command)  # the recorder's split, each step already cut to MAX_SHAPE
         covered = repeats.command_covered()
-        todo = [s for s in steps if not basic(s) and not covered(s)]
+        todo = list(dict.fromkeys(chore(s) for s in steps if not basic(s) and not covered(s)))
         if not todo:
             return None
         store = record.store_dir()

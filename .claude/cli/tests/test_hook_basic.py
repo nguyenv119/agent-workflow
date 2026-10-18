@@ -1,4 +1,5 @@
-"""Tests for hook.basic() and hook.report_only(): which step shapes are shell basics with no chore in them."""
+"""Tests for hook.basic() and hook.report_only(): which step shapes are shell basics with no chore in them;
+and hook.chore(): the repeat key of a step piped into quiet reads."""
 import sys
 import unittest
 
@@ -59,6 +60,30 @@ class BasicSteps(unittest.TestCase):
                            ("sleep <n> | head <n>", False)):
             with self.subTest(step=step):
                 self.assertIs(hook.report_only(step), want)
+
+
+class ChoreKeys(unittest.TestCase):
+    def test_a_quiet_pipeline_tail_folds_into_the_first_segment(self):
+        """chore(step) is the step's first `|` segment when every later segment is basic (head, tail, grep,
+        sed -n, cut -c, wc, inline interpreter code), else the whole step; a one-segment step is unchanged.
+
+        The repeat cache and warning are keyed by it, so `bd show <arg> | head <n>` and `bd show <arg> | grep
+        <str>` are one chore: as separate keys each drew its own warning and spent the 5-per-session cap on
+        variants of one chore. A recipe tail (tr, jq, sort) is part of the chore and must stay.
+        """
+        # GIVEN steps, WHEN each is keyed, THEN quiet tails fold away and recipe tails stay
+        for step, want in (("bd show <arg> | head <n>", "bd show <arg>"), ("bd show <arg> | tail <n>", "bd show <arg>"),
+                           ("bd show <arg> | grep -n <str> | head <n>", "bd show <arg>"),
+                           ("x-tool <arg> | sed -n <n>", "x-tool <arg>"), ("x-tool <arg> | cut -c<v>", "x-tool <arg>"),
+                           ("x-tool <arg> | wc -l", "x-tool <arg>"),
+                           ("bd show <arg> --json | python3 -c <str>", "bd show <arg> --json"),
+                           ("ls <arg> | tr <str>", "ls <arg> | tr <str>"),
+                           ("gh pr view <n> --json <v> | jq <str>", "gh pr view <n> --json <v> | jq <str>"),
+                           ("x-tool <arg> | sort | head <n>", "x-tool <arg> | sort | head <n>"),
+                           ("x-tool <arg> | head <n> | jq <str>", "x-tool <arg> | head <n> | jq <str>"),
+                           ("bd show <arg>", "bd show <arg>"), (". .env", ". .env")):
+            with self.subTest(step=step):
+                self.assertEqual(hook.chore(step), want)
 
 
 if __name__ == "__main__":

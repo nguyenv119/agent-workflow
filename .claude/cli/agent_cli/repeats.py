@@ -85,7 +85,9 @@ the commands existed).
 
 Per step: sessions, count (runs), exit_fail_share (failed runs / runs with a known exit; null when
 none is known), first and last (UTC). --write-cache also writes <store>/repeats-cache.json
-{step: {sessions, count}} with every listed step but sleeps and origin reads, --top ignored (the warning
+{step: {sessions, count}} with every listed step but sleeps and origin reads, a step piped only into quiet
+reads counted under its first segment (`x <arg> | head <n>` and `x <arg> | grep <str>` as `x <arg>`; the
+report keeps the whole pipeline), --top ignored (the warning
 hook reads it; so it takes the store with the live filter and the step unit, never --commands,
 --covered none, --repo or --unit command).
 
@@ -174,7 +176,7 @@ def run(a):
     rank = "sequences" if a.polls else "count"
     listed.sort(key=lambda sg: (-len(sg[1]["sessions"]), -sg[1][rank], sg[0]))
     if a.write_cache:
-        cache = {s: {"sessions": len(g["sessions"]), "count": g["count"]} for s, g in listed if not hook.basic(s)}
+        cache = cache_of(rows, a.min_sessions, by_command)
         try:
             core.write_atomic(record.store_dir() / CACHE, json.dumps(cache, sort_keys=True) + "\n")
         except OSError as e:
@@ -283,18 +285,19 @@ def from_commands(path, lo, hi, live):
     return rows, 0
 
 
-def group(rows, by_step=True):
+def group(rows, by_step=True, key=None):
     """{key: {sessions, count, first, last, failed, known, ruled}} over rows (ruled: runs a rule matched,
     bypassed or not; a row with no session adds to count but not to sessions). key: by_step, each distinct
     step of the row that the report may list (`not basic or report_only`; a row without `steps` is split
-    from its shape, once per distinct shape), else the row's whole shape."""
+    from its shape, once per distinct shape), mapped through key when given (each distinct result once),
+    else the row's whole shape."""
     groups, split = {}, {}
     for r in rows:
         s = r.get("shape")
         if not s:
             continue
         keys = listed_steps(r, split) if by_step else (s,)
-        for k in keys:
+        for k in dict.fromkeys(map(key, keys)) if key else keys:
             g = groups.get(k)
             if g is None:
                 g = groups[k] = {"sessions": set(), "count": 0, "first": r["ts"], "last": r["ts"], "failed": 0,
@@ -320,6 +323,16 @@ def listed_steps(r, split):
             split[s] = shape.steps_of_shape(s)
         keys = split[s]
     return [k for k in dict.fromkeys(keys) if not hook.basic(k) or hook.report_only(k)]
+
+
+def cache_of(rows, min_sessions, by_command):
+    """The warning cache {key: {sessions, count}}: rows' listed steps grouped by hook.chore (`x <arg> | head
+    <n>` adds to `x <arg>`, a run once per distinct key), keys in min_sessions+ sessions that step_test does
+    not cover and that are not basic (so no sleeps or origin reads)."""
+    groups = group(rows, key=hook.chore)
+    ok = step_test(groups, by_command)
+    return {k: {"sessions": len(g["sessions"]), "count": g["count"]} for k, g in groups.items()
+            if len(g["sessions"]) >= min_sessions and not ok(k) and not hook.basic(k)}
 
 
 def step_test(groups, by_command):
