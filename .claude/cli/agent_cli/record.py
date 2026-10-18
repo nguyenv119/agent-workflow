@@ -22,10 +22,10 @@ last written before that.
 """
 import datetime as dt
 import functools
+import itertools
 import json
 import os
 import re
-import shutil
 import stat
 import sys
 from pathlib import Path
@@ -43,9 +43,9 @@ TMP_ROOTS = ("/tmp", "/private/tmp")
 # or a path-run lowercase name) followed by at least one word, or a script run by path alone (`<path>/x.sh`).
 # A line of one bare word (a token, a key body) or a mixed-case first word is a value the script holds,
 # and the shape keeps a command word as written, so such a step would store it. Lost: bare `make`/`exit`.
-# On top of that shape, the first word must be a command (_command_word): a BUILTINS word, a path run
-# (`<path>/...`), or an executable on PATH. An array element on its own line (`sk_x two`), a case label
-# (`prod) deploy now`) or any token followed by a word passes the shape but names no command.
+# On top of that shape, the first word must be a command (_script_step): a BUILTINS word, a path run whose
+# last part is a script name or on PATH, or an executable on PATH. An array element on its own line (`sk_x
+# two`, `ab/sk_x two`), a case label (`prod) deploy now`) or any token followed by a word names no command.
 SCRIPT_STEP = re.compile(r"(?:\.|\[\[?|(?:<path>/)?[a-z_][a-z0-9_.+-]{0,31}) .+|<path>/" + SCRIPT.pattern)
 BUILTINS = frozenset(("cd", "echo", "printf", "export", "set", "unset", "source", ".", "[", "[[", "test", "read",
                       "local", "declare", "eval", "exec", "exit", "return", "trap", "shift", "wait", "true", "false"))
@@ -106,7 +106,7 @@ def fields(command, rules, prefixes=None, tools=None, cwd=None, script_text=None
     st, fx = steps(command, prefixes, tools), _effects(command, prefixes)
     for text, shell in _scripts(command, prefixes, cwd, script_text):
         try:
-            st += [x for x in steps(text, prefixes, tools) if _script_step(x)] if shell else []
+            st += list(itertools.islice(filter(_script_step, steps(text, prefixes, tools)), MAX_STEPS)) if shell else []
             fx += effects(text, prefixes, code=not shell)
         except Exception:  # a script we cannot read adds nothing; the row stays
             continue
@@ -128,14 +128,16 @@ def _effects(command, prefixes):
 def _script_step(x):
     """True when a script's step shape x reads as a command: SCRIPT_STEP's shape and a command first word."""
     w = x.split(" ", 1)[0]
-    return bool(SCRIPT_STEP.fullmatch(x)) and (w in BUILTINS or w.startswith("<path>/") or _on_path(w))
+    run = w[len("<path>/"):] if w.startswith("<path>/") else None  # a path run: its last part must name one
+    return bool(SCRIPT_STEP.fullmatch(x)) and (
+        w in BUILTINS or bool(run and SCRIPT.fullmatch(run)) or _on_path(run or w))
 
 
 @functools.lru_cache(maxsize=256)
 def _on_path(word):
-    """True when word is an executable on PATH: the recording machine's PATH, so a step whose tool is not
-    installed here is dropped."""
-    return shutil.which(word) is not None
+    """core.on_path(word), cached: the recording machine's PATH plus the dirs `self env` adds, so a step whose
+    tool is not installed here is dropped."""
+    return core.on_path(word)
 
 
 def _candidate(path, shell):

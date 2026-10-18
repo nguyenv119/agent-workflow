@@ -719,15 +719,16 @@ class Scripts(TmpCase):
                                         ". <arg>", "[ -f <v> <arg>", "echo <arg>", "cd <arg>"])
 
     def test_array_lines_case_labels_and_unknown_words_reach_no_store_byte(self):
-        """Through the hook verb, a .sh whose array literal, case label and a line starting with an unknown
-        lowercase word hold planted values stores none of them; its curl line is still a step.
+        """Through the hook verb, a .sh whose array literal (one element a path), case label and a line starting
+        with an unknown lowercase word hold planted values stores none of them; its curl line is still a step.
 
         The shape keeps a step's command word as written; a value in that place (an array element on its own
         line, a case label, a token followed by a word) would be stored as a chore's name.
         """
         # GIVEN a project and a script with the three planted values and one real command
         p = make_project(self.tmp / "proj")
-        (self.cwd / "x.sh").write_text("KEYS=(\n  sk_planted_one two\n)\ncase \"$1\" in\n"
+        (self.cwd / "x.sh").write_text("KEYS=(\n  sk_planted_one two\n  wJal/K7MD/slashplantedkey go\n)\n"
+                                       "case \"$1\" in\n"
                                        "  prodplanted) deploy now ;;\nesac\nlowercasesecret123 x\n"
                                        "curl https://api.example.test/v1\n")
         # WHEN `bash x.sh` is recorded through the hook verb with that cwd
@@ -738,8 +739,8 @@ class Scripts(TmpCase):
         (row,) = store_rows(self.store)
         self.assertEqual(row["steps"], ["bash x.sh", "curl <url:api.example.test>"])
         blob = b"".join(f.read_bytes() for f in self.store.rglob("*") if f.is_file())
-        self.assertEqual([x for x in ("sk_planted_one", "prodplanted", "lowercasesecret123") if x.encode() in blob],
-                         [])
+        planted = ("sk_planted_one", "slashplantedkey", "prodplanted", "lowercasesecret123")
+        self.assertEqual([x for x in planted if x.encode() in blob], [])
 
     def test_planted_secrets_in_a_shell_script_reach_no_store_byte(self):
         """Through `agent-cli hook posttooluse`, a .sh holding a secret assignment, a bare token line and a
