@@ -11,8 +11,9 @@ named <name>.sh/.bash/.zsh, so `source secrets` reads nothing) are read too, nev
 steps that read as commands (SCRIPT_STEP, then a known command word) follow the command's in `steps` (same
 cap), and any script's effects join `effects` (a shell script read as shell, others as code). The
 file is read only when the event has a cwd: at most MAX_SCRIPTS per command, `~` expanded, relative to the
-cwd, a regular file of at most MAX_SCRIPT bytes whose real path is under the cwd, $TMPDIR, /tmp or
-/private/tmp; any failure adds nothing. A replay (`repeats --commands`) passes the row's `script` body
+cwd (and to a cd earlier in the command: `cd sub && python3 x.py` reads sub/x.py), a regular file
+of at most MAX_SCRIPT bytes whose real path is under the cwd, that cd's dir (the shell ran there), $TMPDIR,
+/tmp or /private/tmp; any failure adds nothing. A replay (`repeats --commands`) passes the row's `script` body
 instead, as the body of the first of those files (none: the body is not read). `rules` = ids of the active hook rules
 that match the raw command, computed in memory, so a report can tell covered shapes from uncovered ones
 without the raw text; `bypassed` = the ids of rules that match but were skipped by `# agent-cli: allow <id>` (a deny
@@ -152,31 +153,35 @@ def _candidate(path, shell):
 
 def _scripts(command, prefixes, cwd, script_text):
     """[(text, read as shell)] of the scripts command runs. The candidates are ran()'s files that _candidate
-    allows, at most MAX_SCRIPTS; none, nothing is read. script_text, cut to MAX_SCRIPT, is the first
-    candidate's body (read as shell when a shell runs it); with no script_text, each candidate _read_script
-    allows, when there is a cwd."""
+    allows, one per (path, shell) with its first dir, at most MAX_SCRIPTS; none, nothing is read. script_text,
+    cut to MAX_SCRIPT, is the first candidate's body (read as shell when a shell runs it); with no
+    script_text, each candidate _read_script allows, when there is a cwd."""
     try:
         found = ran(command, prefixes)
     except Exception:  # e.g. RecursionError: no scripts, the row stays
         found = []
-    runs = [(p, sh) for p, sh in dict.fromkeys(found) if _candidate(p, sh)][:MAX_SCRIPTS]
+    first = {}
+    for p, sh, d in found:
+        first.setdefault((p, sh), d)
+    runs = [(p, sh, d) for (p, sh), d in first.items() if _candidate(p, sh)][:MAX_SCRIPTS]
     if not runs:
         return []
     if script_text is not None:
         return [(script_text[:MAX_SCRIPT], runs[0][1])]
     if not cwd:
         return []
-    texts = ((_read_script(path, cwd), shell) for path, shell in runs)
+    texts = ((_read_script(path, cwd, d), shell) for path, shell, d in runs)
     return [(t, shell) for t, shell in texts if t is not None]
 
 
-def _read_script(path, cwd):
+def _read_script(path, cwd, d):
     """The text of the script at path (`~` expanded, relative to cwd), or None unless its real path is a
-    regular file of at most MAX_SCRIPT bytes under cwd, $TMPDIR, /tmp or /private/tmp (a symlink out is
-    refused), and it decodes as UTF-8."""
+    regular file of at most MAX_SCRIPT bytes under cwd, d (the dir ran() joined path to, `~` expanded,
+    relative to cwd), $TMPDIR, /tmp or /private/tmp (a symlink out is refused), and it decodes as UTF-8."""
     try:
         real = os.path.realpath(os.path.join(cwd, os.path.expanduser(path)))
-        roots = {os.path.realpath(r) for r in (cwd, os.environ.get("TMPDIR"), *TMP_ROOTS) if r}
+        roots = {os.path.realpath(os.path.join(cwd, os.path.expanduser(r)))
+                 for r in (cwd, d, os.environ.get("TMPDIR"), *TMP_ROOTS) if r}
         st = os.stat(real)
         if not (stat.S_ISREG(st.st_mode) and st.st_size <= MAX_SCRIPT
                 and any(os.path.commonpath((real, r)) == r for r in roots)):

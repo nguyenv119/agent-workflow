@@ -6,6 +6,7 @@ import signal
 import sys
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from helpers import CLAUDE, GIT, TmpCase, agent_cli, make_project, run, set_env, store_rows
 from helpers import post_event as event
@@ -461,6 +462,83 @@ class Scripts(TmpCase):
         # THEN both scripts' reads
         self.assertEqual(self.fx("python3 a.py && python3 ~/b.py", cwd=str(self.cwd)),
                          ["env:ALPHA_KEY", "env:BETA_KEY"])
+
+    def test_a_leading_cd_moves_the_script_into_its_dir(self):
+        """`cd sub && python3 x.py` reads <cwd>/sub/x.py, not <cwd>/x.py.
+
+        Agents cd into a subdir before running the script they wrote there; resolving against the event's cwd
+        alone read the wrong file or none, and the chore's effects went uncounted.
+        """
+        # GIVEN sub/x.py with an env read, and a decoy x.py in the cwd
+        (self.cwd / "sub").mkdir()
+        (self.cwd / "sub/x.py").write_text("os.environ['SUB_KEY']\n")
+        (self.cwd / "x.py").write_text("os.environ['TOP_KEY']\n")
+        # WHEN run after a cd into sub
+        # THEN the read of sub/x.py only
+        self.assertEqual(self.fx("cd sub && python3 x.py", cwd=str(self.cwd)), ["env:SUB_KEY"])
+
+    def no_temp_roots(self):
+        """Drop $TMPDIR and /tmp from the fence (self.tmp sits under one), so only cwd and a cd dir allow."""
+        set_env(self, TMPDIR=None)
+        patcher = mock.patch.object(record, "TMP_ROOTS", ())
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_a_cd_into_a_sibling_dir_reads_the_script_there(self):
+        """`cd <sibling> && python3 x.py` reads <sibling>/x.py though the sibling is outside the cwd, and not
+        <cwd>/x.py; the same path run without that cd stays refused.
+
+        Agents cd from the main checkout into a sibling worktree before running a script; the shell ran the
+        file in that dir, but the fence allowed only the cwd and temp dirs, so the read was refused.
+        """
+        # GIVEN a cwd A with a decoy x.py, a sibling B (not under A) with x.py, and no temp-dir roots
+        self.no_temp_roots()
+        sib = self.tmp / "sib"
+        sib.mkdir()
+        (sib / "x.py").write_text("os.environ['SIB_KEY']\n")
+        (self.cwd / "x.py").write_text("os.environ['TOP_KEY']\n")
+        for cmd in (f"cd {sib} && python3 x.py", "cd ../sib && python3 x.py"):
+            with self.subTest(cmd=cmd):
+                # WHEN run after a cd into B
+                # THEN B/x.py's read only
+                self.assertEqual(self.fx(cmd, cwd=str(self.cwd)), ["env:SIB_KEY"])
+        # a run of B/x.py with no cd is still outside the fence
+        self.assertEqual(self.fx(f"python3 {sib}/x.py", cwd=str(self.cwd)), [])
+
+    def test_a_symlink_in_the_cd_dir_pointing_out_of_the_fence_is_refused(self):
+        """After `cd <sibling>`, a link.py there whose target is outside the sibling, the cwd and the temp
+        dirs is not read.
+
+        The cd dir is allowed because the shell ran there; a symlink out of it must not open the rest of the disk.
+        """
+        # GIVEN B/link.py pointing at a script outside B, the cwd and (cleared) temp roots
+        self.no_temp_roots()
+        sib, out = self.tmp / "sib", self.tmp / "elsewhere"
+        sib.mkdir()
+        out.mkdir()
+        (out / "x.py").write_text("os.environ['OUT_KEY']\n")
+        (sib / "link.py").symlink_to(out / "x.py")
+        # WHEN run after a cd into B
+        # THEN nothing is read
+        self.assertEqual(self.fx(f"cd {sib} && python3 link.py", cwd=str(self.cwd)), [])
+
+    def test_one_script_reached_from_two_dirs_takes_one_read_slot(self):
+        """`cd sub && ./x.sh && cd .. && ./sub/x.sh` runs one file twice: it is read once, so the next three
+        scripts still fit the MAX_SCRIPTS (4) reads.
+
+        De-duplicating on (path, shell, dir) spent two of the four slots on the same file, and the last script
+        of the command went unread.
+        """
+        # GIVEN sub/x.sh with a host, and a.py, b.py, c.py with env reads
+        (self.cwd / "sub").mkdir()
+        (self.cwd / "sub/x.sh").write_text("curl https://sub.example.test\n")
+        for n in "abc":
+            (self.cwd / f"{n}.py").write_text(f"os.environ['{n.upper()}_KEY']\n")
+        cmd = "cd sub && ./x.sh && cd .. && ./sub/x.sh && python3 a.py && python3 b.py && python3 c.py"
+        # WHEN the command's effects are computed
+        # THEN all four distinct scripts are read
+        self.assertEqual(self.fx(cmd, cwd=str(self.cwd)),
+                         ["env:A_KEY", "env:B_KEY", "env:C_KEY", "host:sub.example.test"])
 
     def test_a_script_in_a_temp_dir_outside_cwd_is_read(self):
         """A script under the temp dir ($TMPDIR, or /tmp) is read though it sits outside the session's cwd.
