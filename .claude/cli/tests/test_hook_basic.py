@@ -28,7 +28,7 @@ class BasicSteps(unittest.TestCase):
                            ("sleep <n>", True), ("git log origin/<arg>", True), ("echo <str> | psql <arg>", False),
                            (". .env", False), ("python3 <path>/loop.py", False), ("python3 -m <arg>", False),
                            ("<path>/cp <arg>", True), ("git worktree add <arg>", False), ("deploy-tool <arg>", False),
-                           ("pnpm db:query <str> | tail <n>", False), ("git -C <arg> worktree list", False),
+                           ("dbtool query <str> | tail <n>", False), ("git -C <arg> worktree list", False),
                            ("[ -n <str> <arg>", True), ("[[ -f <v> <arg>", True), ("seq <n>", True), ("<arg>", True),
                            ("<arg> <str>", True), ("<path>/grep -n <str> <arg> | head <n>", True),
                            ("grep -n <str> <arg> | cut -c<v>", True), ("sed -n <n> <arg> | cut -c <v>", True),
