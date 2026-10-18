@@ -212,6 +212,52 @@ class Lock(unittest.TestCase):
         self.assertIn("bad lock name", r.stderr)
         self.assertFalse((self.state / "x").exists())
 
+    def test_slots_let_n_holders_in_and_block_the_next(self):
+        """--slots 3: three live pids each take a slot (gates.1..3), a fourth gets exit 3 naming all three,
+        and release by one owner frees exactly its slot for the fourth."""
+        # GIVEN three live pids holding the three slots
+        pids = [self.live() for _ in range(3)]
+        got = [self.lock("acquire", "gates", "--slots", "3", "--pid", str(p)) for p in pids]
+        # WHEN a fourth tries, then the second owner releases, then the fourth tries again
+        fourth = self.live()
+        blocked = self.lock("acquire", "gates", "--slots", "3", "--pid", str(fourth))
+        rel = self.lock("release", "gates", "--pid", str(pids[1]))
+        again = self.lock("acquire", "gates", "--slots", "3", "--pid", str(fourth))
+        # THEN slots fill in order, the fourth waits, and it takes the freed slot 2
+        self.assertEqual([(r.returncode, r.stdout) for r in got],
+                         [(0, f"acquired: gates.{i} (pid {p})\n") for i, p in enumerate(pids, 1)])
+        self.assertEqual(blocked.returncode, 3, blocked.stderr)
+        self.assertIn("all 3 slots of gates held by", blocked.stderr)
+        for p in pids:
+            self.assertIn(f"pid {p} on", blocked.stderr)
+        self.assertEqual(rel.returncode, 0, rel.stderr)
+        self.assertEqual(again.stdout, f"acquired: gates.2 (pid {fourth})\n", again.stderr)
+        self.assertEqual([self.owner(f"gates.{i}")["pid"] for i in (1, 2, 3)], [pids[0], fourth, pids[2]])
+
+    def test_slots_reap_a_dead_holder_and_same_pid_is_already_held(self):
+        """A slot whose holder died is reaped by the next acquire; a pid already in a slot gets
+        already-held for that slot instead of a second one."""
+        # GIVEN slot 1 held by a live pid and slot 2 by a dead one
+        live = self.live()
+        self.lock("acquire", "gates", "--slots", "2", "--pid", str(live))
+        self.lock("acquire", "gates", "--slots", "2", "--pid", str(self.dead()))
+        # WHEN a new pid acquires, and the live holder acquires again
+        new = self.live()
+        r = self.lock("acquire", "gates", "--slots", "2", "--pid", str(new))
+        same = self.lock("acquire", "gates", "--slots", "2", "--pid", str(live))
+        # THEN the dead slot is reaped and taken; the live holder keeps its one slot
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("reaped:", r.stdout)
+        self.assertIn(f"acquired: gates.2 (pid {new})", r.stdout)
+        self.assertEqual(same.stdout, f"already held: gates.1 (pid {live})\n", same.stderr)
+
+    def test_slots_zero_is_refused(self):
+        """--slots 0 would mean nobody may ever hold it: refused, nothing written."""
+        r = self.lock("acquire", "gates", "--slots", "0", "--pid", str(self.live()))
+        self.assertEqual(r.returncode, 2, r.stderr)
+        self.assertIn("--slots 0", r.stderr)
+        self.assertEqual(self.lock("status").stdout, "no locks\n")
+
 
 if __name__ == "__main__":
     unittest.main()
