@@ -35,17 +35,24 @@ SENTINEL = "<promise>WIN</promise>"
 WT_ADD = r"git\b(?:\s+-C\s+\S+)?\s+worktree\s+add\b"
 
 
+def loop_poll_re(cmd, loops, poll):
+    """A `loops` loop that both sleeps and runs `poll` (either order; the poll may be the condition, and
+    the sleep may open it: `while sleep 30; do gh pr checks 12 && break; done`)."""
+    loop, body, sleep = cmd + r"(?:" + loops + r")\b", body_re(cmd), cmd + SLEEP
+    return (r"(?:" + loop + body + sleep + body + poll + "|" + loop + body + poll + body + sleep
+            + "|" + loop + r"\s+(?:!\s+)?" + SLEEP + body + poll + ")")
+
+
 def pr_poll_re(cmd):
-    """A while/until loop that both sleeps and polls a PR (either order; the poll may be the condition,
-    and the sleep may open it: `while sleep 30; do gh pr checks 12 && break; done`), or
-    `gh pr checks --watch`. `for` over a fixed list is not polling."""
-    loop, body, sleep = cmd + r"(?:while|until)\b", body_re(cmd), cmd + SLEEP
-    return (r"(?:" + loop + body + sleep + body + PR_POLL + "|" + loop + body + PR_POLL + body + sleep
-            + "|" + loop + r"\s+(?:!\s+)?" + SLEEP + body + PR_POLL
+    """A while/until loop that both sleeps and polls a PR, or `gh pr checks --watch`.
+    `for` over a fixed list is not polling."""
+    return (r"(?:" + loop_poll_re(cmd, "while|until", PR_POLL)
             + "|" + cmd + r"gh\s+pr\s+checks\b[^;&|\n]*--watch)")
 
 
 PR_POLL = r"gh\s+(?:pr\s+(?:checks|view)|api\s+\S*pulls)"
+COMMIT_POLL = r"gh\s+api\b[^;&|\n]*?commits/[^\s/]+/(?:status(?:es)?|check-runs|check-suites)\b"  # a commit's CI
+COUNTED_FOR = r"for\s*\(\(|for\s+\w+\s+in\s+(?:\"?\$\(\s*seq\b|\{-?\d+\.\.)"  # $(seq ..), {1..n}, ((;;))
 SLEEP = r"sleep\s+\d"
 
 
@@ -75,10 +82,18 @@ def builtin(cmd):
          "match": cmd + WT_ADD + r"(?![^;&|\n]*\s-[bB])", "unless": r"--detach\b",
          "message": "For an existing branch: agent-cli wt new <id> <slug> --existing <branch>"},
         {"id": "hand-sleep-poll", "mode": "warn", "requires": "agent-cli", "on": "code", "needs": r"\bsleep\s+\d",
-         "match": cmd + r"(?:while|until)\b" + body_re(cmd) + cmd + r"sleep\s+(?:\d{2,}|[3-9])\b",
+         "match": (cmd + r"(?:while\b|until\b|" + COUNTED_FOR + ")" + body_re(cmd) + cmd
+                   + r"sleep\s+(?:\d{2,}|[3-9])\b"  # a while/until/counted-for loop sleeping 3s+
+                   + "|" + loop_poll_re(cmd, "while|until|for", COMMIT_POLL)),  # any loop polling commit CI
          "unless": pr_poll_re(cmd),  # a PR poll loop is hand-pr-poll's deny, not this warn
          "message": "Waiting on something? agent-cli wait --until '<status cmd>' --every 60 --cap 30m "
                     "(run_in_background) stops on success, passes through refused/blocked, exits 4 on timeout."},
+        {"id": "piped-wait", "mode": "warn", "requires": "agent-cli", "on": "code", "needs": r"\bwait\b",
+         "match": cmd + r"(?:\S*/)?agent-cli\s+(?:pr\s+)?wait\b(?!-)(?:[<>]&|[^;&|\n])*\|(?!\|)",  # | or |&, never ||
+         "unless": r"--help\b|\bpipefail\b|\bPIPESTATUS\b",  # these keep the wait's exit
+         "message": "Don't pipe agent-cli wait: the pipe's exit is the last command's, so a timeout (exit 4) or "
+                    "a failure (exit 3) reads as 0. Run it unpiped with run_in_background; add --json for one "
+                    "line per attempt."},
         {"id": "hand-loop-log", "mode": "warn", "requires": "agent-cli", "on": "raw", "needs": r"\bloop-",
          "match": cmd + r"(?:echo|printf)\b[^|;&\n]*>>\s*[\"']?\S*\bloop-[^\s\"'/]*\.(?:log|txt)\b",
          "message": "Loop logs: agent-cli log append .claude/loop-<epic-id>.tsv --phase ... --action ... --result ... "
