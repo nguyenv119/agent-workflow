@@ -7,9 +7,9 @@ other bare words -> <arg>; env files keep their basename (`<path>/.env.local`) a
 remote (`origin/<arg>`). A command run by path keeps its name (`<path>/deploy.sh`), and so does the
 script an interpreter runs (`python3 <path>/loop.py`); `.`, `source`, `[` and `[[` keep theirs, and so
 do `+a`-style flags (`set +a`). The second word is kept only after a tool known to take subcommands
-(SUBCOMMAND_TOOLS, the subcommand-tools seam's lines, or a name ending in -cli), after git's and pnpm's
-global options (`pnpm --filter <v> typecheck`); a third only after a two-level group (THIRD: `gh pr view`,
-`git worktree add`, `agent-cli wt list`, `pnpm exec tsc`); `gh api`'s endpoint keeps only GitHub resource
+(SUBCOMMAND_TOOLS, the subcommand-tools seam's lines, or a name ending in -cli), after a tool's
+global options (GLOBAL_OPTS, e.g. `pnpm --filter <v> typecheck`); a third only after a two-level group (THIRD: `gh pr view`,
+`git worktree add`, `agent-cli wt list`, e.g. `pnpm exec tsc`); `gh api`'s endpoint keeps only GitHub resource
 words (`gh api repos/<arg>/<arg>/pulls/<n>/comments`, GH_WORDS); package runners keep a script name
 with a `:` (COLON_TOOLS, e.g. pnpm/yarn/npm run test:unit); a short flag with a value glued on keeps its
 letter only (`-p<v>`). Leading `cd <x> &&` chains and the prefixes
@@ -44,8 +44,9 @@ COLON_TOOLS = {("yarn",), ("npm", "run"), ("yarn", "run"),  # script names: test
                ("pnpm",), ("pnpm", "run")}  # e.g. pnpm db:query
 # Global options before the subcommand, and whether each takes the next word (or an =value) as its value.
 GLOBAL_OPTS = {"git": {"-C": True, "-c": True, "--git-dir": True, "--work-tree": True, "--no-pager": False},
-               "pnpm": {"--filter": True, "-F": True, "-C": True, "--dir": True, "-r": False, "--recursive": False,
-                        "-w": False, "--workspace-root": False, "-s": False, "--silent": False}}
+               "pnpm": {  # e.g. pnpm --filter web typecheck
+                   "--filter": True, "-F": True, "-C": True, "--dir": True, "-r": False, "--recursive": False,
+                   "-w": False, "--workspace-root": False, "-s": False, "--silent": False}}
 # GitHub REST resource words kept in a `gh api` endpoint; every other segment is masked.
 GH_WORDS = frozenset("""repos pulls issues comments reviews requested_reviewers actions runs jobs logs attempts
 check-runs check-suites commits status statuses branches protection contents releases workflows artifacts

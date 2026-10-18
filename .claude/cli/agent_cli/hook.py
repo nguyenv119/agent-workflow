@@ -282,8 +282,8 @@ CUT_CHARS = re.compile(r"-[cb](?:<v>)?|--(?:characters|bytes)(?:=<v>)?")  # cut 
 
 def _words(seg):
     """A step segment's words from its command word: past a leading shell keyword and VAR=<v> words, and
-    for git and pnpm past their global options (`git -C <arg> add <arg>` -> [git, add, <arg>],
-    `pnpm --filter <v> typecheck` -> [pnpm, typecheck])."""
+    for a tool with global options (shape.GLOBAL_OPTS) past them, e.g. `git -C <arg> add <arg>` -> [git, add, <arg>],
+    e.g. `pnpm --filter <v> typecheck` -> [pnpm, typecheck])."""
     from .shape import GLOBAL_OPTS, LEAD_KEYWORDS
     words = seg.split()
     if words and (words[0] in LEAD_KEYWORDS or words[0] in CLOSE_KEYWORDS):
