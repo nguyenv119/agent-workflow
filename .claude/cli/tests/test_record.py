@@ -495,23 +495,25 @@ class Scripts(TmpCase):
 
         Reading python as shell would list every `$` in its strings as an env read, a false chore.
         """
+        # GIVEN a python script with a `$TOTAL` in a string and a real env read
         (self.cwd / "c.py").write_text('print("cost $TOTAL")\nos.getenv("REAL_KEY")\n')
+        # WHEN run
+        # THEN only the real read
         self.assertEqual(self.fx("python3 c.py", cwd=str(self.cwd)), ["env:REAL_KEY"])
 
-    def test_shell_script_steps_join_the_commands_steps_and_its_names_drop(self):
-        """`bash x.sh` adds x.sh's steps after the command's, and its own assigned names are not env reads.
+    def test_shell_script_steps_join_the_commands_steps(self):
+        """`bash x.sh` adds x.sh's steps after the command's.
 
         A shell script is a chain of chores typed once into a file; its steps are what repeats across
-        sessions, and URI= inside it is the script's variable.
+        sessions.
         """
-        # GIVEN x.sh that sets URI, polls a PR and queries the DB
-        (self.cwd / "x.sh").write_text("#!/bin/bash\nset -e\nURI=postgres://db.example.test/x\n"
-                                       "gh pr view 12 --json state\npsql \"$URI\" -c 'select 1'\n")
+        # GIVEN x.sh that sets URI, reads the git log and calls it
+        (self.cwd / "x.sh").write_text("#!/bin/bash\nset -e\nURI=https://api.example.test/x\n"
+                                       "git log --oneline -3\ncurl -s \"$URI\"\n")
         # WHEN the command runs it
         got = record.fields("bash x.sh", [], (), (), cwd=str(self.cwd))
-        # THEN its steps follow the command's, and its effects carry no URI
-        self.assertEqual(got["steps"], ["bash x.sh", "set -e", "gh pr view <n> --json <v>", "psql <str> -c <str>"])
-        self.assertEqual(got["effects"], ["db:postgres", "host:db.example.test"])
+        # THEN its steps follow the command's
+        self.assertEqual(got["steps"], ["bash x.sh", "set -e", "git log --oneline <n>", "curl -s <str>"])
 
     def test_script_steps_stop_at_32_after_the_commands_steps(self):
         """The command's own steps come first and the merged list stops at MAX_STEPS.
@@ -519,11 +521,11 @@ class Scripts(TmpCase):
         A long script must not push the command's own steps out of the row, nor grow the row without bound.
         """
         # GIVEN a script of 40 distinct steps
-        (self.cwd / "long.sh").write_text("".join(f"tool{i} go\n" for i in range(40)))
+        (self.cwd / "long.sh").write_text("".join(f"git tool{i} go\n" for i in range(40)))
         # WHEN run after a first step
         got = record.fields("git status && sh long.sh", [], (), (), cwd=str(self.cwd))["steps"]
         # THEN 32 steps, the command's first
-        self.assertEqual((len(got), got[:3]), (32, ["git status", "sh long.sh", "tool0 <arg>"]))
+        self.assertEqual((len(got), got[:3]), (32, ["git status", "sh long.sh", "git tool0 <arg>"]))
 
     def test_unreadable_scripts_give_no_extra_keys_and_no_crash(self):
         """A missing, oversize (>256 KB), undecodable, directory or FIFO script adds nothing and never hangs.
@@ -599,12 +601,12 @@ class Scripts(TmpCase):
         Replays have no files on disk; the commands file carries the body as it stood when the command ran.
         """
         # GIVEN a shell body
-        sh = "URI=x\npsql \"$URI\" $API_TOKEN\n"
+        sh = "URI=x\ncurl \"$URI\" $API_TOKEN\n"
         # WHEN given as script_text to a command that runs it with bash
         got = record.fields("bash /gone/x.sh", [], (), (), script_text=sh)
         # THEN the body's steps and reads, without its own URI
-        self.assertEqual((got["steps"], got["effects"]), (["bash <path>/x.sh", "psql <str> <arg>"],
-                                                          ["db:postgres", "env:API_TOKEN"]))
+        self.assertEqual((got["steps"], got["effects"]), (["bash <path>/x.sh", "curl <str> <arg>"],
+                                                          ["env:API_TOKEN"]))
 
     def test_script_text_of_a_python_script_is_read_as_code(self):
         """A python command's script_text is read as code: `'$TOTAL'` is text, and it adds no steps.
@@ -661,8 +663,9 @@ class Scripts(TmpCase):
         self.assertEqual(got["effects"], [])
 
     def test_disk_read_and_script_text_give_the_same_steps_and_effects(self):
-        """For `bash x.sh`, `./x.sh`, `python3 q.py` and a python run after a sourced .env, reading the file
-        from disk and passing its body as script_text give the same steps and effects.
+        """For `bash x.sh`, `./x.sh`, `python3 q.py`, a python run after a sourced .env, inline python before
+        a file name and `make`, reading the file from disk and passing its body as script_text give the same
+        steps and effects (the last two run no file, so neither reads a body).
 
         Replays (script_text) are how the weekly report is checked against the live store; if the two paths
         disagree, a replay measures a different recorder than the one that runs.
@@ -675,7 +678,8 @@ class Scripts(TmpCase):
         (self.cwd / "q.py").write_text(py)
         (self.cwd / ".env").write_text("API_BASE=https://env.example.test\n")
         for cmd, body in (("bash x.sh", sh), ("./x.sh", sh), ("python3 q.py", py),
-                          ("set -a; source .env; set +a; python3 q.py", py)):
+                          ("set -a; source .env; set +a; python3 q.py", py), ("python3 -c 'x' q.py", py),
+                          ("make", sh)):
             with self.subTest(cmd=cmd):
                 # WHEN computed from disk and from the body
                 disk, replay = self.fields_of(cmd, cwd=str(self.cwd)), self.fields_of(cmd, script_text=body)
@@ -692,11 +696,50 @@ class Scripts(TmpCase):
         # GIVEN a script with a bare token line, a key-body line, a mixed-case word with an argument and two
         # commands
         (self.cwd / "x.sh").write_text(f"{WORD}\nMIIEvQIBADANBgkqhkiG9w0BAQEFAASC\nAbc123Xyz go\n"
-                                       "gh pr view 12\ncurl https://api.example.test/v1\n")
+                                       "git log -3\ncurl https://api.example.test/v1\n")
         # WHEN run
         got = self.fields_of("bash x.sh", cwd=str(self.cwd))
         # THEN only the command steps
-        self.assertEqual(got["steps"], ["bash x.sh", "gh pr view <n>", "curl <url:api.example.test>"])
+        self.assertEqual(got["steps"], ["bash x.sh", "git log <n>", "curl <url:api.example.test>"])
+
+    def test_a_shell_scripts_builtins_path_runs_and_path_commands_stay_steps(self):
+        """Script lines whose first word is a shell builtin (`.`, `[`, `echo`, `cd`), a script run by path or
+        a command on PATH (`curl`) are steps.
+
+        The command-word check drops values a script holds; it must not drop the chores themselves, or a
+        script's repeats vanish from the report.
+        """
+        # GIVEN a script of real command lines
+        (self.cwd / "x.sh").write_text("curl -s https://api.example.test/x\n./deploy.sh\n. ./lib.sh\n"
+                                       "[ -f x ] && echo y\ncd sub\n")
+        # WHEN run
+        got = self.fields_of("bash x.sh", cwd=str(self.cwd))
+        # THEN every line is a step
+        self.assertEqual(got["steps"], ["bash x.sh", "curl -s <url:api.example.test>", "<path>/deploy.sh",
+                                        ". <arg>", "[ -f <v> <arg>", "echo <arg>", "cd <arg>"])
+
+    def test_array_lines_case_labels_and_unknown_words_reach_no_store_byte(self):
+        """Through the hook verb, a .sh whose array literal, case label and a line starting with an unknown
+        lowercase word hold planted values stores none of them; its curl line is still a step.
+
+        The shape keeps a step's command word as written; a value in that place (an array element on its own
+        line, a case label, a token followed by a word) would be stored as a chore's name.
+        """
+        # GIVEN a project and a script with the three planted values and one real command
+        p = make_project(self.tmp / "proj")
+        (self.cwd / "x.sh").write_text("KEYS=(\n  sk_planted_one two\n)\ncase \"$1\" in\n"
+                                       "  prodplanted) deploy now ;;\nesac\nlowercasesecret123 x\n"
+                                       "curl https://api.example.test/v1\n")
+        # WHEN `bash x.sh` is recorded through the hook verb with that cwd
+        r = agent_cli(p, "hook", "posttooluse", stdin=json.dumps(event("bash x.sh", cwd=self.cwd)),
+                      env={"AGENT_CLI_SHAPES_DIR": str(self.store)})
+        # THEN the steps are the command's and curl's, and no planted value is anywhere under the store
+        self.assertEqual(r.returncode, 0, r.stderr)
+        (row,) = store_rows(self.store)
+        self.assertEqual(row["steps"], ["bash x.sh", "curl <url:api.example.test>"])
+        blob = b"".join(f.read_bytes() for f in self.store.rglob("*") if f.is_file())
+        self.assertEqual([x for x in ("sk_planted_one", "prodplanted", "lowercasesecret123") if x.encode() in blob],
+                         [])
 
     def test_planted_secrets_in_a_shell_script_reach_no_store_byte(self):
         """Through `agent-cli hook posttooluse`, a .sh holding a secret assignment, a bare token line and a
@@ -719,6 +762,44 @@ class Scripts(TmpCase):
         self.assertIn("curl -H <str> <url:api.example.test>", row["steps"])
         blob = b"".join(f.read_bytes() for f in self.store.rglob("*") if f.is_file())
         self.assertEqual([x for x in (key, WORD, body, body[:16], "PLANTEDsh") if x.encode() in blob], [])
+
+    def test_a_sourced_envrc_or_extensionless_file_adds_nothing(self):
+        """`source .envrc` and a shell sourcing or running an extensionless file (`source secrets`, `bash
+        secrets`) add nothing from the file, read from disk or given as a replay body.
+
+        direnv's .envrc and a bare `secrets` file hold exported credentials like an .env; a shell reads only
+        .sh/.bash/.zsh files as scripts, so their hosts and db URLs never reach the row.
+        """
+        # GIVEN .envrc and secrets in the cwd, each exporting a postgres URL
+        body = "export DATABASE_URL=postgres://bob:pw@prod-db.internal.test/app\n"
+        (self.cwd / ".envrc").write_text(body)
+        (self.cwd / "secrets").write_text(body)
+        for cmd in ("source .envrc", ". ./.envrc", "source secrets", ". ./secrets", "bash secrets"):
+            with self.subTest(cmd=cmd):
+                # WHEN computed with the cwd, with the body as script_text, and with neither
+                bare = self.fields_of(cmd)
+                disk, replay = self.fields_of(cmd, cwd=str(self.cwd)), self.fields_of(cmd, script_text=body)
+                # THEN neither read adds a step or an effect
+                self.assertEqual([(x["steps"], x["effects"]) for x in (disk, replay)],
+                                 [(bare["steps"], bare["effects"])] * 2)
+
+    def test_a_sourced_envrc_reaches_no_store_byte(self):
+        """Through the hook verb, `source .envrc` with a planted postgres URL stores no host, user or db signal.
+
+        The hook verb is the live path; the file's names must not reach the store from it either.
+        """
+        # GIVEN a project and an .envrc exporting a postgres URL
+        p = make_project(self.tmp / "proj")
+        (self.cwd / ".envrc").write_text("export DATABASE_URL=postgres://bob:pw@prod-db.internal.test/app\n")
+        # WHEN recorded through the hook verb with that cwd
+        r = agent_cli(p, "hook", "posttooluse", stdin=json.dumps(event("source .envrc", cwd=self.cwd)),
+                      env={"AGENT_CLI_SHAPES_DIR": str(self.store)})
+        # THEN the row has no effects, and nothing of the file is under the store
+        self.assertEqual(r.returncode, 0, r.stderr)
+        (row,) = store_rows(self.store)
+        self.assertEqual(row["effects"], [])
+        blob = b"".join(f.read_bytes() for f in self.store.rglob("*") if f.is_file())
+        self.assertEqual([x for x in ("prod-db", "bob", "postgres") if x.encode() in blob], [])
 
     def test_a_sourced_env_file_adds_nothing_to_the_row(self):
         """Through the hook verb, `. .env` and `source .env` with a planted .env add nothing from the file:

@@ -502,6 +502,7 @@ class Ran(unittest.TestCase):
         """
         for cmd in ('bash -c "echo hi"', "sh -lc 'echo'", "python3 -m mod", "python3 -c 'print(1)'",
                     "node -e 'x()'", "node -p '1+1'", "node --eval 'x()'", "node --print=x", "perl -ne 'print' f",
+                    "perl -lane 'print' f", "perl -pe 's/a/b/' f", "node -pe '1+1'", "python3 -uc 'x'",
                     "ruby -e 'p 1'", "npx tsx -e 'x()'"):
             with self.subTest(cmd=cmd):
                 # GIVEN a command running inline code
@@ -510,15 +511,19 @@ class Ran(unittest.TestCase):
                 self.assertEqual(ran(cmd, ()), [])
 
     def test_ran_keeps_the_file_after_flags_that_are_not_inline_code(self):
-        """`bash -e x.sh` and `node --no-warnings x.mjs` still run their file: only inline-code flags drop it.
+        """`bash -e x.sh`, `node --no-warnings x.mjs`, `python3 -Ximporttime x.py`, `perl -Mopen x.pl` and
+        `ruby -rset x.rb` still run their file: only inline-code flags drop it.
 
-        bash's -e is errexit, not code; treating every -e as inline code would lose the most common shell run.
+        bash's -e is errexit, not code, and python's -X/-W and perl/ruby's -M/-r take an option or a module
+        name, not code; treating them as inline code would drop real script runs.
         """
         # GIVEN runs with flags that take no code
-        cmd = "bash -ex x.sh; node --no-warnings x.mjs; python3 -u q.py"
+        cmd = ("bash -ex x.sh; node --no-warnings x.mjs; python3 -u q.py; python3 -Ximporttime i.py; "
+               "python3 -Wmodule w.py; perl -Mopen x.pl; ruby -rset x.rb")
         # WHEN read
         # THEN each file
-        self.assertEqual(ran(cmd, ()), [("x.sh", True), ("x.mjs", False), ("q.py", False)])
+        self.assertEqual(ran(cmd, ()), [("x.sh", True), ("x.mjs", False), ("q.py", False), ("i.py", False),
+                                        ("w.py", False), ("x.pl", False), ("x.rb", False)])
 
 
 class SingleQuotes(unittest.TestCase):

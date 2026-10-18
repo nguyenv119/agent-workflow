@@ -68,10 +68,12 @@ OUT_REDIR = re.compile(r"&>>?|>>|>\||>(?!&)")
 URL = re.compile(r"(?<![\w+.-])[A-Za-z][\w+.-]*://([^\s\"'`]*)")
 AUTHORITY = re.compile(r"[^/?#]*")
 SHELL_C = re.compile(r"-[A-Za-z]*c[A-Za-z]*")  # a shell's -c, alone or in a cluster (-lc)
-# Flags that hand a runner inline code (or a module) instead of a file: a shell's -c, python's -c/-m, and
-# -e/-E/-p/--eval/--print for the rest (node, perl, ruby, tsx, bun). bash's -e (errexit) is not one.
-INLINE = {"sh": SHELL_C, "py": re.compile(r"-[A-Za-z]*[cm].*"),
-          "": re.compile(r"-[A-Za-z]*[eEp][A-Za-z]*|--(?:eval|print)(?:=.*)?")}
+# Flags that hand a runner inline code (or a module) instead of a file: a shell's -c, python's -c/-m after
+# only its no-argument letters, and -e/-E/-p/--eval/--print for the rest (node, perl, ruby, tsx, bun) after
+# only perl/ruby switch letters (-ne, -lane, -pe). bash's -e (errexit), python's -X/-W and perl/ruby's
+# -M/-r (an option or module, then the file) are not.
+INLINE = {"sh": SHELL_C, "py": re.compile(r"-[bBdEhiIOPqsSuvx]*[cm].*"),
+          "": re.compile(r"-[lnapiw0-9]*[eEp]|--(?:eval|print)(?:=.*)?")}
 # a single-quoted span, past # comments (an apostrophe in `# don't` opens nothing), escapes and "..."
 SINGLE = re.compile(r"(?:^|(?<=[\s;&|(]))#[^\n]*|\\.|\"(?:\\.|[^\"\\])*\"|'[^']*'", re.S | re.M)
 # grep-family tools: (flags whose value is the pattern, flags taking another value, flags naming a pattern

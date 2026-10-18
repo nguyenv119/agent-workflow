@@ -6,13 +6,14 @@ O_APPEND fd (atomic for a line this short). `steps` = shape.steps() of the comma
 (rows from before it have none; readers split `shape` instead). `effects` = effects.effects() of the
 command: names only (`host:<h>`, `env:<NAME>`, `envfile:<basename>`, `db:postgres`), never values (rows from before it
 have none, and add nothing to `repeats --by effect`). Scripts the command runs (effects.ran: `python3 q.py`,
-`bash x.sh`, `./x.sh`; never an env file, `. .env` runs no script) are read too, never stored: a shell
-script's steps that read as commands (SCRIPT_STEP) follow the command's in `steps` (same cap), and any
-script's effects join `effects` (a shell script read as shell, others as code). The
+`bash x.sh`, `./x.sh`; never an env file (.env names, .envrc), and a file a shell runs or sources only when
+named <name>.sh/.bash/.zsh, so `source secrets` reads nothing) are read too, never stored: a shell script's
+steps that read as commands (SCRIPT_STEP, then a known command word) follow the command's in `steps` (same
+cap), and any script's effects join `effects` (a shell script read as shell, others as code). The
 file is read only when the event has a cwd: at most MAX_SCRIPTS per command, `~` expanded, relative to the
 cwd, a regular file of at most MAX_SCRIPT bytes whose real path is under the cwd, $TMPDIR, /tmp or
 /private/tmp; any failure adds nothing. A replay (`repeats --commands`) passes the row's `script` body
-instead, as the body of the first script file the command runs (env files are never scripts). `rules` = ids of the active hook rules
+instead, as the body of the first of those files (none: the body is not read). `rules` = ids of the active hook rules
 that match the raw command, computed in memory, so a report can tell covered shapes from uncovered ones
 without the raw text; `bypassed` = the ids of rules that match but were skipped by `# agent-cli: allow <id>` (a deny
 rule's chore is only ever recorded when bypassed). Day files older than AGENT_CLI_SHAPES_KEEP_DAYS
@@ -20,9 +21,11 @@ rule's chore is only ever recorded when bypassed). Day files older than AGENT_CL
 last written before that.
 """
 import datetime as dt
+import functools
 import json
 import os
 import re
+import shutil
 import stat
 import sys
 from pathlib import Path
@@ -40,7 +43,13 @@ TMP_ROOTS = ("/tmp", "/private/tmp")
 # or a path-run lowercase name) followed by at least one word, or a script run by path alone (`<path>/x.sh`).
 # A line of one bare word (a token, a key body) or a mixed-case first word is a value the script holds,
 # and the shape keeps a command word as written, so such a step would store it. Lost: bare `make`/`exit`.
+# On top of that shape, the first word must be a command (_command_word): a BUILTINS word, a path run
+# (`<path>/...`), or an executable on PATH. An array element on its own line (`sk_x two`), a case label
+# (`prod) deploy now`) or any token followed by a word passes the shape but names no command.
 SCRIPT_STEP = re.compile(r"(?:\.|\[\[?|(?:<path>/)?[a-z_][a-z0-9_.+-]{0,31}) .+|<path>/" + SCRIPT.pattern)
+BUILTINS = frozenset(("cd", "echo", "printf", "export", "set", "unset", "source", ".", "[", "[[", "test", "read",
+                      "local", "declare", "eval", "exec", "exit", "return", "trap", "shift", "wait", "true", "false"))
+SHELL_EXT = (".sh", ".bash", ".zsh")
 KEEP_DAYS = 45
 DAY_FILE = re.compile(r"(\d{4}-\d\d-\d\d)\.jsonl")
 EXIT_CODE = re.compile(r"Exit code (\d+)")
@@ -90,15 +99,14 @@ def fields(command, rules, prefixes=None, tools=None, cwd=None, script_text=None
     and its scripts' (at most MAX_EFFECTS), the ids of the rules that fire, and those of the rules that match
     but a `# agent-cli: allow <id>` comment skips. prefixes/tools: as shape()'s (None reads the seams).
     cwd: the event's cwd, which allows reading the scripts from disk (None: no disk read). script_text: the
-    body of the first script file the command runs (env files are never scripts), read instead of the
-    disk."""
+    body of the first script file _scripts would read, read instead of the disk."""
     s = shape(command, prefixes, tools)
     hits = [r["id"] for r in hook.evaluate(command, rules, honor_bypass=False)]
     allowed = set(hook.BYPASS.findall(command)) if hits else set()
     st, fx = steps(command, prefixes, tools), _effects(command, prefixes)
     for text, shell in _scripts(command, prefixes, cwd, script_text):
         try:
-            st += [x for x in steps(text, prefixes, tools) if SCRIPT_STEP.fullmatch(x)] if shell else []
+            st += [x for x in steps(text, prefixes, tools) if _script_step(x)] if shell else []
             fx += effects(text, prefixes, code=not shell)
         except Exception:  # a script we cannot read adds nothing; the row stays
             continue
@@ -117,20 +125,43 @@ def _effects(command, prefixes):
         return []
 
 
+def _script_step(x):
+    """True when a script's step shape x reads as a command: SCRIPT_STEP's shape and a command first word."""
+    w = x.split(" ", 1)[0]
+    return bool(SCRIPT_STEP.fullmatch(x)) and (w in BUILTINS or w.startswith("<path>/") or _on_path(w))
+
+
+@functools.lru_cache(maxsize=256)
+def _on_path(word):
+    """True when word is an executable on PATH: the recording machine's PATH, so a step whose tool is not
+    installed here is dropped."""
+    return shutil.which(word) is not None
+
+
+def _candidate(path, shell):
+    """True when the file at path, run (by a shell when shell), may be read: never an env file (ENV_FILE
+    basenames, direnv's .envrc), and one a shell runs or sources only when named <name>.sh/.bash/.zsh
+    (`source secrets` loads secrets, it is no script)."""
+    b = os.path.basename(path)
+    if b == ".envrc" or ENV_FILE.fullmatch(b):
+        return False
+    return not shell or bool(SCRIPT.fullmatch(b)) and b.endswith(SHELL_EXT)
+
+
 def _scripts(command, prefixes, cwd, script_text):
-    """[(text, read as shell)] of the scripts command runs. The candidates are ran()'s files minus env files
-    (ENV_FILE basenames: `. .env` loads secrets, it runs no script), at most MAX_SCRIPTS. script_text, cut
-    to MAX_SCRIPT, is the first candidate's body (read as shell when a shell runs it; as code when ran()
-    finds no file at all); with no script_text, each candidate _read_script allows, when there is a cwd."""
+    """[(text, read as shell)] of the scripts command runs. The candidates are ran()'s files that _candidate
+    allows, at most MAX_SCRIPTS; none, nothing is read. script_text, cut to MAX_SCRIPT, is the first
+    candidate's body (read as shell when a shell runs it); with no script_text, each candidate _read_script
+    allows, when there is a cwd."""
     try:
         found = ran(command, prefixes)
     except Exception:  # e.g. RecursionError: no scripts, the row stays
         found = []
-    runs = [r for r in dict.fromkeys(found) if not ENV_FILE.fullmatch(os.path.basename(r[0]))][:MAX_SCRIPTS]
+    runs = [(p, sh) for p, sh in dict.fromkeys(found) if _candidate(p, sh)][:MAX_SCRIPTS]
+    if not runs:
+        return []
     if script_text is not None:
-        if found and not runs:  # the command runs env files only: the body is no script's
-            return []
-        return [(script_text[:MAX_SCRIPT], bool(runs) and runs[0][1])]
+        return [(script_text[:MAX_SCRIPT], runs[0][1])]
     if not cwd:
         return []
     texts = ((_read_script(path, cwd), shell) for path, shell in runs)

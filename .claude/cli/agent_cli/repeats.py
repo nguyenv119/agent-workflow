@@ -1,7 +1,7 @@
 """`agent-cli repeats`: steps typed by hand in 3+ sessions that no command or hook rule covers yet.
 
 Reads the shape recorder's store (record.py), or with --commands a JSONL of raw {ts, session, cmd} rows
-(optional script: the body of the first script file the command runs; env files are never scripts) that
+(optional script: the body of the first script file the recorder would read for the command) that
 it shapes and rule-matches in memory; the raw text is never written anywhere.
 
 Unit: a step (shape.steps, one pipeline of a chain, loop body or $( ) body) by default, so `. .env` in
@@ -58,7 +58,8 @@ instead, basics included; the `shape` field holds the step, or the command shape
 Source: the recorder's store (${AGENT_CLI_SHAPES_DIR:-~/.claude/agent-cli/shapes}), or with --commands a
 JSONL file of {"ts", "session", "cmd"} rows (optional "repo", "exit", and "script": the body of the
 first script file the command runs, as it stood then, read for its steps and effects as the recorder
-reads the file; env files are never scripts, so `. .env; python3 q.py` takes q.py's body)
+reads the file; env files and files a shell sources without a .sh/.bash/.zsh name are skipped, so
+`. .env; python3 q.py` takes q.py's body, and a command that runs no file reads none)
 shaped in memory; nothing from it is written. Window: --since back from now (default 14d over the store;
 over --commands every row counts unless a window is given), or --from/--until in local time, YYYY-MM-DD
 or YYYY-MM-DDTHH:MM. --from is inclusive; --until with a time is exclusive (a run at exactly that minute
