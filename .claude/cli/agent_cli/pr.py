@@ -153,10 +153,12 @@ def verdict(n, view, checks, cfg, canary=None, repo=None):
     errored it is FAILED; missing or pending it keeps the PR WAITING, and blocked_on names it before the merge state
     (the command to post it, with --repo when repo is given; a fork PR, where it cannot run; or the status to post
     when canary-check renamed it)."""
-    gate = "success"
+    gate, hit = "success", None
     if canary and canary["required"]:
         hit = next((c for c in checks if c["name"] == canary["context"]), None)
         checks = [c for c in checks if c is not hit]  # judged as the canary below, never as a CI check
+        if cfg["required"] is not None:  # a required-checks line naming it too must not report it missing
+            cfg = {**cfg, "required": [x for x in cfg["required"] if x != canary["context"]]}
         gate = hit and {"pass": "success", "fail": "failure", "cancel": "failure"}.get(hit["bucket"], "pending")
         canary = {**canary, "state": hit and hit["state"].lower(), "description": hit and hit["description"]}
     row = lambda c: {"name": c["name"], "bucket": c["bucket"], "link": c.get("link", "")}  # noqa: E731
@@ -170,7 +172,7 @@ def verdict(n, view, checks, cfg, canary=None, repo=None):
     passed = not missing and {c["bucket"] for c in required} <= {"pass", "skipping"}
     if view["state"] in ("MERGED", "CLOSED"):
         v = view["state"]
-    elif not checks:
+    elif not checks and not hit:
         v = "NO_CHECKS"
     elif any(c["bucket"] in ("fail", "cancel") for c in required) or gate == "failure":
         v = "FAILED"

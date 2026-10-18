@@ -115,6 +115,31 @@ class CanaryVerdict(unittest.TestCase):
         self.assertEqual(s["verdict"], "FAILED")
         self.assertEqual((s["canary"]["state"], s["canary"]["description"]), ("error", "exam crashed"))
 
+    def test_a_passing_canary_that_is_the_only_check_is_ready(self):
+        """A repo with no other CI whose canary passed is READY, not NO_CHECKS.
+
+        The canary row is taken out of the CI checks; if NO_CHECKS were judged on what is left, such a PR could
+        never turn green and wait would exit 3 ("no checks appeared") after the canary already passed.
+        """
+        # GIVEN a CLEAN PR whose only check is a passing canary
+        # WHEN judged
+        s = pr.verdict(42, view(), [row("pass", "SUCCESS")], CFG, canary())
+        # THEN READY
+        self.assertEqual(s["verdict"], "READY")
+
+    def test_a_canary_also_named_in_required_checks_is_not_missing(self):
+        """A required-checks line that also names harness-canary does not leave it missing once it passed.
+
+        The canary row is judged as the canary, not as CI; if the required list still named it, it would sit in
+        missing_required forever and wait would run to its cap on a PR that is green.
+        """
+        # GIVEN required-checks: lint, harness-canary, both passing
+        cfg = dict(CFG, required=["lint", "harness-canary"])
+        # WHEN judged
+        s = pr.verdict(42, view(), [check("lint", "pass"), row("pass", "SUCCESS")], cfg, canary())
+        # THEN READY with nothing missing
+        self.assertEqual((s["verdict"], s["missing_required"]), ("READY", []))
+
     def test_a_pending_canary_without_a_description_names_only_its_state(self):
         """A pending canary row with no description reads "harness-canary pending", with no dangling colon; the row
         is judged as the canary, not as a required CI check (which would hide blocked_on).
