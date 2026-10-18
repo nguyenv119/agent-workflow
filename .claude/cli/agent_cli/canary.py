@@ -261,7 +261,9 @@ def common_dir(d):
 
 def check_install(a):
     """Exit 2 (nothing posted) when this agent-cli's install is not in the repo the canary is run for: the cwd's
-    repo, else $CLAUDE_PROJECT_DIR's. Neither in git: no check. Another worktree or a subdirectory passes."""
+    repo, else $CLAUDE_PROJECT_DIR's. Neither in git: no check. Another worktree or a subdirectory passes. A cwd
+    in a separate repo nested inside the install's dir is refused even with --repo naming the install's repo:
+    running from the install's own checkout is the one unambiguous call."""
     here = toplevel(".") or toplevel(os.environ.get("CLAUDE_PROJECT_DIR"))
     install = core.CLAUDE_DIR.parent
     if not here or common_dir(install) == common_dir(here):

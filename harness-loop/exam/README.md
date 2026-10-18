@@ -166,6 +166,10 @@ Before it starts:
 It refuses two cases outright, posting no status and starting nothing (exit 5): a cloud session
 (`CLAUDE_CODE_REMOTE` set: the canary is laptop-only, so a laptop picks the PR up later) and a fork PR
 (the sandbox holds the plan token and runs the PR's harness, so a fork's head could read it).
+`agent-cli harness canary` also refuses, before any gh call (exit 2), when the agent-cli that runs belongs
+to another repo than the cwd's (else `$CLAUDE_PROJECT_DIR`'s), as when PATH points at one project's
+`.claude/bin`: it names that repo's own `.claude/bin/agent-cli` with the same flags. Another worktree or a
+subdirectory of the install's repo is the same repo and runs.
 
 | exit | meaning |
 |------|---------|
