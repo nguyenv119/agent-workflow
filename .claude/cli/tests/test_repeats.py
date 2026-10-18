@@ -971,6 +971,229 @@ class Effects(StoreCase):
                               "ship-check <arg>  //  ship-tool <arg>")
 
 
+T0 = dt.datetime(2026, 4, 2, 10, 0, 0, tzinfo=UTC)
+PR_VIEW = "gh pr view 12 --json state"  # step `gh pr view <n> --json <v>`; the built-in hand-pr-status rule matches it
+
+
+class Polls(StoreCase):
+    def polls(self, runs, *args):
+        """`repeats --polls --json` over --commands rows; runs: (session, seconds after T0, cmd) triples."""
+        cmds = self.write_commands([{"ts": (T0 + dt.timedelta(seconds=s)).strftime(repeats.TS), "session": sess,
+                                     "cmd": c} for sess, s, c in runs])
+        r, rows = self.repeats("--commands", str(cmds), "--polls", *args)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        return rows
+
+    def at(self, seconds, cmd=PR_VIEW, session="s1"):
+        """runs of cmd in one session at each of the given seconds after T0."""
+        return [(session, s, cmd) for s in seconds]
+
+    def steps(self, runs, *args):
+        return [x["step"] for x in self.polls(runs, "--covered", "none", "--min-sessions", "1", *args)]
+
+    def test_four_pr_reads_minutes_apart_make_one_sequence_with_their_median_gap(self):
+        """A PR read at 10:00, 10:04, 10:09 and 10:15 in one session is one sequence: median gap 300 s, first
+        and last its first and last run.
+
+        A poll spread over separate calls is a chore no single-command rule sees; the row must show how
+        often it ran and how far apart, so a reader can size the wait command that replaces it.
+        """
+        # GIVEN 4 PR reads 4, 5 and 6 minutes apart in one session
+        runs = self.at([0, 240, 540, 900])
+        # WHEN --polls runs over them
+        rows = self.polls(runs, "--covered", "none", "--min-sessions", "1")
+        # THEN one row with every field
+        self.assertEqual(rows, [{"step": "gh pr view <n> --json <v>", "sessions": 1, "sequences": 1,
+                                 "median_gap_s": 300, "first": "2026-04-02T10:00:00Z",
+                                 "last": "2026-04-02T10:15:00Z"}])
+
+    def test_a_sleep_then_check_loop_gives_a_sequence_for_both_steps(self):
+        """`sleep 60; gh pr checks 12` typed 4 times over 6 minutes is a sequence for the sleep and for the check.
+
+        Both steps are what the step report would list (a sleep is report-only); the poll must show
+        under each, as the step report does.
+        """
+        # GIVEN the sleep-then-check run 4 times, 2 minutes apart
+        runs = self.at([0, 120, 240, 360], "sleep 60; gh pr checks 12")
+        # WHEN --polls runs
+        # THEN both steps have one sequence each, ranked by name on the tie
+        self.assertEqual(self.steps(runs), ["gh pr checks <n>", "sleep <n>"])
+
+    def test_runs_hours_apart_make_no_sequence(self):
+        """Three runs 2 hours apart are no sequence.
+
+        A check run each morning is a habit, not a wait; past 30 minutes apart the runs are separate tasks.
+        """
+        # GIVEN 3 PR reads 2 hours apart
+        # WHEN --polls runs
+        # THEN nothing is listed
+        self.assertEqual(self.steps(self.at([0, 7200, 14400])), [])
+
+    def test_gaps_of_exactly_15_s_and_30_min_count_and_14_s_or_30_min_1_s_split(self):
+        """The gap range is [15 s, 30 min], both ends inclusive; 14 s or 30 min + 1 s ends the run.
+
+        Under 15 s the runs are a retry, not a wait; over 30 minutes they are separate tasks. An
+        off-by-one at either end would move real polls in or out of the report.
+        """
+        for gaps, want in (((15, 1800), 1), ((1800, 15), 1), ((14, 15), 0), ((15, 14), 0), ((1801, 15), 0),
+                           ((15, 1801), 0)):
+            with self.subTest(gaps=gaps):
+                # GIVEN 3 PR reads with these two gaps
+                runs = self.at([0, gaps[0], gaps[0] + gaps[1]])
+                # WHEN --polls runs
+                rows = self.polls(runs, "--covered", "none", "--min-sessions", "1")
+                # THEN a sequence only when both gaps are in range
+                self.assertEqual(sum(x["sequences"] for x in rows), want)
+
+    def test_two_runs_in_range_are_not_a_sequence(self):
+        """Two runs a minute apart are no sequence: a sequence needs 3 runs.
+
+        Checking a PR twice is normal; only the third call in a row shows a wait done by hand.
+        """
+        # GIVEN 2 PR reads a minute apart
+        # WHEN --polls runs
+        # THEN nothing is listed
+        self.assertEqual(self.steps(self.at([0, 60])), [])
+
+    def test_a_short_gap_splits_six_runs_into_two_sequences(self):
+        """Six runs a minute apart with a 5 s gap in the middle are 2 sequences; the 5 s gap is not in the median.
+
+        The gap that ends a run is not a wait; counting it would drag the median toward retries.
+        """
+        # GIVEN 6 PR reads: 3 a minute apart, 5 s, then 3 a minute apart
+        runs = self.at([0, 60, 120, 125, 185, 245])
+        # WHEN --polls runs
+        rows = self.polls(runs, "--covered", "none", "--min-sessions", "1")
+        # THEN 2 sequences, median 60 s, spanning the first and last run
+        self.assertEqual([(x["sequences"], x["median_gap_s"], x["first"], x["last"]) for x in rows],
+                         [(2, 60, "2026-04-02T10:00:00Z", "2026-04-02T10:04:05Z")])
+
+    def test_other_runs_between_do_not_break_a_sequence(self):
+        """Other commands typed between the polls leave the sequence whole; their own 2 runs make none.
+
+        An agent does other work while it waits; a poll is the same step coming back, whatever ran between.
+        """
+        # GIVEN 3 PR reads 2 minutes apart, with a deploy between each
+        runs = self.at([0, 120, 240]) + self.at([60, 180], "deploy-tool push")
+        # WHEN --polls runs
+        # THEN the PR read is one sequence and the deploy is not listed
+        self.assertEqual(self.steps(runs), ["gh pr view <n> --json <v>"])
+
+    def test_rows_are_ordered_by_time_within_each_session(self):
+        """Rows are put in time order per session before gaps are taken, whatever order the input has.
+
+        A replay file or the store's day files need not be in order; a gap read off file order could be negative.
+        """
+        # GIVEN 3 PR reads a minute apart, written last first
+        runs = self.at([120, 60, 0])
+        # WHEN --polls runs
+        # THEN one sequence with a 60 s median
+        self.assertEqual([(x["sequences"], x["median_gap_s"]) for x in
+                          self.polls(runs, "--covered", "none", "--min-sessions", "1")], [(1, 60)])
+
+    def test_min_sessions_counts_sessions_with_a_sequence(self):
+        """--min-sessions counts sessions holding a sequence, not sessions that typed the step.
+
+        One session's poll is one agent's wait; the report is for polls that keep coming back. A session
+        that ran the step twice did not poll.
+        """
+        # GIVEN sequences in sessions a and b, and 2 runs in session c
+        runs = self.at([0, 60, 120], session="a") + self.at([0, 60, 120], session="b") + self.at([0, 60], session="c")
+        # WHEN --polls runs with the default bar of 3, and with 2
+        # THEN the default drops it, and with 2 it shows 2 sessions
+        self.assertEqual(self.polls(runs, "--covered", "none"), [])
+        self.assertEqual([x["sessions"] for x in self.polls(runs, "--covered", "none", "--min-sessions", "2")], [2])
+
+    def test_rank_is_sessions_then_sequences_then_step_and_top_cuts(self):
+        """Rows rank by sessions, then sequences, then step; --top keeps the first N.
+
+        A poll in more sessions is the better command candidate, and ties must break the same way every run.
+        """
+        # GIVEN zeta polled in 2 sessions, beta twice in one session, alpha once in one session
+        runs = (self.at([0, 60, 120], "zeta-tool", "a") + self.at([0, 60, 120], "zeta-tool", "b")
+                + self.at([0, 60, 120, 3600, 3660, 3720], "beta-tool", "a") + self.at([0, 60, 120], "alpha-tool", "a"))
+        # WHEN --polls runs, then with --top 2
+        # THEN zeta, beta, alpha; --top 2 drops alpha
+        self.assertEqual(self.steps(runs), ["zeta-tool", "beta-tool", "alpha-tool"])
+        self.assertEqual(self.steps(runs, "--top", "2"), ["zeta-tool", "beta-tool"])
+
+    def test_covered_live_drops_rule_and_command_covered_steps(self):
+        """--covered live drops a polled step a hook rule or agent-cli covers; --covered none keeps them.
+
+        A poll a rule already points at a wait command needs no new command; the live list must hold only gaps.
+        """
+        # GIVEN a rule-matched PR read, an agent-cli status call and an uncovered tool, each polled
+        runs = (self.at([0, 60, 120]) + self.at([0, 60, 120], "agent-cli pr status 12")
+                + self.at([0, 60, 120], "tasker-tool sync"))
+        # WHEN --polls runs live and with none
+        live = [x["step"] for x in self.polls(runs, "--min-sessions", "1")]
+        none = self.steps(runs)
+        # THEN live keeps only the uncovered tool
+        self.assertEqual(live, ["tasker-tool <arg>"])
+        self.assertEqual(sorted(none), ["agent-cli pr status <n>", "gh pr view <n> --json <v>", "tasker-tool <arg>"])
+
+    def test_basic_steps_are_never_listed(self):
+        """A polled chain of shell basics (`cat`, `git add`) lists nothing.
+
+        Basics are not chores a command can replace; the step report drops them and so must polls.
+        """
+        # GIVEN cat and git add typed 3 times a minute apart
+        # WHEN --polls runs
+        # THEN nothing is listed
+        self.assertEqual(self.steps(self.at([0, 60, 120], "cat a.txt && git add a.txt")), [])
+
+    def test_store_rows_without_a_session_are_skipped(self):
+        """Over the store, rows with no session make no sequence; a named session's poll is listed.
+
+        A poll is one session's calls in a row; rows with no session cannot be put in one session's order.
+        """
+        # GIVEN the same check 3 times a minute apart with no session, and in session s1
+        for i in range(3):
+            self.rec("lint-tool -q", [None, "s1"], at=T0 + dt.timedelta(seconds=60 * i))
+        # WHEN --polls runs over the store
+        r, rows = self.repeats("--polls", "--since", "3650d", "--covered", "none", "--min-sessions", "1")
+        # THEN one sequence from s1 alone
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual([(x["step"], x["sessions"], x["sequences"]) for x in rows], [("lint-tool -q", 1, 1)])
+
+    def test_polls_refuses_by_effect_unit_command_and_write_cache(self):
+        """--polls with --by effect, --unit command or --write-cache exits 2 with a --polls example.
+
+        Polls are counted per step and never feed the live warning; silently dropping a flag would hand
+        the caller a report it did not ask for.
+        """
+        self.store.mkdir()
+        for args in (("--by", "effect"), ("--unit", "command"), ("--write-cache",)):
+            with self.subTest(args=args):
+                # GIVEN --polls with a flag it does not take
+                # WHEN the report runs
+                r, _ = self.repeats("--polls", *args)
+                # THEN exit 2 with a correct --polls invocation
+                self.assertEqual(r.returncode, 2, r.stderr)
+                self.assertIn("example: agent-cli repeats --since 7d --polls", r.stderr)
+
+    def test_text_mode_prints_a_poll_table_and_help_has_an_example(self):
+        """Without --json --polls prints a header naming every field, then one line per step; --help shows
+        a --polls example.
+
+        house-rules: text output carries the same fields as --json, and help has runnable examples.
+        """
+        # GIVEN a PR read polled 3 times a minute apart
+        cmds = self.write_commands([{"ts": (T0 + dt.timedelta(seconds=s)).strftime(repeats.TS), "session": "s1",
+                                     "cmd": PR_VIEW} for s in (0, 60, 120)])
+        # WHEN --polls runs in text mode, and help is asked for
+        r = agent_cli(self.p, "repeats", "--commands", str(cmds), "--polls", "--covered", "none",
+                      "--min-sessions", "1")
+        h = agent_cli(self.p, "repeats", "--help")
+        # THEN a header, the row, and the summary line on stderr
+        self.assertEqual(r.stdout.splitlines(),
+                         ["sessions  sequences  median_gap_s  first  last  step",
+                          "1  1  60  2026-04-02T10:00:00Z  2026-04-02T10:02:00Z  gh pr view <n> --json <v>"])
+        self.assertIn("repeats: 3 runs in window, 1 steps with sequences in 1+ sessions, 0 covered, 1 printed",
+                      r.stderr)
+        self.assertIn("agent-cli repeats --since 7d --polls", h.stdout)
+
+
 class Speed(StoreCase):
     def test_20000_commands_replay_in_under_10s(self):
         """--commands over 20,000 raw commands finishes in under 10 s (the replay cap per window).

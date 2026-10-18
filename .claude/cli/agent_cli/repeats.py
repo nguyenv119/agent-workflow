@@ -24,11 +24,16 @@ change records which step a rule hit).
 --by effect ranks effect signals instead (record.py's `effects`: hosts, env var names, .env files, db:postgres), so one
 chore's many spellings join on what they touch. Rows from before effects add nothing. Weekly count only:
 never --write-cache, so never the live warning.
+
+--polls finds a check repeated over separate calls in one session: per session, rows in time order, a sequence
+is a maximal run of 3+ rows carrying the same listed step, other rows in between allowed, whose gaps are all
+within [15 s, 30 min]. Rows with no session are skipped. Never --write-cache, so never the live warning.
 """
 import collections
 import datetime as dt
 import json
 import re
+import statistics
 import sys
 
 from . import core, hook, record, shape
@@ -40,10 +45,13 @@ EXAMPLES = ["agent-cli repeats --since 14d",
             "agent-cli repeats --commands commands.jsonl --covered none --top 25",
             "agent-cli repeats --since 14d --write-cache",
             "agent-cli repeats --since 7d --unit command --covered none",
-            "agent-cli repeats --since 7d --by effect --covered none --top 10"]
+            "agent-cli repeats --since 7d --by effect --covered none --top 10",
+            "agent-cli repeats --since 7d --polls --covered none --top 10"]
 CACHE = "repeats-cache.json"
 FIELDS = ("sessions", "count", "exit_fail_share", "first", "last", "shape")
 EFFECT_FIELDS = ("sessions", "count", "first", "last", "effect", "steps")
+POLL_FIELDS = ("sessions", "sequences", "median_gap_s", "first", "last", "step")
+POLL_GAP = (15, 30 * 60)  # seconds between two runs of a sequence, both ends inclusive
 TS = "%Y-%m-%dT%H:%M:%SZ"
 STORE_TS = re.compile(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ")
 DESCRIPTION = """\
@@ -85,6 +93,14 @@ runs are: every listed step of the run passes the step test above, or, with no l
 the run. --min-sessions, --top, --repo, the window and --commands apply; not with --write-cache or --unit
 command (effects never feed the warning).
 
+--polls: checks repeated over separate calls minutes apart. Per session, in time order, a sequence is a
+maximal run of 3 or more runs carrying the same listed step (other runs in between allowed) whose gaps are
+all from 15 s to 30 min inclusive; a gap outside that ends the run. Rows with no session are skipped. One row
+per step: sessions (with a sequence), sequences, median_gap_s (median of the gaps inside its sequences, whole
+seconds), first and last (UTC, runs inside a sequence), step; ranked by sessions, then sequences, then step.
+--min-sessions counts sessions with a sequence; --covered live drops steps the step report calls covered.
+The window, --commands, --repo and --top apply; not with --by, --unit command or --write-cache.
+
 Exit codes (agent-cli's shared table): 0 ok: the report ran, an empty list included; 2 refused: bad
 usage; 3 blocked: the store or the --commands file cannot be read, a --commands line is not a
 {ts, session, cmd} object, or the cache cannot be written."""
@@ -106,6 +122,8 @@ def register(sub):
                    help="step: each step of a command, basics dropped (default); command: whole command shapes")
     p.add_argument("--by", choices=("effect",), help="effect: rank effect signals (hosts, env var names, .env "
                    "files, db:postgres) instead of steps")
+    p.add_argument("--polls", action="store_true", help="steps re-run 3+ times 15 s to 30 min apart in one "
+                   "session, ranked by sessions with such a run")
     p.add_argument("--commands", metavar="FILE",
                    help="JSONL of raw {ts, session, cmd, script?} rows instead of the store")
     p.add_argument("--write-cache", action="store_true", help="also write <store>/repeats-cache.json")
@@ -122,6 +140,8 @@ def run(a):
                  "--commands, --covered none, --repo or --unit command", EXAMPLES[3])
     if a.by and (a.write_cache or a.unit == "command"):  # effects never feed the warning; no command unit
         core.die(Exit.REFUSED, "--by effect takes neither --write-cache nor --unit command", EXAMPLES[5])
+    if a.polls and (a.by or a.unit == "command" or a.write_cache):  # per step, never the warning
+        core.die(Exit.REFUSED, "--polls takes neither --by, --unit command nor --write-cache", EXAMPLES[6])
     lo, hi = window(a)
     live = a.covered == "live"
     rows, skipped = from_commands(a.commands, lo, hi, live) if a.commands else from_store(lo, hi)
@@ -135,26 +155,31 @@ def run(a):
         groups = group(rows, a.unit == "step")
         ok = step_test(groups, by_command)
         covered = lambda s, g: ok(s)  # noqa: E731
+        if a.polls:
+            groups = poll_groups(rows)
     repeated = [(s, g) for s, g in groups.items() if len(g["sessions"]) >= a.min_sessions]
     listed = [(s, g) for s, g in repeated if not (live and covered(s, g))]
-    listed.sort(key=lambda sg: (-len(sg[1]["sessions"]), -sg[1]["count"], sg[0]))
+    rank = "sequences" if a.polls else "count"
+    listed.sort(key=lambda sg: (-len(sg[1]["sessions"]), -sg[1][rank], sg[0]))
     if a.write_cache:
         cache = {s: {"sessions": len(g["sessions"]), "count": g["count"]} for s, g in listed if not hook.basic(s)}
         try:
             core.write_atomic(record.store_dir() / CACHE, json.dumps(cache, sort_keys=True) + "\n")
         except OSError as e:
             core.die(Exit.BLOCKED, f"cannot write {record.store_dir() / CACHE}: {e.strerror}", EXAMPLES[3])
-    out = [(effect_row if a.by else report_row)(s, g) for s, g in listed[:a.top]]
+    out = [(poll_row if a.polls else effect_row if a.by else report_row)(s, g) for s, g in listed[:a.top]]
     if not a.json:
-        print("  ".join(EFFECT_FIELDS if a.by else FIELDS))
+        print("  ".join(POLL_FIELDS if a.polls else EFFECT_FIELDS if a.by else FIELDS))
     for row in out:
-        if a.by:
-            text = f"{row['first']}  {row['last']}  {row['effect']}  {'  //  '.join(row['steps'])}"
+        if a.polls:
+            text = f"{row['sequences']}  {row['median_gap_s']}  {row['first']}  {row['last']}  {row['step']}"
+        elif a.by:
+            text = f"{row['count']}  {row['first']}  {row['last']}  {row['effect']}  {'  //  '.join(row['steps'])}"
         else:
             share = "-" if row["exit_fail_share"] is None else f"{row['exit_fail_share']:.2f}"
-            text = f"{share}  {row['first']}  {row['last']}  {row['shape']}"
-        core.out(a, row, f"{row['sessions']}  {row['count']}  {text}")
-    unit = "effects" if a.by else "steps" if a.unit == "step" else "shapes"
+            text = f"{row['count']}  {share}  {row['first']}  {row['last']}  {row['shape']}"
+        core.out(a, row, f"{row['sessions']}  {text}")
+    unit = "steps with sequences" if a.polls else "effects" if a.by else "steps" if a.unit == "step" else "shapes"
     sys.stderr.write(f"repeats: {len(rows)} runs in window, {len(repeated)} {unit} in {a.min_sessions}+ sessions, "
                      f"{len(repeated) - len(listed)} covered, {len(out)} printed"
                      + (f", {skipped} unreadable store lines skipped" if skipped else "") + "\n")
@@ -313,6 +338,48 @@ def group_effects(rows, step_ok=None):
             g["covered"] += ok
             g["steps"].update(listed or list(dict.fromkeys(r.get("steps") or [])))
     return groups
+
+
+def poll_groups(rows):
+    """{step: {sessions, sequences, gaps, first, last}} over sequences (see --polls): per session, rows sorted
+    by ts once, then one pass keeping each listed step's open run (its (time, ts) pairs)."""
+    by_session, split, groups = collections.defaultdict(list), {}, {}
+    for r in rows:
+        if r.get("session") and r.get("shape"):
+            by_session[r["session"]].append(r)
+
+    def close(k, run, session):
+        if len(run) < 3:
+            return
+        g = groups.get(k)
+        if g is None:
+            g = groups[k] = {"sessions": set(), "sequences": 0, "gaps": [], "first": run[0][1], "last": run[-1][1]}
+        g["sessions"].add(session)
+        g["sequences"] += 1
+        g["gaps"] += [int((q[0] - p[0]).total_seconds()) for p, q in zip(run, run[1:])]
+        g["first"], g["last"] = min(g["first"], run[0][1]), max(g["last"], run[-1][1])
+
+    for session, rs in by_session.items():
+        rs.sort(key=lambda r: r["ts"])  # TS strings sort in time order
+        runs = {}
+        for r in rs:
+            t = dt.datetime.strptime(r["ts"], TS)
+            for k in listed_steps(r, split):
+                run = runs.get(k)
+                if run and POLL_GAP[0] <= (t - run[-1][0]).total_seconds() <= POLL_GAP[1]:
+                    run.append((t, r["ts"]))
+                else:
+                    if run:
+                        close(k, run, session)
+                    runs[k] = [(t, r["ts"])]
+        for k, run in runs.items():
+            close(k, run, session)
+    return groups
+
+
+def poll_row(s, g):
+    return {"step": s, "sessions": len(g["sessions"]), "sequences": g["sequences"],
+            "median_gap_s": round(statistics.median(g["gaps"])), "first": g["first"], "last": g["last"]}
 
 
 def effect_row(e, g):
