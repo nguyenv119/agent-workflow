@@ -548,6 +548,8 @@ class Usage(StoreCase):
         self.assertEqual((missing.returncode, broken.returncode, bad_script.returncode), (3, 3, 3))
         self.assertIn("line 2", broken.stderr)
         self.assertIn("line 1", bad_script.stderr)
+        self.assertIn("script, when present, must be a string", bad_script.stderr)
+        self.assertNotIn('"script": 5', bad_script.stderr)
 
     def test_usage_errors_exit_2_with_an_example(self):
         """--since with --from, a bad date, --from after --until, --write-cache with --commands, --covered

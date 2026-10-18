@@ -68,6 +68,10 @@ OUT_REDIR = re.compile(r"&>>?|>>|>\||>(?!&)")
 URL = re.compile(r"(?<![\w+.-])[A-Za-z][\w+.-]*://([^\s\"'`]*)")
 AUTHORITY = re.compile(r"[^/?#]*")
 SHELL_C = re.compile(r"-[A-Za-z]*c[A-Za-z]*")  # a shell's -c, alone or in a cluster (-lc)
+# Flags that hand a runner inline code (or a module) instead of a file: a shell's -c, python's -c/-m, and
+# -e/-E/-p/--eval/--print for the rest (node, perl, ruby, tsx, bun). bash's -e (errexit) is not one.
+INLINE = {"sh": SHELL_C, "py": re.compile(r"-[A-Za-z]*[cm].*"),
+          "": re.compile(r"-[A-Za-z]*[eEp][A-Za-z]*|--(?:eval|print)(?:=.*)?")}
 # a single-quoted span, past # comments (an apostrophe in `# don't` opens nothing), escapes and "..."
 SINGLE = re.compile(r"(?:^|(?<=[\s;&|(]))#[^\n]*|\\.|\"(?:\\.|[^\"\\])*\"|'[^']*'", re.S | re.M)
 # grep-family tools: (flags whose value is the pattern, flags taking another value, flags naming a pattern
@@ -172,15 +176,22 @@ def _unrun(writes, runs, out, code, shell):
 
 def _ran(s, word, args):
     """(path, by a shell) of the file this step runs, or None: an interpreter's first non-flag argument (past
-    npx, `<runner> exec` and deno/bun run), or the command word itself when it is a path."""
-    name, rest = word.rsplit("/", 1)[-1], [s[a:b].strip("\"'") for a, b in args if not s[a:b].startswith("-")]
-    if name == "npx" or rest[:1] == ["exec"]:
-        rest = rest[rest[:1] == ["exec"]:]
-        name, rest = (rest[0], rest[1:]) if rest else ("", [])
-    if name in ("deno", "bun") and rest[:1] == ["run"]:
+    npx, `<runner> exec` and deno/bun run), or the command word itself when it is a path. None too when a
+    flag before that argument gives inline code (INLINE: bash -c, python3 -m, node -e/-p/--eval, perl -ne):
+    such a run reads no file."""
+    name, ws = word.rsplit("/", 1)[-1], [s[a:b].strip("\"'") for a, b in args]
+    rest = [k for k, w in enumerate(ws) if not w.startswith("-")]  # where the non-flag arguments sit
+    lo = 0  # the runner's own flags start here
+    if name == "npx" or rest and ws[rest[0]] == "exec":
+        rest = rest[bool(rest) and ws[rest[0]] == "exec":]
+        name, lo, rest = (ws[rest[0]], rest[0] + 1, rest[1:]) if rest else ("", 0, [])
+    if name in ("deno", "bun") and rest and ws[rest[0]] == "run":
         rest = rest[1:]
     if RUNNERS.fullmatch(name):
-        return (rest[0], name in SHELLS or name in (".", "source")) if rest else None
+        inline = INLINE["sh" if name in SHELLS else "py" if name.startswith("python") else ""]
+        if not rest or any(inline.fullmatch(w) for w in ws[lo:rest[0]]):
+            return None
+        return ws[rest[0]], name in SHELLS or name in (".", "source")
     return (word.strip("\"'"), word.endswith(".sh")) if "/" in word else None
 
 

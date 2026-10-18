@@ -445,6 +445,9 @@ class AssignedNames(unittest.TestCase):
         for cmd in ("bash <<'EOF'\nURI_X=h\ncurl $URI_X $API_TOKEN\nEOF",
                     "cat <<'EOF' | sh\nURI_X=h\ncurl $URI_X $API_TOKEN\nEOF"):
             with self.subTest(cmd=cmd.split("\n")[0]):
+                # GIVEN a heredoc body a shell reads, which sets URI_X and reads API_TOKEN
+                # WHEN read
+                # THEN only the name the body never set
                 self.assertEqual(fx(cmd), ["env:API_TOKEN"])
 
     def test_a_written_file_python_runs_keeps_its_name_equals_reads(self):
@@ -452,7 +455,10 @@ class AssignedNames(unittest.TestCase):
 
         Dropping names from code a shell never reads would hide exactly the reads the report counts.
         """
+        # GIVEN a written q.py whose name= line reads the same name, run by python
         cmd = "cat > q.py <<'EOF'\nimport os\nURI_X=os.environ['URI_X']\nEOF\npython3 q.py"
+        # WHEN read
+        # THEN the read stays
         self.assertEqual(fx(cmd), ["env:URI_X"])
 
 
@@ -487,6 +493,32 @@ class Ran(unittest.TestCase):
         # THEN each run file, in order
         self.assertEqual(ran(cmd, WRAP), [("/tmp/q.py", False), ("./x.sh", True), ("~/env.sh", True),
                                           ("./run.py", False)])
+
+    def test_ran_lists_no_file_for_inline_code(self):
+        """An interpreter given inline code (-c, -e, -p, -m, --eval, --print) runs no file: ran() lists none.
+
+        The recorder opens each listed path; `bash -c "echo hi"` listing `echo hi`, or `python3 -m mod`
+        listing `mod`, would have it read whatever file happens to carry that name.
+        """
+        for cmd in ('bash -c "echo hi"', "sh -lc 'echo'", "python3 -m mod", "python3 -c 'print(1)'",
+                    "node -e 'x()'", "node -p '1+1'", "node --eval 'x()'", "node --print=x", "perl -ne 'print' f",
+                    "ruby -e 'p 1'", "npx tsx -e 'x()'"):
+            with self.subTest(cmd=cmd):
+                # GIVEN a command running inline code
+                # WHEN read
+                # THEN no run file
+                self.assertEqual(ran(cmd, ()), [])
+
+    def test_ran_keeps_the_file_after_flags_that_are_not_inline_code(self):
+        """`bash -e x.sh` and `node --no-warnings x.mjs` still run their file: only inline-code flags drop it.
+
+        bash's -e is errexit, not code; treating every -e as inline code would lose the most common shell run.
+        """
+        # GIVEN runs with flags that take no code
+        cmd = "bash -ex x.sh; node --no-warnings x.mjs; python3 -u q.py"
+        # WHEN read
+        # THEN each file
+        self.assertEqual(ran(cmd, ()), [("x.sh", True), ("x.mjs", False), ("q.py", False)])
 
 
 class SingleQuotes(unittest.TestCase):

@@ -2,6 +2,7 @@
 import datetime as dt
 import json
 import os
+import signal
 import sys
 import unittest
 from pathlib import Path
@@ -407,25 +408,42 @@ class Scripts(TmpCase):
         self.cwd = self.tmp / "work"
         self.cwd.mkdir()
 
+    def fields_of(self, command, **kw):
+        return record.fields(command, [], (), (), **kw)
+
     def fx(self, command, **kw):
-        return record.fields(command, [], (), (), **kw)["effects"]
+        return self.fields_of(command, **kw)["effects"]
 
     def test_bead_example_python_script_gives_its_env_read_and_env_file(self):
         """`python3 <dir>/q.py`, where q.py opens .env and reads DATABASE_URL, gives env:DATABASE_URL and
-        envfile:.env beside the masked shape.
+        envfile:.env beside the masked shape, and adds no steps.
 
         41% of hand-done chores sit in scripts the agent wrote then ran; the command line alone says only
-        `python3 <path>/q.py`, so the repeat across sessions is invisible without the script's effects.
+        `python3 <path>/q.py`, so the repeat across sessions is invisible without the script's effects. A
+        python body is not shell, so splitting it into steps would invent chores like `import <arg>`.
         """
         # GIVEN a written q.py
         q = self.cwd / "q.py"
         q.write_text("import os\nfrom dotenv import load_dotenv\nload_dotenv('.env')\n"
                      "u = os.environ['DATABASE_URL']\n")
-        # WHEN the command's fields are computed with the cwd, and without one (a replay)
+        # WHEN the command's fields are computed with the event's cwd
         got = record.fields(f"python3 {q}", [], (), (), cwd=str(self.cwd))
+        # THEN the script's effects join, and the steps are the command's own
+        self.assertEqual((got["shape"], got["steps"], got["effects"]),
+                         ("python3 <path>/q.py", ["python3 <path>/q.py"], ["env:DATABASE_URL", "envfile:.env"]))
+
+    def test_no_cwd_reads_no_script(self):
+        """With no cwd (an event without one, or a replay without a script body) no file is read.
+
+        A relative path means nothing without the event's cwd; resolving it against the recorder's own
+        directory would read some other file.
+        """
+        # GIVEN a written q.py with an env read
+        q = self.cwd / "q.py"
+        q.write_text("u = os.environ['DATABASE_URL']\n")
+        # WHEN the command's fields are computed with no cwd
         bare = record.fields(f"python3 {q}", [], (), ())
-        # THEN the script's effects join; with no cwd nothing is read
-        self.assertEqual((got["shape"], got["effects"]), ("python3 <path>/q.py", ["env:DATABASE_URL", "envfile:.env"]))
+        # THEN nothing from the script
         self.assertEqual(bare["effects"], [])
 
     def test_relative_and_home_paths_resolve_against_cwd_and_home(self):
@@ -519,6 +537,10 @@ class Scripts(TmpCase):
         (self.cwd / "bin.py").write_bytes(b"\xff\xfe os.environ['BIN_KEY']\n")
         (self.cwd / "dir.py").mkdir()
         os.mkfifo(self.cwd / "fifo.py")
+        # a regression that opens the FIFO would block forever: fail it after 10s instead of hanging the suite
+        signal.signal(signal.SIGALRM, lambda *_: self.fail("reading a FIFO script blocked"))
+        self.addCleanup(signal.alarm, 0)
+        signal.alarm(10)
         for name in ("missing.py", "big.py", "bin.py", "dir.py", "fifo.py"):
             with self.subTest(name=name):
                 # WHEN the command runs it
@@ -570,22 +592,158 @@ class Scripts(TmpCase):
         pieces = {plant[i:j] for i in range(len(plant)) for j in range(i + 6, len(plant) + 1)}
         self.assertEqual([x for x in sorted(pieces) + lines if x.encode() in blob], [])
 
-    def test_script_text_is_read_instead_of_the_disk(self):
-        """script_text (a replay's script body) feeds steps and effects with no cwd, as shell when a shell runs
-        it and as code otherwise.
+    def test_script_text_of_a_shell_script_gives_its_steps_and_reads(self):
+        """script_text (a replay's script body) feeds steps and effects with no cwd; a shell runs it here, so
+        it is read as shell.
 
         Replays have no files on disk; the commands file carries the body as it stood when the command ran.
         """
-        # GIVEN a shell body and a python body
-        sh, py = "URI=x\npsql \"$URI\" $API_TOKEN\n", "print('$TOTAL')\nos.environ['API_TOKEN']\n"
-        # WHEN given as script_text to commands that run them
-        got_sh = record.fields("bash /gone/x.sh", [], (), (), script_text=sh)
-        got_py = record.fields("python3 /gone/x.py", [], (), (), script_text=py)
-        # THEN the shell body's steps and reads, and the python body's code reads
-        self.assertEqual((got_sh["steps"], got_sh["effects"]), (["bash <path>/x.sh", "psql <str> <arg>"],
-                                                                ["db:postgres", "env:API_TOKEN"]))
-        self.assertEqual(got_py["effects"], ["env:API_TOKEN"])
+        # GIVEN a shell body
+        sh = "URI=x\npsql \"$URI\" $API_TOKEN\n"
+        # WHEN given as script_text to a command that runs it with bash
+        got = record.fields("bash /gone/x.sh", [], (), (), script_text=sh)
+        # THEN the body's steps and reads, without its own URI
+        self.assertEqual((got["steps"], got["effects"]), (["bash <path>/x.sh", "psql <str> <arg>"],
+                                                          ["db:postgres", "env:API_TOKEN"]))
 
+    def test_script_text_of_a_python_script_is_read_as_code(self):
+        """A python command's script_text is read as code: `'$TOTAL'` is text, and it adds no steps.
+
+        Reading a python body as shell would list every `$` in its strings as an env read and its lines as
+        steps.
+        """
+        # GIVEN a python body
+        py = "print('$TOTAL')\nos.environ['API_TOKEN']\n"
+        # WHEN given as script_text to a command that runs it with python
+        got = record.fields("python3 /gone/x.py", [], (), (), script_text=py)
+        # THEN its code read only, and the command's own step
+        self.assertEqual((got["steps"], got["effects"]), (["python3 <path>/x.py"], ["env:API_TOKEN"]))
+
+    def test_script_text_after_a_sourced_env_file_takes_the_python_scripts_mode(self):
+        """In `set -a; source .env; set +a; python3 q.py` the script body is q.py's: read as code, no steps.
+
+        The env file is never a script; taking the mode from it read ~145 replayed python bodies as shell,
+        giving junk steps (`import <arg>`) and false reads (env:TOTAL).
+        """
+        # GIVEN a python body for a command that sources .env first
+        py = "import os\nprint('cost $TOTAL')\nos.environ['API_TOKEN']\n"
+        # WHEN given as script_text
+        got = self.fields_of("set -a; source .env; set +a; python3 q.py", script_text=py)
+        # THEN the command's steps only and the code read, plus the env file the command names
+        self.assertEqual((got["steps"], got["effects"]),
+                         (["set -a", "source .env", "set +a", "python3 q.py"], ["env:API_TOKEN", "envfile:.env"]))
+
+    def test_script_text_for_a_command_that_only_sources_an_env_file_adds_nothing(self):
+        """A replay body for `. .env` (or `source .env`) is never read: an env file is not a script.
+
+        An env file's body holds the secrets themselves; reading it would store its hosts and, as steps,
+        any bare line in it.
+        """
+        for cmd in (". .env", "source .env"):
+            with self.subTest(cmd=cmd):
+                # GIVEN an env-file body with a host, a postgres URL and a bare token line
+                body = "API_BASE=https://api.example.test\nDATABASE_URL=postgres://u@db.example.test/x\nZZtokenline\n"
+                # WHEN given as script_text
+                got = self.fields_of(cmd, script_text=body)
+                # THEN only what the command text gives
+                self.assertEqual((got["steps"], got["effects"]), ([cmd], ["envfile:.env"]))
+
+    def test_script_text_is_capped_at_256_kb(self):
+        """A replay body is read up to MAX_SCRIPT (256 KB), like the disk read.
+
+        The two paths must agree, or a replay would count signals the live recorder never could.
+        """
+        # GIVEN a python body whose only read sits past 256 KB
+        py = "#" * record.MAX_SCRIPT + "\nos.environ['LATE_KEY']\n"
+        # WHEN given as script_text
+        got = self.fields_of("python3 q.py", script_text=py)
+        # THEN the read past the cap is not seen
+        self.assertEqual(got["effects"], [])
+
+    def test_disk_read_and_script_text_give_the_same_steps_and_effects(self):
+        """For `bash x.sh`, `./x.sh`, `python3 q.py` and a python run after a sourced .env, reading the file
+        from disk and passing its body as script_text give the same steps and effects.
+
+        Replays (script_text) are how the weekly report is checked against the live store; if the two paths
+        disagree, a replay measures a different recorder than the one that runs.
+        """
+        # GIVEN a shell script and a python script in the cwd, and a .env beside them
+        sh = "#!/bin/bash\nset -e\nURI=postgres://db.example.test/x\ngh pr view 12 --json state\npsql \"$URI\" $API_TOKEN\n"
+        py = "import os\nprint('cost $TOTAL')\nos.environ['API_TOKEN']\nopen('.env')\n"
+        (self.cwd / "x.sh").write_text(sh)
+        os.chmod(self.cwd / "x.sh", 0o755)
+        (self.cwd / "q.py").write_text(py)
+        (self.cwd / ".env").write_text("API_BASE=https://env.example.test\n")
+        for cmd, body in (("bash x.sh", sh), ("./x.sh", sh), ("python3 q.py", py),
+                          ("set -a; source .env; set +a; python3 q.py", py)):
+            with self.subTest(cmd=cmd):
+                # WHEN computed from disk and from the body
+                disk, replay = self.fields_of(cmd, cwd=str(self.cwd)), self.fields_of(cmd, script_text=body)
+                # THEN the same steps and effects
+                self.assertEqual((disk["steps"], disk["effects"]), (replay["steps"], replay["effects"]))
+
+    def test_a_shell_scripts_bare_lines_are_not_steps(self):
+        """A shell script's line that does not read as a command (one bare word, or a mixed-case word) is no
+        step; its commands with arguments are.
+
+        A script can hold a token or a key body on a line of its own; the shape keeps a command word as a
+        name, so storing such a line as a step would store the secret.
+        """
+        # GIVEN a script with a bare token line, a key-body line, a mixed-case word with an argument and two
+        # commands
+        (self.cwd / "x.sh").write_text(f"{WORD}\nMIIEvQIBADANBgkqhkiG9w0BAQEFAASC\nAbc123Xyz go\n"
+                                       "gh pr view 12\ncurl https://api.example.test/v1\n")
+        # WHEN run
+        got = self.fields_of("bash x.sh", cwd=str(self.cwd))
+        # THEN only the command steps
+        self.assertEqual(got["steps"], ["bash x.sh", "gh pr view <n>", "curl <url:api.example.test>"])
+
+    def test_planted_secrets_in_a_shell_script_reach_no_store_byte(self):
+        """Through `agent-cli hook posttooluse`, a .sh holding a secret assignment, a bare token line and a
+        key-body line stores none of the three.
+
+        The recorder reads the script on the user's machine; a line that reached the row as a step would
+        make the shape store a copy of the secret.
+        """
+        # GIVEN a project and a script with the three planted values
+        p = make_project(self.tmp / "proj")
+        key, body = "sk-live-PLANTEDsh0123", "MIIEvQIBADANBgkqhkiG9w0BAQEFAASCplant"
+        (self.cwd / "x.sh").write_text(f"API_KEY={key}\n{WORD}\n{body}\ncurl -H \"x: $API_KEY\" "
+                                       "https://api.example.test/v1\n")
+        # WHEN `bash x.sh` is recorded through the hook verb with that cwd
+        r = agent_cli(p, "hook", "posttooluse", stdin=json.dumps(event("bash x.sh", cwd=self.cwd)),
+                      env={"AGENT_CLI_SHAPES_DIR": str(self.store)})
+        # THEN the row has the script's command step, and no planted value is anywhere under the store
+        self.assertEqual(r.returncode, 0, r.stderr)
+        (row,) = store_rows(self.store)
+        self.assertIn("curl -H <str> <url:api.example.test>", row["steps"])
+        blob = b"".join(f.read_bytes() for f in self.store.rglob("*") if f.is_file())
+        self.assertEqual([x for x in (key, WORD, body, body[:16], "PLANTEDsh") if x.encode() in blob], [])
+
+    def test_a_sourced_env_file_adds_nothing_to_the_row(self):
+        """Through the hook verb, `. .env` and `source .env` with a planted .env add nothing from the file:
+        no host, no db signal, no step; only `envfile:.env`, which the command text gives.
+
+        The env file is the secrets file; reading it as a script would store its hosts and, as steps, its
+        bare lines (a token, a key body) unmasked.
+        """
+        # GIVEN a project and a .env in the cwd with a host, a postgres URL, a bare token and a key body
+        p = make_project(self.tmp / "proj")
+        (self.cwd / ".env").write_text("API_BASE=https://secret-host.example.test\n"
+                                       "DATABASE_URL=postgres://u:pw@db.example.test/x\n"
+                                       f"{WORD}\nMIIEvQIBADANBgkqhkiG9w0BAQEFAASC\n")
+        for cmd in (". .env", "source .env"):
+            with self.subTest(cmd=cmd):
+                store = self.tmp / f"store-{cmd[0]}"
+                # WHEN recorded through the hook verb with that cwd
+                r = agent_cli(p, "hook", "posttooluse", stdin=json.dumps(event(cmd, cwd=self.cwd)),
+                              env={"AGENT_CLI_SHAPES_DIR": str(store)})
+                # THEN the row holds the command's step and envfile only, and nothing of the file
+                self.assertEqual(r.returncode, 0, r.stderr)
+                (row,) = store_rows(store)
+                self.assertEqual((row["steps"], row["effects"]), ([cmd], ["envfile:.env"]))
+                blob = b"".join(f.read_bytes() for f in store.rglob("*") if f.is_file())
+                self.assertEqual([x for x in ("example.test", WORD, "MIIEvQ") if x.encode() in blob], [])
 
 class HookVerbs(TmpCase):
     """The two hook verbs never fail a tool call and never print."""
