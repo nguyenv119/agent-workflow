@@ -10,8 +10,11 @@ Those old rows keep the masking they were recorded with, so while old rows are i
 by default) one chore can sit under an old and a new step key; accepted, with no shape-version field.
 Shell basics (hook.basic) are dropped, except sleeps and on-main git reads (hook.report_only).
 The step report lists groups, not steps: every uncovered step (whatever its session count) joins the group
-of its word_pair key (`gh pr view`, `git worktree`, `python3 loop.py`), and a group is listed when its merged
-distinct sessions reach --min-sessions, so spellings each under the bar add up; a run adds once per group.
+of its word_pair key (`gh pr view`, `git worktree`, `python3 loop.py`; from the first `|` segment that is not
+a shell basic, so a feeder `cat <arg> |` never joins two tools; words by their last path part), and a group is
+listed when its merged distinct sessions reach --min-sessions, so spellings each under the bar add up; a run
+adds once per group. --json keeps each group's top --spellings spellings (default 10) plus spellings_total:
+a real 14-day store had a group of 735 spellings.
 The cache (cache_of) stays keyed by step. --unit command ranks whole command shapes, as before steps.
 
 Covered (--covered live): a step or shape is covered when (a) a hook rule matched at least half of its runs,
@@ -67,15 +70,17 @@ below). A step is one pipeline of a command (each part of a `&&` or
 `agent-cli hook posttooluse`. A run adds once to each distinct step it holds. Shell basics and generic
 reads (cat, export, set -a, mkdir, git add, `[ -n ... ]`, cut -c, inline python) are never listed,
 except waits (`sleep <n>`) and git log/show of origin/<arg>. Steps are listed in groups: every uncovered
-step joins the group of its tool and subcommand, from the first `|` segment's command word (`git worktree list
-| head <n>` and `git worktree remove <arg> --force` are `git worktree`; gh and npm/yarn/pnpm run keep one word
-more: `gh pr view`, `gh pr checks`; an interpreter keeps its script: `python3 loop.py`; a flag or masked value
-ends the key: `pkill -f <v>` is `pkill`). A group is listed when its merged distinct sessions reach
---min-sessions, even if no one spelling does; a run adds once to each group it holds. Groups rank by merged
-sessions, then runs, then key; --top counts groups. Each row's fields are the group's, plus `group` (the key),
-`shape` (its top spelling) and, with --json, `spellings`: every uncovered spelling in the group with its own
-fields. In text mode a group of 2+ spellings shows its key in the shape column, then its top 3 spellings
-indented 4 spaces. --unit command ranks whole command shapes instead, ungrouped, basics included; the `shape`
+step joins the group of its tool and subcommand, from the command word of its first `|` segment that is not a
+shell basic, else its first (`git worktree list | head <n>` and `git worktree remove <arg> --force` are `git
+worktree`; `cat <arg> | jq <str>` is `jq`; gh and npm/yarn/pnpm run keep one word more: `gh pr view`, `gh pr
+checks`; an interpreter keeps its script: `python3 loop.py`; a flag or masked value ends the key: `pkill -f <v>`
+is `pkill`; each word by its last path part: `<path>/gh pr view` is `gh pr view`, `. <path>/.env` is `. .env`).
+A group is listed when its merged distinct sessions reach --min-sessions, even if no one spelling does; a run
+adds once to each group it holds. Groups rank by merged sessions, then runs, then key; --top counts groups.
+Each row's fields are the group's, plus `group` (the key), `shape` (its top spelling) and, with --json,
+`spellings`: the group's top --spellings N (default 10) uncovered spellings with their own fields, ranked by
+sessions, runs, then text, and `spellings_total`: how many uncovered spellings the group has. In text mode a
+group of 2+ spellings shows its key in the shape column, then its top 3 spellings indented 4 spaces. --unit command ranks whole command shapes instead, ungrouped, basics included; the `shape`
 field holds the command shape there.
 
 Source: the recorder's store (${AGENT_CLI_SHAPES_DIR:-~/.claude/agent-cli/shapes}), or with --commands a
@@ -143,6 +148,8 @@ def register(sub):
     p.add_argument("--until", metavar="WHEN", help="local YYYY-MM-DD (whole day) or YYYY-MM-DDTHH:MM (exclusive)")
     p.add_argument("--min-sessions", type=int, default=3, help="distinct sessions a row needs (default 3)")
     p.add_argument("--top", type=int, default=25, help="print the first N rows (default 25)")
+    p.add_argument("--spellings", type=int, default=10, help="with --json, each group's top N spellings (default 10); "
+                   "spellings_total counts them all")
     p.add_argument("--repo", help="only runs from this repo (the row's repo name)")
     p.add_argument("--covered", choices=("live", "none"), default="live",
                    help="live: drop steps a rule or command covers (default); none: keep them")
@@ -160,8 +167,8 @@ def register(sub):
 
 
 def run(a):
-    if a.min_sessions < 1 or a.top < 1:
-        core.die(Exit.REFUSED, "--min-sessions and --top must be 1 or more", EXAMPLES[0])
+    if a.min_sessions < 1 or a.top < 1 or a.spellings < 1:
+        core.die(Exit.REFUSED, "--min-sessions, --top and --spellings must be 1 or more", EXAMPLES[0])
     if a.write_cache and (a.commands or a.covered == "none" or a.repo is not None or a.unit == "command"):
         # the warning hook reads the cache as "the store's uncovered repeated steps"; any other set misleads it
         core.die(Exit.REFUSED, "--write-cache takes the store with the live filter and the step unit: not with "
@@ -201,7 +208,8 @@ def run(a):
         spellings = collections.defaultdict(list)
         for s, k in pair.items():
             spellings[k].append(s)
-        out = [group_row(k, g, [report_row(s, groups[s]) for s in spellings[k]]) for k, g in listed[:a.top]]
+        cap = a.spellings if a.json else 3  # text shows the top 3 under the group line
+        out = [group_row(k, g, [report_row(s, groups[s]) for s in spellings[k]], cap) for k, g in listed[:a.top]]
     else:
         out = [(poll_row if a.polls else effect_row if a.by else report_row)(s, g) for s, g in listed[:a.top]]
     if not a.json:
@@ -213,14 +221,16 @@ def run(a):
         elif a.by:
             text = (f"{row['sessions']}  {row['count']}  {row['first']}  {row['last']}  {row['effect']}  "
                     f"{'  //  '.join(row['steps'])}")
-        elif len(row.get("spellings", ())) > 1:
-            text = "\n".join([step_line(row, row["group"])] + ["    " + step_line(x) for x in row["spellings"][:3]])
+        elif row.get("spellings_total", 0) > 1:
+            text = "\n".join([step_line(row, row["group"])] + ["    " + step_line(x) for x in row["spellings"]])
         else:
             text = step_line(row)
         core.out(a, row, text)
     unit = "checks with sequences" if a.polls else "effects" if a.by else "steps" if a.unit == "step" else "shapes"
     sys.stderr.write(f"repeats: {len(rows)} runs in window, {len(repeated)} {unit} in {a.min_sessions}+ sessions, "
-                     f"{covered_n} covered, {len(out)} {'groups ' if pair is not None else ''}printed"
+                     f"{covered_n} covered, "
+                     + (f"{len(listed)} groups in {a.min_sessions}+ sessions, " if pair is not None else "")
+                     + f"{len(out)} printed"
                      + (f", {skipped} unreadable store lines skipped" if skipped else "") + "\n")
     return Exit.OK
 
@@ -490,11 +500,13 @@ def report_row(s, g):
             "exit_fail_share": round(g["failed"] / g["known"], 4) if g["known"] else None}
 
 
-def group_row(k, g, spellings):
-    """A word-pair group's row: report_row over the merged group, shape its top spelling, group its key, and
-    spellings (report_row dicts) ranked by their own sessions, runs, then text."""
+def group_row(k, g, spellings, cap):
+    """A word-pair group's row: report_row over the merged group, shape its top spelling, group its key,
+    spellings: the top cap spellings (report_row dicts) ranked by their own sessions, runs, then text, and
+    spellings_total: how many there are."""
     spellings.sort(key=lambda x: (-x["sessions"], -x["count"], x["shape"]))
-    return dict(report_row(spellings[0]["shape"], g), group=k, spellings=spellings)
+    return dict(report_row(spellings[0]["shape"], g), group=k, spellings=spellings[:cap],
+                spellings_total=len(spellings))
 
 
 def step_line(row, label=None):
@@ -508,23 +520,27 @@ PAIR_THIRD = {t: g for t, g in shape.THIRD.items() if t != "git"}  # `gh pr view
 
 
 def word_pair(step):
-    """The steps report's group key of a listed step, from its first `|` segment's command word (hook._words):
-    the tool plus the next word, or the next two after a PAIR_THIRD group word (`gh pr view`), each taken only
-    while it is a NAME not starting with `-` (`pkill -f <v>` -> `pkill`, `git worktree list | head <n>` -> `git
-    worktree`). An interpreter keys on its first non-flag word when that is a script (`python3 -u loop.py` ->
-    `python3 loop.py`, `python3 -m <v>` -> `python3`). A step with no literal command word is its own key."""
-    words = hook._words(hook.SEGMENT_SEP.split(step)[0])
-    if not words or hook.PLACEHOLDER.fullmatch(words[0]):
+    """The steps report's group key of a listed step, from the command word (hook._words) of its first `|`
+    segment that is not a shell basic, or its first segment when all are (`cat <arg> | jq <str>` -> `jq`, `git
+    show origin/<arg> | head <n>` -> `git show`): the tool plus the next word, or the next two after a PAIR_THIRD
+    group word (`gh pr view`), each taken only while it is a NAME not starting with `-` (`pkill -f <v>` ->
+    `pkill`, `git worktree list | head <n>` -> `git worktree`). An interpreter keys on its first non-flag word
+    when that is a script (`python3 -u loop.py` -> `python3 loop.py`, `python3 -m <v>` -> `python3`). Every
+    word is keyed by its last path part (`<path>/gh pr view` -> `gh pr view`, `. <path>/.env` -> `. .env`).
+    A step with no literal command word is its own key."""
+    segs = hook.SEGMENT_SEP.split(step)
+    words = hook._words(next((s for s in segs if not hook.basic(s)), segs[0]))
+    tool = words[0].rsplit("/", 1)[-1] if words else ""
+    if not tool or hook.PLACEHOLDER.fullmatch(tool):
         return step
-    tool, rest = words[0], words[1:]
-    base = tool.rsplit("/", 1)[-1]
-    if shape.INTERPRETER.fullmatch(base):
+    rest = words[1:]
+    if shape.INTERPRETER.fullmatch(tool):
         script = next((w for w in rest if not w.startswith("-")), "")
-        is_script = NAME.fullmatch(script) and shape.SCRIPT.fullmatch(script.rsplit("/", 1)[-1])
-        return f"{tool} {script}" if is_script else tool
+        base = script.rsplit("/", 1)[-1]
+        return f"{tool} {base}" if NAME.fullmatch(script) and shape.SCRIPT.fullmatch(base) else tool
     key = [tool]
-    for w in rest[:2 if rest[:1] and rest[0] in PAIR_THIRD.get(base, ()) else 1]:
+    for w in rest[:2 if rest[:1] and rest[0] in PAIR_THIRD.get(tool, ()) else 1]:
         if w.startswith("-") or not NAME.fullmatch(w):
             break
-        key.append(w)
+        key.append(w.rsplit("/", 1)[-1])
     return " ".join(key)
