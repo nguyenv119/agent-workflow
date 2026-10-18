@@ -118,7 +118,19 @@ GOOD  ## Evidence
 
 **Idempotent:** Running `/pr` multiple times on the same branch always regenerates the summary from the latest diff. Safe to re-run after the agent pushes fixes.
 
-## 8. Verify the Evidence gate (mechanical)
+## 8. Start the harness canary (laptop only)
+
+A PR that changes harness paths cannot land until commit status `harness-canary` is posted on its head, and only a laptop can run the exam. Only this step is laptop-gated; the rest of /pr is unchanged.
+
+**On a laptop (`CLAUDE_CODE_REMOTE` unset):** run `agent-cli pr status <number> --json --repo $REPO`. When `canary.required` is true and `canary.state` is null, start `agent-cli harness canary --pr <number> --repo $REPO` with Bash `run_in_background` (about 30 min; it posts `pending` "running" at once, then the verdict) and say that it started. A non-null `canary.state` means it already ran, or is running (`pending`), for this head: start nothing.
+
+**In a cloud session (`CLAUDE_CODE_REMOTE` set):** do not call `agent-cli pr status` (its `gh pr` GraphQL call returns 403 there) and do not start the canary (it refuses there). When `git diff --name-only origin/main...$BRANCH` touches a harness path (`harness-paths:` under `## harness` in `.claude/project-rules.md`, else `.claude/` skills, commands, agents, hooks, bin, cli, settings.json, CLAUDE.md, project-rules.md, harness-addon, plus AGENTS.md and CLAUDE.md), print:
+
+```
+harness PR <number> waits for a laptop canary run (the project's daily job or a laptop /pr)
+```
+
+## 9. Verify the Evidence gate (mechanical)
 
 After creating or updating, confirm the PR body carries a real-run Evidence section:
 

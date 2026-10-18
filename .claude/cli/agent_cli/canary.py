@@ -1,5 +1,8 @@
 """`agent-cli harness canary`: run the canary exam (harness-loop/loop.py exam --subscription-only) for a PR or two
 installed trees, and pass its exit code through. This module only decides where and what; loop.py owns the exam.
+A --pr run with a status first posts pending "running" on the PR head (after the gh, fork and pin checks, before
+any fetch or exam), so a missing status means nobody is running it. loop.py posts the verdict on its exits 0, 1
+and 5; any other exit (4: paused) or a Ctrl-C replaces that pending with error "could not run: <why>".
 
 agent-workflow source tree (no .claude/HARNESS_VERSION): the local loop.py, with --pr N (`exam --pr N`) or with
 --candidate/--baseline (installed mode). Installing repo (.claude/HARNESS_VERSION present):
@@ -35,9 +38,10 @@ PUBLIC_SOURCE = "https://github.com/nguyenv119/agent-workflow"
 MANIFEST = "tasks/canary-2026-10.json"  # relative to harness-loop/
 EXAMPLE = "agent-cli harness canary --pr 91"
 EXITS = ("exit: 0 pass or not needed; 1 fail (after one rerun) or stale; 2 usage or refused config; 3 gh could not "
-         "read the PR; 4 paused or no plan token; 5 could not run (laptop-only, fork PR, git or clone failed, the PR "
-         "moved, Docker down, task fetch failed, both runs errored)")
+         "read the PR; 4 paused or no plan token (status error, paused); 5 could not run (laptop-only, fork PR, git "
+         "or clone failed, the PR moved, Docker down, task fetch failed, both runs errored)")
 STALE = "stale, rebase the PR onto main"
+PAUSED = "paused (usage limit or no plan token); run the canary again"
 PREREQS = ("needs Docker running and the plan token: CLAUDE_CODE_OAUTH_TOKEN (from `claude setup-token`), or a file "
            "holding it named by HARNESS_EXAM_ENV_FILE or `exam-env-file:` under `## harness` in project-rules.md")
 # harness-loop/loop.py's WORK_LOADED and FRONTMATTER_FILE (a test pins they match): what a /work run loads.
@@ -57,7 +61,7 @@ def register(hs):
                         [EXAMPLE, "agent-cli harness canary --pr 12 --repo owner/app",
                          "agent-cli harness canary --candidate ../app-pr --baseline ../app-main --no-status"])
     p.description = (f"Runs harness-loop's exam for a PR (or two installed trees) and posts commit status {CONTEXT} "
-                     f"on the PR head.\n{PREREQS}.\n{EXITS}.")
+                     f"on the PR head: pending \"running\" at the start, then the verdict.\n{PREREQS}.\n{EXITS}.")
     p.add_argument("--pr", type=int, help="PR number in this repo")
     p.add_argument("--repo", metavar="OWNER/NAME", help="the PR's repo (default: gh's for the cwd)")
     p.add_argument("--candidate", metavar="DIR", help="an installed tree (.claude + AGENTS.md) to test (no --pr)")
@@ -166,6 +170,19 @@ def run(cmd, env=None, cwd=None):
     return subprocess.run([str(c) for c in cmd], env=env, cwd=cwd).returncode
 
 
+def exam(cmd, env, cwd, target):
+    """run() loop.py's exam. It posts the verdict on exits 0, 1 and 5; any other exit, or a Ctrl-C, would leave
+    this run's pending, so post error on target instead. Returns the exit code unchanged."""
+    try:
+        rc = run(cmd, env=env, cwd=cwd)
+    except KeyboardInterrupt:
+        post(target, "error", "could not run: interrupted")
+        raise
+    if rc not in (Exit.OK, Exit.FAIL, Exit.PARTIAL):
+        post(target, "error", f"could not run: {PAUSED if rc == Exit.TIMEOUT else f'the exam exited {rc}'}")
+    return rc
+
+
 def exam_env(root, private):
     """loop.py's env: HARNESS_EXAM_ENV_FILE from project-rules, and (private: an installing repo) HARNESS_LOOP_HOME
     ~/.harness-loop-private/<repo> unless one is inherited."""
@@ -225,14 +242,15 @@ def canary_cmd(a):
     target = (pr["repo"], pr["headRefOid"]) if pr and not a.no_status else None
     trees = [Path(d).resolve() for d in (a.candidate, a.baseline)] if pr is None else None
     pin = version(root)
+    post(target, "pending", "running")
     flags = ["--tasks", MANIFEST, "--subscription-only", "--rerun-on-fail", "1"]
     if pin is None:  # the agent-workflow source tree: its own loop.py
         loop_dir = root / "harness-loop"
         mode = (["--pr", str(a.pr), *(["--post-status"] if target else []),
                  *(["--status-repo", target[0]] if target else [])] if pr
                 else ["--candidate-installed", trees[0], "--baseline-installed", trees[1]])
-        return run([sys.executable, loop_dir / "loop.py", "exam", *mode, *flags], env=exam_env(root, False),
-                   cwd=loop_dir)
+        return exam([sys.executable, loop_dir / "loop.py", "exam", *mode, *flags], exam_env(root, False), loop_dir,
+                    target)
     with tempfile.TemporaryDirectory(prefix="harness-canary-") as tmp:
         ref = os.environ.get("HARNESS_CANARY_REF") or pin.get("commit")
         if pr:
@@ -258,6 +276,5 @@ def canary_cmd(a):
             could_not_run(target, "could not check out agent-workflow at the pinned commit")
         loop_dir = aw / "harness-loop"
         status = (["--post-status", "--status-repo", target[0], "--status-sha", target[1]] if target else [])
-        return run([sys.executable, loop_dir / "loop.py", "exam", "--candidate-installed", trees[0],
-                    "--baseline-installed", trees[1], *flags, *status],
-                   env=exam_env(root, True), cwd=loop_dir)
+        return exam([sys.executable, loop_dir / "loop.py", "exam", "--candidate-installed", trees[0],
+                     "--baseline-installed", trees[1], *flags, *status], exam_env(root, True), loop_dir, target)
