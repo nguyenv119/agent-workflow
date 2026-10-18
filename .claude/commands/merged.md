@@ -11,7 +11,7 @@ Close beads and clean up after merging **$ARGUMENTS** (or the current branch if 
 **Run this whole flow as a subagent** (Agent tool, `model: "haiku"`) rather
 than executing the steps below directly — it's mechanical (state check +
 cleanup commands, one hard-stop conditional), the git/gh output is verbose
-and disposable, and only the final report in step 7 needs to reach the main
+and disposable, and only the final report in step 8 needs to reach the main
 session. Same reasoning as the `test-runner` subagent in `coordinator`. Wait
 for the subagent's report, then relay it as-is.
 
@@ -62,7 +62,32 @@ bd close <bead-id> --reason "PR merged" --json
 
 If no bead IDs are found, warn the user but continue with cleanup.
 
-## 5. Remove the worktree and local branch
+## 5. Fast-forward the main checkout
+
+A laptop whose harness is the main checkout's working tree would otherwise keep running the pre-merge harness.
+Only a clean checkout on the default branch moves; never reset, stash or discard anything. It runs before step 6
+removes the branch's worktree, which may be this shell's working directory.
+
+```bash
+MAIN=$(git worktree list --porcelain 2>/dev/null | sed -n '1s/^worktree //p')
+DEFAULT=$(git symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null | sed 's|^origin/||'); DEFAULT=${DEFAULT:-main}
+CUR=${MAIN:+$(git -C "$MAIN" branch --show-current)}
+if [ -z "$MAIN" ]; then
+  echo "main checkout: skipped fast-forward: could not find the main checkout"
+elif [ "$CUR" != "$DEFAULT" ]; then
+  echo "main checkout: skipped fast-forward: $MAIN is on ${CUR:-a detached HEAD}, not $DEFAULT"
+elif [ -n "$(git -C "$MAIN" status --porcelain --untracked-files=no)" ]; then
+  echo "main checkout: skipped fast-forward: $MAIN has uncommitted changes"
+elif ERR=$(git -C "$MAIN" pull --ff-only 2>&1); then
+  echo "main checkout: $MAIN fast-forwarded to $(git -C "$MAIN" rev-parse --short HEAD)"
+else
+  echo "main checkout: skipped fast-forward: git pull --ff-only failed ($(echo "$ERR" | tail -1))"
+fi
+```
+
+A failed pull is reported and the flow continues.
+
+## 6. Remove the worktree and local branch
 
 ```bash
 agent-cli wt rm --branch "$BRANCH" --delete-branch --force --yes
@@ -70,7 +95,7 @@ agent-cli wt rm --branch "$BRANCH" --delete-branch --force --yes
 
 No worktree for the branch prints `already done` and still deletes the local branch.
 
-## 6. Delete the remote branch
+## 7. Delete the remote branch
 
 Delete the remote branch (if it exists):
 
@@ -78,12 +103,13 @@ Delete the remote branch (if it exists):
 git push origin --delete $BRANCH 2>/dev/null || true
 ```
 
-## 7. Report
+## 8. Report
 
 ```
 Closed bead(s): <bead-ids or "none found">
 Removed worktree: <path or "none found">
 Deleted branch: $BRANCH (local + remote)
+main checkout: <"<path> fast-forwarded to <short sha>" or "skipped fast-forward: <reason>">
 
 Blocked beads that may now be unblocked:
   bd ready --json
@@ -94,6 +120,7 @@ Blocked beads that may now be unblocked:
 Closed bead(s): app-42.4
 Removed worktree: .worktrees/app-42-4
 Deleted branch: feature/app-42-4
+main checkout: /home/dev/app fast-forwarded to 3f9c2ab
 ```
 
 Run `bd ready` and show any newly unblocked beads. If there are any, suggest:

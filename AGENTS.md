@@ -19,11 +19,11 @@ Before writing a script for a chore (worktree, PR checks, waiting, locks, eval v
 
 `/plan` explores the codebase, discusses tradeoffs with you, files beads issues, and runs an architectural plan review. Use it before `/work` for new epics.
 
-`/work` triages the work, creates per-bead worktrees and branches, runs automated reviews with injected standards checklists, pushes branches, and auto-creates a PR for each bead. Dependent beads are blocked until their blockers are merged and closed. A PreToolUse hook enforces that reviewers receive their standards content — the coordinator cannot skip this step.
+`/work` triages the work, creates per-bead worktrees and branches, runs automated reviews with injected standards checklists, pushes branches, and auto-creates a PR for each bead. Dependent beads are blocked until their blockers are merged and closed. A PreToolUse hook enforces that reviewers receive their standards content — the coordinator cannot skip this step. On a harness PR, the coordinator starts the laptop canary (`agent-cli harness canary --pr <n>`) by the rule in `/pr` step 8 (status missing, or a pending one over 2 hours old); a cloud session leaves the PR waiting for a laptop run.
 
 `/pr` regenerates or updates the PR summary for a branch. Since the coordinator auto-creates PRs, use this when you want to refresh the summary after additional commits. It is idempotent — safe to run multiple times.
 
-`/merged` runs after you merge a PR on GitHub. It verifies the merge, closes the associated bead(s), removes the worktree, and deletes the branch. This is the gate that unblocks dependent beads.
+`/merged` runs after you merge a PR on GitHub. It verifies the merge, closes the associated bead(s), removes the worktree, and deletes the branch. This is the gate that unblocks dependent beads. It then fast-forwards the main checkout when that checkout is clean on the default branch, and otherwise prints why it skipped.
 
 `/handoff` writes an end-of-session briefing to `~/.claude/handoffs/YYYY-MM-DD-<slug>.md` and posts only the path plus a two-line gist in chat. It is written so the next agent starts where this session ended: facts verified and how, approaches that failed and why, exact paths/IDs/commands, and every open item with its single next action. Run it before `/clear` — the file survives compaction, a chat summary does not.
 

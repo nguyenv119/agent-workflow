@@ -118,7 +118,28 @@ GOOD  ## Evidence
 
 **Idempotent:** Running `/pr` multiple times on the same branch always regenerates the summary from the latest diff. Safe to re-run after the agent pushes fixes.
 
-## 8. Verify the Evidence gate (mechanical)
+## 8. Start the harness canary (laptop only)
+
+A PR that changes harness paths cannot land until commit status `harness-canary` is posted on its head, and only a laptop can run the exam. Only this step is laptop-gated; the rest of /pr is unchanged.
+
+**On a laptop (`CLAUDE_CODE_REMOTE` unset):** run `agent-cli pr status <number> --json --repo $REPO`. When `canary.required` is true and either
+
+- `canary.state` is null (nobody ran it on this head), or
+- `canary.state` is `pending` and the time in its `canary.description` ("running since <time>") is more than 2 hours old (that run was killed: the exam and its one rerun finish well inside 2 hours), or
+- `canary.state` is `error` (its description starts "could not run": the last run was paused by a usage limit, interrupted, or found Docker down; a new run is its retry),
+
+start `agent-cli harness canary --pr <number> --repo $REPO` with Bash `run_in_background` (about 30 min; it posts `pending` "running since <UTC time>" at once, then the verdict) and say that it started. Otherwise start nothing: it passed, failed (a real verdict; never re-run it by hand), or is running on this head.
+
+**In a cloud session (`CLAUDE_CODE_REMOTE` set):** do not call `agent-cli pr status` (its `gh pr` GraphQL call returns 403 there) and do not start the canary (it refuses there). Print the line below when both hold:
+
+- `git diff --name-only origin/main...$BRANCH` touches a harness path: the `harness-paths:` globs under `## harness` in `.claude/project-rules.md`, else the harness-edit hook's built-in list (`DEFAULT_PATHS` in agent-cli's `harness_edit.py`).
+- The canary applies to this repo: `canary-check:` under `## coordinator` in `.claude/project-rules.md` (or its `canary-check[<owner>/<repo>]:` form for this repo) is not `none` or `off`; with no canary-check line, the repo has `.claude/HARNESS_VERSION` or `harness-loop/loop.py`.
+
+```
+harness PR <number> waits for a laptop canary run (the project's daily job or a laptop /pr)
+```
+
+## 9. Verify the Evidence gate (mechanical)
 
 After creating or updating, confirm the PR body carries a real-run Evidence section:
 
