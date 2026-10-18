@@ -162,7 +162,7 @@ class Covered(StoreCase):
         # THEN it is dropped live and listed with none
         self.assertEqual(live, [])
         self.assertEqual(len(none), 1)
-        self.assertIn("gh pr <arg> <n>", none[0])
+        self.assertIn("gh pr checks <n>", none[0])
 
     def test_a_shape_is_covered_only_when_half_its_runs_matched_a_rule(self):
         """A rule match on 1 of 4 runs leaves the shape listed; on 2 of 4 runs it is covered.
@@ -226,10 +226,10 @@ class Covered(StoreCase):
                                      "cmd": "wrapx agent-cli wt new demo-1 fix"} for i in range(3)])
         # WHEN the report runs over each, live and with none
         # THEN the store shapes were stripped at record time (the seam is installed), and both are covered live
-        self.assertEqual(set(stored), {"agent-cli wt <arg>"})
+        self.assertEqual(set(stored), {"agent-cli wt list"})
         self.assertEqual(self.shapes("--since", "3650d"), [])
         self.assertEqual(self.shapes("--commands", str(cmds)), [])
-        self.assertEqual(self.shapes("--commands", str(cmds), "--covered", "none"), ["agent-cli wt <arg>"])
+        self.assertEqual(self.shapes("--commands", str(cmds), "--covered", "none"), ["agent-cli wt new <arg>"])
 
     def test_wrapper_left_in_a_stored_shape_is_stripped_at_report_time(self):
         """A stored shape that still starts with a wrapper word (`wrapx agent-cli <arg>`) is covered when
