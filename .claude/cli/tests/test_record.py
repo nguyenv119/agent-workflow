@@ -44,7 +44,7 @@ class Recorder(TmpCase):
         row = record.record(json.dumps(event("git status", cwd=repo / "sub", agent_id="ag-1")), now=NOW)
         # THEN the row is returned and is the only line in the day file
         want = {"ts": "2026-10-14T05:06:07Z", "session": "sess-a", "agent": "ag-1", "repo": "myrepo",
-                "shape": "git status", "exit": 0, "rules": [], "bypassed": []}
+                "shape": "git status", "steps": ["git status"], "exit": 0, "rules": [], "bypassed": []}
         self.assertEqual(row, want)
         self.assertEqual(self.rows(), [want])
 
@@ -215,6 +215,61 @@ class Recorder(TmpCase):
         record.record(event("ls"), now=NOW)
         # THEN the file is gone
         self.assertFalse(f.exists())
+
+    def test_steps_hold_each_step_and_each_substitution_body(self):
+        """steps lists the command's step shapes in order, then the steps of each $( ) body, beside the
+        unchanged whole shape.
+
+        The report counts a chore per step; without steps in the row it would re-split every stored shape
+        and could never see inside a $( ) body, whose text is gone once the shape is stored.
+        """
+        # GIVEN a chain that reads a key in a substitution, loads .env and runs a tool on a path
+        cmd = "TOKEN=$(grep KEY .env | cut -d= -f2) && . .env && deploy-tool push ./dist"
+        # WHEN recorded
+        row = record.record(event(cmd, cwd=None), now=NOW)
+        # THEN the assignment-only step is dropped, the path folded, and the body's pipeline added last
+        self.assertEqual(row["steps"], [". .env", "deploy-tool <arg>", "grep <arg> .env | cut -d=<v> -f<v>"])
+        self.assertEqual(row["shape"], "TOKEN=<v> && . .env && deploy-tool <arg> <path>")
+
+    def test_steps_stop_at_32(self):
+        """A command with hundreds of distinct steps stores the first 32, so a row stays a short line.
+
+        Rows are appended with one write by many sessions at once; an unbounded steps list from a long
+        generated script would make lines that can interleave and bloat every report read.
+        """
+        # GIVEN a command with 600 distinct steps
+        cmd = " && ".join(f"t{i} -x" for i in range(600))
+        # WHEN recorded
+        row = record.record(event(cmd, cwd=None), now=NOW)
+        # THEN 32 steps, the first 32 in order
+        self.assertEqual(row["steps"], [f"t{i} -x" for i in range(32)])
+
+    def test_planted_db_password_in_steps_reaches_no_store_byte(self):
+        """A database password typed as PGPASSWORD=..., inside a $( ) body or in a connection URL, never
+        reaches the store through the hook verb, steps included.
+
+        steps shape $( ) bodies on their own, a new path for raw text to reach the store; a password that
+        survived there would sit in a plain file under the home dir for 45 days.
+        """
+        # GIVEN a project, and 4 commands carrying the same planted password
+        p = make_project(self.tmp / "proj", seams=SEAMS)
+        plant = "s3cr3t-plant-9"
+        commands = [f"PGPASSWORD={plant} psql -h db.example.test -c 'select 1'",
+                    f"export PGPASSWORD={plant} && . .env && psql -c 'select 1'",
+                    f"X=$(echo PGPASSWORD={plant}) && deploy-tool push",
+                    f'psql "postgresql://u:{plant}@db.example.test/x" && deploy-tool push']
+        # WHEN each is recorded through the hook verb
+        for c in commands:
+            r = agent_cli(p, "hook", "posttooluse", stdin=json.dumps(event(c, cwd=None)),
+                          env={"AGENT_CLI_SHAPES_DIR": str(self.store)})
+            self.assertEqual(r.returncode, 0, r.stderr)
+        # THEN 4 rows with steps exist, and no 6+ char piece of the password is in any byte under the store
+        rows = store_rows(self.store)
+        self.assertEqual(len(rows), 4)
+        self.assertIn("echo PGPASSWORD=<v>", rows[2]["steps"])
+        blob = b"".join(f.read_bytes() for f in self.store.rglob("*") if f.is_file())
+        pieces = {plant[i:j] for i in range(len(plant)) for j in range(i + 6, len(plant) + 1)}
+        self.assertEqual([x for x in sorted(pieces) if x.encode() in blob], [])
 
     def test_matching_hook_rules_are_listed_by_id(self):
         """rules names the active hook rules that match the raw command, computed before it is discarded.

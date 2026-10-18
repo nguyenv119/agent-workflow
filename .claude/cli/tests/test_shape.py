@@ -128,6 +128,10 @@ CASES = [
     ("git log ..origin/main", "git log ..origin/<arg>"),
     # an assignment of a path is an assignment, not a command run by path
     ("F=/tmp/x", "F=<v>"),
+    # `[` and `[[` keep their name, so a test reads as a test and not as a masked command
+    ('[ -n "$x" ]', "[ -n <str> <arg>"),
+    ('[ "$a" = "$b" ]', "[ <str> <arg> <str> <arg>"),
+    ("[[ -f a.txt ]]", "[[ -f <v> <arg>"),
 ]
 
 UNPARSEABLE = ["cat <<$D\nsecret line\n$D", 'echo "abc', "echo 'abc", "echo $(date", "echo `date", "", "   ", "# only a comment"]

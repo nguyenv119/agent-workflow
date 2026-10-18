@@ -7,6 +7,7 @@ warnings; `# agent-cli: allow <id>` skips one rule (`repeated-shape` for the rep
 every rule, Edit/Write/MultiEdit/NotebookEdit only harness-edit-on-main (harness_edit.py); commands over
 20 KB are not matched.
 """
+import functools
 import json
 import os
 import re
@@ -252,37 +253,101 @@ def _deny(reason):
 
 REPEAT_ID = "repeated-shape"
 # Generic reads: shapes made only of these top the repeats list (an agent reading files), but there is no
-# chore in them for a command to wrap, so they never warn. The report keeps them: it is a measurement.
-# Transforms (sort, uniq, cut, tr, awk, jq) are left out on purpose: `git log ... | sort | uniq -c` is a
-# recipe a command can wrap, not a look at a file.
+# chore in them for a command to wrap, so they never warn (basic() counts them as basic) and the step
+# report drops them; --unit command keeps them. Transforms (sort, uniq, cut -f, tr, awk, jq) are left out on
+# purpose: `git log ... | sort | uniq -c` is a recipe a command can wrap, not a look at a file.
 QUIET_WORDS = frozenset("""cat head tail less more sed grep egrep rg ls tree find wc diff stat file du df echo
 printf pwd cd read which type true sleep date basename dirname realpath readlink""".split())
-QUIET_GIT = frozenset("status diff log show".split())
 INLINE_CODE = frozenset(("-", "-c", "-e", "<heredoc>"))  # `python3 - <heredoc>`: the code is the value
 SEGMENT_SEP = re.compile(r" (?:&&|\|\||\||&) |; ")
 SESSION_CHARS = re.compile(r"[^\w-]")
 
 
-def quiet(s):
-    """True when every segment of shape s is a generic read: a QUIET_WORDS command, a git read, or an
-    interpreter running inline code (`python3 - <heredoc>`, `node -e <str>`); a named script is loud."""
+# Shell basics: no chore in them for a command to wrap. The step report drops basic steps (report_only
+# ones aside), and the warning and its cache never use any. seq: `for i in $(seq 1 40)` loop counters.
+BASIC_WORDS = frozenset("""export set unset mkdir cp mv rm rmdir ln chmod chown touch cd pwd true false exit read
+printf echo test [ [[ sleep seq""".split())
+BASIC_GIT = frozenset("add commit checkout switch restore branch fetch pull push stash rev-parse status diff log "
+                      "show".split())
+ASSIGN_WORD = re.compile(r"[A-Za-z_]\w*=")
+INTERP_FLAG = re.compile(r"-[A-Za-z]{1,3}")  # -I, -u, -B before the inline code
+PLACEHOLDER = re.compile(r"<[^<>]*>")  # a masked word: <arg>, <str>, <url:host>
+# A test an old row stored with its `[` masked: `<arg> -n <str> <arg>` (shape keeps `[` since).
+TEST_OPS = frozenset("-n -z -e -f -d -s -x -r -w -L -h -eq -ne -lt -le -gt -ge = == != ! -a -o ] ]]".split())
+CUT_CHARS = re.compile(r"-[cb](?:<v>)?|--(?:characters|bytes)(?:=<v>)?")  # cut -c<v>: truncation only
+
+
+def _words(seg):
+    """A step segment's words from its command word: past a leading shell keyword and VAR=<v> words, and
+    for git past its global options (`git -C <arg> add <arg>` -> [git, add, <arg>])."""
+    from .shape import GIT_GLOBAL, LEAD_KEYWORDS
+    words = seg.split()
+    if words and words[0] in LEAD_KEYWORDS:
+        words = words[1:]
+    while words and ASSIGN_WORD.match(words[0]):
+        words = words[1:]
+    if words[:1] == ["git"]:
+        i = 1
+        while i < len(words) and (words[i] in GIT_GLOBAL or words[i].split("=", 1)[0] in ("--git-dir", "--work-tree")):
+            i += 1 + GIT_GLOBAL.get(words[i], False)
+        words = ["git"] + words[i:]
+    return words
+
+
+@functools.lru_cache(maxsize=None)
+def basic(step):
+    """True when every `|` segment of a step is a shell basic: a BASIC_WORDS or QUIET_WORDS command, by name
+    or by path (`<path>/grep`), `cut` with only -c/-b (truncation), a command made only of placeholders
+    (`<arg>`: no literal word to wrap) or a placeholder then only test operators (an old row's masked
+    `[ -n <str> ]`), git housekeeping or a git read (BASIC_GIT), or an interpreter
+    running inline code after short flags (`python3 -I - <heredoc>`, `node -e <str>`).
+    `echo <str> | psql <arg>`, `cut -d<v> -f<v>` and `<str> --headless=<v>` are not basic."""
     from .shape import INTERPRETER
-    for seg in SEGMENT_SEP.split(s):
-        words = seg.split()
-        if not words:
+    for seg in SEGMENT_SEP.split(step):
+        words = _words(seg)
+        if all(PLACEHOLDER.fullmatch(w) for w in words):  # assignments only, or no literal word
             continue
-        name, second = words[0].rsplit("/", 1)[-1], words[1] if len(words) > 1 else ""
-        if not (name in QUIET_WORDS and "/" not in words[0] or name == "git" and second in QUIET_GIT
-                or INTERPRETER.fullmatch(name) and second in INLINE_CODE):
+        if words[0] in ("<arg>", "<str>", "<v>") and all(PLACEHOLDER.fullmatch(w) or w in TEST_OPS for w in words):
+            continue
+        name = words[0].rsplit("/", 1)[-1]
+        if name == "git":
+            ok = len(words) > 1 and words[1] in BASIC_GIT
+        elif INTERPRETER.fullmatch(name):
+            i = 1
+            while i < len(words) and INTERP_FLAG.fullmatch(words[i]) and words[i] not in INLINE_CODE:
+                i += 1
+            ok = i < len(words) and words[i] in INLINE_CODE
+        elif name == "cut":
+            flags = [w for w in words[1:] if not PLACEHOLDER.fullmatch(w)]
+            ok = bool(flags) and all(CUT_CHARS.fullmatch(w) for w in flags)
+        else:
+            ok = name in BASIC_WORDS or name in QUIET_WORDS
+        if not ok:
             return False
     return True
 
 
+@functools.lru_cache(maxsize=None)
+def report_only(step):
+    """True for a basic step the step report still lists, as a chore a command can do: a lone sleep
+    (`sleep <n>`), or git log/show naming origin/<arg> (an on-main check, maybe piped into reads)."""
+    if not basic(step):
+        return False
+    segs = SEGMENT_SEP.split(step)
+    words = _words(segs[0])
+    if words[:1] == ["sleep"]:
+        return len(segs) == 1
+    return words[:1] == ["git"] and words[1:2] in (["log"], ["show"]) \
+        and any(w.startswith("origin/") or "..origin/" in w for w in words[2:])
+
+
 def _repeat_rule(command, data):
-    """The repeated-shape warning as a warn rule, the first time this session (and agent) types a shape on
-    <store>/repeats-cache.json; None otherwise. A quiet shape, no session id, a bypass comment, a missing or
+    """The repeated-shape warning as a warn rule, the first time this session (and agent) types a step on
+    <store>/repeats-cache.json; None otherwise. The cache is keyed by step, so the command is split as the
+    recorder splits it (shape.steps, $( ) bodies included): one step is looked up; two or more give None
+    for now (picking which step of a chain to name is a later change). A basic step, no session id, a bypass comment, a missing or
     bad cache, or a store the once-only mark cannot be written to all give None: never warn twice. The cache
-    is shared by every project on the store, so a shape this project covers by a command (its `commands:`
+    is shared by every project on the store, so a step this project covers by a command (its `commands:`
     line, or agent-cli) is dropped here too."""
     try:
         from . import record, repeats, shape
@@ -290,8 +355,11 @@ def _repeat_rule(command, data):
         if (not session or os.environ.get("AGENT_CLI_HOOKS") == "off" or len(command) > MAX_CMD
                 or REPEAT_ID in BYPASS.findall(command)):
             return None
-        s = (shape.shape(command) or "")[:record.MAX_SHAPE]  # the recorder cuts stored shapes the same way
-        if not s or quiet(s) or repeats.command_covered()(s):
+        steps = shape.steps(command)  # the recorder's split, each step already cut to MAX_SHAPE
+        if len(steps) != 1:  # ponytail: one step only until the multi-step lookup lands
+            return None
+        s = steps[0]
+        if basic(s) or repeats.command_covered()(s):
             return None
         store = record.store_dir()
         hit = json.loads((store / repeats.CACHE).read_text()).get(s)
