@@ -85,11 +85,11 @@ def builtin(cmd):
                     "(one TSV row, escaped, safe under concurrency)."},
         {"id": "hand-pr-status", "mode": "warn", "requires": "agent-cli", "on": "code", "needs": r"gh\s+pr\b",
          "match": cmd + r"gh\s+pr\s+(?:view\b[^;&|\n]*--json|checks\b)" + not_in_loop(cmd),
-         "unless": r"(?:" + pr_poll_re(cmd) + r"|--watch\b)",  # a poll or --watch is hand-pr-poll's deny
+         "unless": pr_poll_re(cmd),  # a poll loop or gh pr checks --watch is hand-pr-poll's deny
          "message": "One-shot PR state and checks: agent-cli pr status <n> (--json for fields)."},
         {"id": "hand-worktree-list-rm", "mode": "warn", "requires": "agent-cli", "on": "code", "needs": "worktree",
          "match": cmd + r"git\b(?:\s+-C\s+\S+)?\s+worktree\s+(?:list|remove)\b",
-         "message": "agent-cli wt list (branch, bead, dirty, ahead/behind) / agent-cli wt rm <path> "
+         "message": "agent-cli wt list (branch, bead, dirty, ahead/behind) / agent-cli wt rm --path <path> "
                     "(dry run unless --yes)."},
         {"id": "hand-bare-sleep", "mode": "warn", "requires": "agent-cli", "on": "code", "needs": r"\bsleep\s+\d",
          "match": cmd + r"sleep\s+(?:(?:[2-9]\d|[1-9]\d{2,})s?|[1-9]\d*[mh])\b" + not_in_loop(cmd),  # >= 20s
