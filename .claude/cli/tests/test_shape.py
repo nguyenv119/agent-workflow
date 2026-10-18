@@ -71,6 +71,7 @@ CASES = [
     ("echo correcthorse | tool login --password-stdin", "echo <arg> | tool <arg> --password-stdin"),
     ("ssh myprivatehost", "ssh <arg>"),
     ("command -v hunterpw", "-v <v>"),
+    ("env -u AWS_PROFILE -i gh pr view 12", "gh pr view <n>"),  # env's own options go with it
     ("mysql -uroot -pS3cr3tPw db", "mysql -u<v> -p<v> <v>"),
     ("echo dGhpc2lzYXNlY3JldA== | base64 -d", "echo <arg> | base64 -d"),
     # commands run by path keep their name; known multi-command tools keep their subcommand

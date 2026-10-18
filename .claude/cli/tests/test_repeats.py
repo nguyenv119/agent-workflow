@@ -10,7 +10,7 @@ from helpers import CLAUDE, TmpCase, agent_cli, make_project, set_env, store_row
 from helpers import post_event
 
 sys.path.insert(0, str(CLAUDE / "cli"))
-from agent_cli import record  # noqa: E402
+from agent_cli import record, repeats  # noqa: E402
 
 UTC = dt.timezone.utc
 DAY = dt.datetime(2026, 4, 2, 12, 0, 0, tzinfo=UTC)
@@ -569,7 +569,7 @@ class Usage(StoreCase):
                 self.assertIn("example:", r.stderr)
 
     def test_help_has_examples_and_the_exit_codes(self):
-        """`repeats --help` shows an Examples block and the exit codes it uses.
+        """`repeats --help` shows an Examples block, the exit codes it uses, and unit-neutral flag help.
 
         house-rules: every command documents its exit codes against the CLI's one table, and help that
         works has runnable examples.
@@ -581,6 +581,8 @@ class Usage(StoreCase):
         self.assertIn("Examples:\n  agent-cli repeats", r.stdout)
         for line in ("0 ok", "2 refused", "3 blocked"):
             self.assertIn(line, r.stdout)
+        for text in ("sessions a row needs", "first N rows", "object per row"):  # rows: steps, shapes or effects
+            self.assertIn(text, r.stdout)
 
     def test_text_mode_prints_a_table_with_the_same_fields(self):
         """Without --json the report is a table whose header names every JSON field.
@@ -854,6 +856,51 @@ class Effects(StoreCase):
         # THEN only the 1-in-3 effect stays
         self.assertEqual([x["effect"] for x in self.effects("--commands", str(cmds))], ["env:API_URL"])
 
+    def test_an_effect_exactly_half_covered_is_covered(self):
+        """An effect whose runs are exactly half covered (2 of 4) is dropped under --covered live; 1 of 4 stays.
+
+        The step report drops a step at half its runs ruled; the effect report must use the same boundary or
+        the two reports disagree on a tie.
+        """
+        # GIVEN HALF_KEY read by a covered step in 2 of its 4 runs, LOW_KEY in 1 of its 4
+        (self.p / ".claude/agent-cli-hooks/pretooluse-rules.json").write_text(DEMO_RULE)
+        cmds = self.write_commands(
+            [{"ts": "2026-04-02T12:00:00Z", "session": f"s{i}", "cmd": c}
+             for i, c in enumerate(["deploy-tool push $HALF_KEY  # DEMO_TOKEN"] * 2 + ["other-tool $HALF_KEY"] * 2
+                                   + ["deploy-tool push $LOW_KEY  # DEMO_TOKEN"] + ["other-tool $LOW_KEY"] * 3)])
+        # WHEN the report runs by effect, live, from 1 session
+        rows = self.effects("--commands", str(cmds), "--min-sessions", "1")
+        # THEN only the 1-in-4 effect stays
+        self.assertEqual([x["effect"] for x in rows], ["env:LOW_KEY"])
+
+    def test_first_and_last_span_the_earliest_and_latest_run(self):
+        """first and last are the earliest and latest run of the effect, whatever order the rows come in.
+
+        A reader uses them to tell a chore that is still going from one that stopped.
+        """
+        # GIVEN the later run first
+        rows = [{"ts": "2026-04-03T00:00:00Z", "session": "a", "steps": ["tool <arg>"], "effects": ["env:K_A"]},
+                {"ts": "2026-04-01T00:00:00Z", "session": "b", "steps": ["tool <arg>"], "effects": ["env:K_A"]}]
+        # WHEN grouped
+        g = repeats.group_effects(rows)["env:K_A"]
+        # THEN first is the earlier, last the later
+        self.assertEqual((g["first"], g["last"]), ("2026-04-01T00:00:00Z", "2026-04-03T00:00:00Z"))
+
+    def test_a_basic_only_run_with_a_bypassed_rule_counts_as_covered(self):
+        """A run with only basic steps whose rule was skipped by an allow comment (bypassed) counts as covered.
+
+        A bypassed rule still matched the run: the chore has a rule, so it must not show as uncovered.
+        """
+        # GIVEN an inline-code run whose only rule hit was bypassed, and one with no rule hit
+        rows = [{"ts": "2026-04-01T00:00:00Z", "session": "a", "steps": ["python3 - <heredoc>"],
+                 "effects": ["env:K_A"], "rules": [], "bypassed": ["demo-rule"]},
+                {"ts": "2026-04-01T00:00:00Z", "session": "b", "steps": ["python3 - <heredoc>"],
+                 "effects": ["env:K_B"], "rules": [], "bypassed": []}]
+        # WHEN grouped with a step test
+        g = repeats.group_effects(rows, lambda k: False)
+        # THEN the bypassed run is covered and the other is not
+        self.assertEqual((g["env:K_A"]["covered"], g["env:K_B"]["covered"]), (1, 0))
+
     def test_old_rows_without_effects_add_nothing_and_bad_effects_are_skipped(self):
         """A store row from before rows carried effects adds no effect; a row whose effects is not a list of
         strings is skipped and counted like a cut-short line.
@@ -887,7 +934,8 @@ class Effects(StoreCase):
                 self.assertIn("example:", r.stderr)
 
     def test_text_mode_prints_effect_table_with_steps_joined(self):
-        """Without --json the effect report is a header then one line per effect, steps joined by ` | `.
+        """Without --json the effect report is a header then one line per effect, steps joined by `  //  `
+        (not shell syntax, so a reader cannot take two steps for one pipeline).
 
         house-rules: text output carries the same fields as --json.
         """
@@ -900,7 +948,7 @@ class Effects(StoreCase):
         head, row = r.stdout.splitlines()
         self.assertEqual(head.split(), ["sessions", "count", "first", "last", "effect", "steps"])
         self.assertEqual(row, "3  3  2026-04-02T12:00:00Z  2026-04-02T12:00:00Z  env:SHIP_KEY  "
-                              "ship-check <arg> | ship-tool <arg>")
+                              "ship-check <arg>  //  ship-tool <arg>")
 
 
 class Speed(StoreCase):

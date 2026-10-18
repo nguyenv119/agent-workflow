@@ -17,7 +17,9 @@ bodies and heredoc bodies anywhere in a pipeline that runs git or gh (commit and
 still count); the pattern argument of grep/rg/sed/awk; every argument of echo/printf; # comments; and `$NAME`
 (not os.environ or process.env) in a quoted heredoc (`<<'EOF'`) fed to anything but a shell, which no shell
 expands: Python that edits a shell script (a written file counts as fed to a shell when bash/sh/zsh,
-`.`/`source` or a `.sh` path at command position runs it). Names the shell itself assigns in the command
+`.`/`source` or a `.sh` path at command position runs it), or in single quotes, unless the command is a
+shell, ssh or eval (`psql 'postgres://u:pa$SW0RD@h'` holds a value, `bash -c 'echo $A_KEY'` a read). A URL whose
+`user:password` authority holds / # or ? takes its host after the token's last @. Names the shell itself assigns in the command
 (NAME=, read NAME, for NAME in, local/declare NAME) are the script's own variables and are dropped; they are
 read from the shell level only, never from inside inline code.
 Effects feed the weekly count (`agent-cli repeats --by effect`), never the live warning.
@@ -25,7 +27,7 @@ Effects feed the weekly count (`agent-cli repeats --by effect`), never the live 
 import re
 
 from . import core, hook
-from .shape import COLON_TOOLS, DIGITS4, ENV_FILE, HOST, URL, prefix_re
+from .shape import COLON_TOOLS, DIGITS4, ENV_FILE, HOST, INTERPRETER, REDIR, prefix_len, prefix_re
 
 MAX_EFFECTS = 32
 ENV_NAME = re.compile(r"[A-Z][A-Z0-9_]{2,63}")
@@ -36,7 +38,7 @@ ENV_READ = re.compile(r"\$\{?#?([A-Z][A-Z0-9_]*)(?!\w)"
 STOP = frozenset("""HOME PATH PWD OLDPWD USER SHELL TMPDIR TERM LANG IFS RANDOM SECONDS LINENO PPID UID
 PIPESTATUS BASH_SOURCE""".split())
 SHELLS = frozenset(("bash", "sh", "zsh", "dash", "ksh"))
-RUNNERS = re.compile(r"python[\d.]*|node|tsx|ts-node|ruby|perl|deno|bun|\.|source|" + "|".join(SHELLS))
+RUNNERS = re.compile(INTERPRETER.pattern + r"|deno|bun|dash|ksh|\.|source")
 FILE_WORD = re.compile(r"[^\s\"'`;&|()<>=,{}\[\]]+")
 ENV_CODE = frozenset(("process.env", "import.meta.env"))  # code, not a file, though ENV_FILE matches it
 ASSIGNED = re.compile(r"(?:^|[\s;&|(])(?:([A-Za-z_]\w*)\+?="
@@ -55,6 +57,10 @@ DB_CODE = re.compile(r"(?:require\(|\bfrom\s+|\bimport\s*\(?)\s*" + Q_
 NAME_ARG = re.compile(r"([A-Za-z_]\w*)(?:=.*)?")
 RUN = re.compile(r"[^\\'\"`$#<>\n|&;() \t]+")  # a run of plain word chars, skipped in one step
 OUT_REDIR = re.compile(r"&>>?|>>|>\||>(?!&)")
+# a URL: the scheme starts a word (so a long word is scanned once), the token runs to whitespace or a quote
+URL = re.compile(r"(?<![\w+.-])[A-Za-z][\w+.-]*://([^\s\"'`]*)")
+AUTHORITY = re.compile(r"[^/?#]*")
+EXPANDS = SHELLS | {"ssh", "eval"}  # commands that expand the `$NAME` of a single-quoted argument
 # grep-family tools: (flags whose value is the pattern, flags taking another value, flags naming a pattern
 # file). The first word that is not a flag is the pattern unless one of the first or last kind came first.
 PATTERN_TOOLS = {**dict.fromkeys(("grep", "egrep", "fgrep"), (("-e", "--regexp"), ("-A", "-B", "-C", "-m"),
@@ -73,9 +79,12 @@ def effects(text, prefixes=None):
     spans, code, writes, runs, found = [], [], [], [], set()
     _ignore(text, prefix_re(tuple(prefixes)), 0, spans, code, (writes, runs, found))
     _unrun(writes, runs, spans, code)
-    view = _cut(_cut(text, code, lambda t: t.replace("$", " ")), spans, lambda t: " ")
+    view = _cut(_cut(text, code, lambda t: t.replace("$", "_")), spans, lambda t: " ")
     for m in URL.finditer(view):
-        _host(m[1].rsplit("@", 1)[-1].split(":", 1)[0], found)
+        auth = AUTHORITY.match(m[1])[0]
+        if "@" not in auth and "@" in m[1] and ":" in auth and not auth.rsplit(":", 1)[1].isdigit():
+            auth = AUTHORITY.match(m[1].rsplit("@", 1)[1])[0]  # user:pa/ss@host: the password held / # or ?
+        _host(auth.rsplit("@", 1)[-1].split(":", 1)[0], found)
         if m[0].lower().startswith(("postgres:", "postgresql:")):
             found.add(DB)
     if DB_CODE.search(view):
@@ -208,6 +217,8 @@ def _ignore(s, cmd_re, base, out, code, files):
             j = s.find(c, i + 1)
             j = len(s) if j < 0 else j
             start = i if start is None else start
+            if c == "'":
+                cmd.single.append((i, j + 1))
             (cmd.subst if c == "`" else cmd.quoted).append((i + 1, j) if c == "`" else (i, j + 1))
             i = j + 1
         elif c == '"':
@@ -250,7 +261,7 @@ def _ignore(s, cmd_re, base, out, code, files):
             end_line()
         elif c in "<>" or s.startswith("&>", i):
             end_word(i)
-            op = re.match(r"&>>?|>>|>\||>&|<&|<>|<<<|>|<", s[i:])[0]
+            op = REDIR.match(s, i)[0]
             i += len(op)
             if op.endswith("&"):
                 fd = re.match(r"\d+-?|-", s[i:])
@@ -273,11 +284,13 @@ def _ignore(s, cmd_re, base, out, code, files):
 
 
 class _Cmd:
-    """One simple command while scanning: its word spans, quoted and $( ) body spans, heredoc body spans (and
-    those with a quoted delimiter, in literal), and the file it redirects output to ("" for none)."""
+    """One simple command while scanning: its word spans, quoted (and single-quoted) and $( ) body spans,
+    heredoc body spans (and those with a quoted delimiter, in literal), and the file it redirects output to
+    ("" for none)."""
 
     def __init__(self):
-        self.words, self.quoted, self.subst, self.heredocs, self.literal, self.out = [], [], [], [], [], ""
+        self.words, self.quoted, self.single, self.subst, self.heredocs, self.literal = [], [], [], [], [], []
+        self.out = ""
 
 
 def _judge(s, pipe, cmd_re, base, out, code, files):
@@ -299,6 +312,8 @@ def _judge(s, pipe, cmd_re, base, out, code, files):
             files[0].append((at, target.strip("\"'"), [(base + a, base + b) for a, b in c.heredocs], literal))
         else:
             code += literal
+        if name not in EXPANDS:  # no shell expands single quotes: `'pa$SW0RD'` is a value, not a read
+            code += [(base + a, base + b) for a, b in c.single]
         if run := word and _ran(s, word, args):
             files[1].append((at, *run))
         ws = [s[a:b] for a, b in args]
@@ -315,17 +330,8 @@ def _judge(s, pipe, cmd_re, base, out, code, files):
 
 
 def _command(s, words, cmd_re):
-    """(command name, argument word spans, command word) past keywords, VAR=x and prefix words, as
-    shape._strip does, and past a prefix's own options (`env -u A gh`: no command word starts with -)."""
-    k = 0
-    while k < len(words):
-        rep = " ".join(s[a:b].replace(" ", "_").replace("\n", "_") for a, b in words[k:k + 16]) + " "
-        n = len(rep[:cmd_re.match(rep).end()].split())
-        while k + n < len(words) and s[slice(*words[k + n])].startswith("-"):
-            n += 1 + (s[slice(*words[k + n])] in ("-u", "--unset", "-C", "--chdir", "-S"))
-        if not n:
-            break
-        k += n
+    """(command name, argument word spans, command word) past keywords, VAR=x and prefix words (shape.prefix_len)."""
+    k = prefix_len([s[a:b] for a, b in words], cmd_re)
     if k >= len(words):
         return None, [], None
     a, b = words[k]

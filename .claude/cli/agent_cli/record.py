@@ -20,7 +20,7 @@ import sys
 from pathlib import Path
 
 from . import core, hook
-from .effects import MAX_EFFECTS, effects
+from .effects import effects
 from .shape import shape, steps
 
 MAX_SHAPE = 1024
@@ -70,16 +70,25 @@ def append_line(path, line):
 def fields(command, rules, prefixes=None, tools=None):
     """{shape, steps, effects, rules, bypassed} for a raw command, the part of a row that comes from its text
     (the report calls this too, for raw commands it replays): the shape cut to MAX_SHAPE, the first MAX_STEPS
-    step shapes (each already cut to MAX_SHAPE), its first MAX_EFFECTS effect signals, the ids of the rules
+    step shapes (each already cut to MAX_SHAPE), its effect signals (effects() caps them), the ids of the rules
     that fire, and those of the rules that match but a `# agent-cli: allow <id>` comment skips.
     prefixes/tools: as shape()'s (None reads the seams)."""
     s = shape(command, prefixes, tools)
     hits = [r["id"] for r in hook.evaluate(command, rules, honor_bypass=False)]
     allowed = set(hook.BYPASS.findall(command)) if hits else set()
     return {"shape": s[:MAX_SHAPE] if s else None, "steps": steps(command, prefixes, tools)[:MAX_STEPS],
-            "effects": effects(command, prefixes)[:MAX_EFFECTS],
+            "effects": _effects(command, prefixes),
             "rules": [i for i in hits if i not in allowed],
             "bypassed": [i for i in hits if i in allowed]}
+
+
+def _effects(command, prefixes):
+    """effects() of command, or [] when it fails (e.g. RecursionError on ~1000 nested `$(`): the row still
+    keeps its shape and steps."""
+    try:
+        return effects(command, prefixes)
+    except Exception:  # the newest reader must never cost the row
+        return []
 
 
 def _short(v):

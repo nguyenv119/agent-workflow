@@ -425,7 +425,85 @@ class AssignedNames(unittest.TestCase):
         self.assertEqual(fx(cmd), ["env:DATABASE_URL"])
 
 
+class SingleQuotes(unittest.TestCase):
+    """`$NAME` inside single quotes is text unless the command is a shell, ssh or eval, which expand it."""
+
+    def test_dollar_in_a_single_quoted_secret_never_becomes_a_name(self):
+        """A `$` inside a single-quoted password, URL, header or inline code gives no env name.
+
+        No shell expands single quotes, so the text after `$` is part of a value: storing it as env:<NAME>
+        would write a piece of a password into a plain file under the home dir.
+        """
+        cases = [("export PGPASSWORD='Hx9$KQ7PZR2LM'; psql -h ep-a.example.test", "KQ7PZR2LM",
+                  ["db:postgres", "host:ep-a.example.test"]),
+                 ("psql 'postgresql://owner:Ab$CDEFGH@ep-a.example.test/db'", "CDEFGH",
+                  ["db:postgres", "host:ep-a.example.test"]),
+                 ("curl -u 'admin:Pa$SW0RDX' https://api.example.test", "SW0RDX", ["host:api.example.test"]),
+                 ("curl -H 'Authorization: Bearer abc$TOKENPART' https://api.example.test", "TOKENPART",
+                  ["host:api.example.test"]),
+                 ("python3 -c 'print(\"$ABCSECRET\")'", "ABCSECRET", [])]
+        for cmd, secret, want in cases:
+            with self.subTest(secret=secret):
+                # WHEN the command is read
+                got = fx(cmd)
+                # THEN no effect holds the secret's fragment, and only the real signals remain
+                self.assertNotIn(secret, " ".join(got))
+                self.assertEqual(got, want)
+
+    def test_code_env_reads_and_shell_expanded_names_still_count(self):
+        """process.env in single-quoted inline code counts, and `$NAME` counts under bash -c, ssh and eval.
+
+        Those are real reads: the code asks for the variable, or the shell given the string expands it.
+        """
+        cases = [("node -e 'const u = process.env.DATABASE_URL'", "env:DATABASE_URL"),
+                 ("bash -c 'echo $FOO_BAR'", "env:FOO_BAR"), ("sh -c 'tool $FOO_BAR'", "env:FOO_BAR"),
+                 ("ssh box 'tool $FOO_BAR'", "env:FOO_BAR"), ("eval 'tool $FOO_BAR'", "env:FOO_BAR")]
+        for cmd, want in cases:
+            with self.subTest(cmd=cmd):
+                # WHEN the command is read
+                # THEN the name
+                self.assertEqual(fx(cmd), [want])
+
+
+class Urls(unittest.TestCase):
+    def test_password_with_slash_hash_or_query_char_gives_the_real_host(self):
+        """A URL whose password holds `/`, `#` or `?` gives the host after the `@`, never the user name.
+
+        Cutting the authority at the first `/` would store the user name as a host and split one database
+        into many rows.
+        """
+        for sep in "/#?":
+            with self.subTest(sep=sep):
+                # WHEN a URL with that char in its password is read
+                # THEN the real host
+                self.assertEqual(fx(f"curl https://user:p{sep}ss@host.example.test/x"), ["host:host.example.test"])
+
+    def test_at_sign_in_the_path_keeps_the_authority_host(self):
+        """An `@` in a URL's path or query (an email, a scoped package) does not move the host.
+
+        Only a `user:password` authority can hide a later `@`; a plain host or host:port stays as written.
+        """
+        for cmd in ("curl https://api.example.test/u/a@b.example.test",
+                    "curl https://api.example.test:8443/u?mail=a@b.example.test"):
+            with self.subTest(cmd=cmd):
+                self.assertEqual(fx(cmd), ["host:api.example.test"])
+
+
 class Speed(unittest.TestCase):
+    def test_one_long_word_and_an_unclosed_quote_read_fast(self):
+        """A 40K-char single word and a 30K-char unclosed quote each read in well under a second.
+
+        The recorder hook has a 5s timeout; a URL scan that restarts at every char of a long word is
+        quadratic and loses the whole row.
+        """
+        for cmd in ("a" * 40000, "curl '" + "a" * 30000):
+            with self.subTest(n=len(cmd)):
+                # WHEN read
+                t = time.monotonic()
+                fx(cmd)
+                # THEN quickly
+                self.assertLess(time.monotonic() - t, 0.5)
+
     def test_a_long_command_reads_in_linear_time(self):
         """A 200 KB command of many quoted parts and heredocs reads in well under a second.
 

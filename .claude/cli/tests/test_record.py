@@ -268,9 +268,26 @@ class Recorder(TmpCase):
         rows = store_rows(self.store)
         self.assertEqual(len(rows), 4)
         self.assertIn("echo PGPASSWORD=<v>", rows[2]["steps"])
+        self.assert_not_stored(plant)
+
+    def assert_not_stored(self, plant):
+        """No 6+ char piece of plant is in any byte under the store."""
         blob = b"".join(f.read_bytes() for f in self.store.rglob("*") if f.is_file())
         pieces = {plant[i:j] for i in range(len(plant)) for j in range(i + 6, len(plant) + 1)}
         self.assertEqual([x for x in sorted(pieces) if x.encode() in blob], [])
+
+    def test_effects_failure_leaves_the_row_with_no_effects(self):
+        """A command effects() cannot read (1000 nested `$(`) still gives its shape and steps, effects [].
+
+        effects() is the newest, most intricate reader; a crash in it must not cost the row the report
+        already counts.
+        """
+        # GIVEN a deeply nested command
+        cmd = "$(" * 1000 + "x" + ")" * 1000
+        # WHEN its fields are computed
+        got = record.fields(cmd, [], (), ())
+        # THEN the shape and steps are there and effects is empty
+        self.assertEqual((got["shape"], got["steps"], got["effects"]), ("<str>", ["<str>"], []))
 
     def test_fields_carry_the_effects_of_the_raw_command(self):
         """fields() returns the command's effects (hosts, env var names, env file basenames) beside its shape.
@@ -308,9 +325,7 @@ class Recorder(TmpCase):
         rows = store_rows(self.store)
         self.assertEqual([r["effects"] for r in rows],
                          [["db:postgres", "env:DATABASE_URL", "host:db.example.test"]] * 3)
-        blob = b"".join(f.read_bytes() for f in self.store.rglob("*") if f.is_file())
-        pieces = {plant[i:j] for i in range(len(plant)) for j in range(i + 6, len(plant) + 1)}
-        self.assertEqual([x for x in sorted(pieces) if x.encode() in blob], [])
+        self.assert_not_stored(plant)
 
     def test_planted_postgres_cli_password_leaves_only_the_db_signal_and_host(self):
         """A Postgres CLI call with PGPASSWORD assigned and -h/-U/-d flags stores db:postgres and the -h host
@@ -330,9 +345,7 @@ class Recorder(TmpCase):
         self.assertEqual(r.returncode, 0, r.stderr)
         (row,) = store_rows(self.store)
         self.assertEqual(row["effects"], ["db:postgres", "host:db.example.test"])
-        blob = b"".join(f.read_bytes() for f in self.store.rglob("*") if f.is_file())
-        pieces = {plant[i:j] for i in range(len(plant)) for j in range(i + 6, len(plant) + 1)}
-        self.assertEqual([x for x in sorted(pieces) if x.encode() in blob], [])
+        self.assert_not_stored(plant)
 
     def test_matching_hook_rules_are_listed_by_id(self):
         """rules names the active hook rules that match the raw command, computed before it is discarded.

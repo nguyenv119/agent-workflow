@@ -93,8 +93,8 @@ def register(sub):
     p.add_argument("--since", help="window back from now, e.g. 14d (not with --from/--until)")
     p.add_argument("--from", dest="from_", metavar="WHEN", help="local YYYY-MM-DD[THH:MM], inclusive")
     p.add_argument("--until", metavar="WHEN", help="local YYYY-MM-DD (whole day) or YYYY-MM-DDTHH:MM (exclusive)")
-    p.add_argument("--min-sessions", type=int, default=3, help="distinct sessions a step needs (default 3)")
-    p.add_argument("--top", type=int, default=25, help="print the first N steps (default 25)")
+    p.add_argument("--min-sessions", type=int, default=3, help="distinct sessions a row needs (default 3)")
+    p.add_argument("--top", type=int, default=25, help="print the first N rows (default 25)")
     p.add_argument("--repo", help="only runs from this repo (the row's repo name)")
     p.add_argument("--covered", choices=("live", "none"), default="live",
                    help="live: drop steps a rule or command covers (default); none: keep them")
@@ -104,7 +104,7 @@ def register(sub):
                    "files, db:postgres) instead of steps")
     p.add_argument("--commands", metavar="FILE", help="JSONL of raw {ts, session, cmd} rows instead of the store")
     p.add_argument("--write-cache", action="store_true", help="also write <store>/repeats-cache.json")
-    p.add_argument("--json", action="store_true", help="one JSON object per step")
+    p.add_argument("--json", action="store_true", help="one JSON object per row")
     p.set_defaults(func=run)
 
 
@@ -128,7 +128,8 @@ def run(a):
         covered = lambda s, g: 2 * g["covered"] >= g["count"]  # noqa: E731
     else:
         groups = group(rows, a.unit == "step")
-        covered = lambda s, g: 2 * g["ruled"] >= g["count"] or by_command(s)  # noqa: E731
+        ok = step_test(groups, by_command)
+        covered = lambda s, g: ok(s)  # noqa: E731
     repeated = [(s, g) for s, g in groups.items() if len(g["sessions"]) >= a.min_sessions]
     listed = [(s, g) for s, g in repeated if not (live and covered(s, g))]
     listed.sort(key=lambda sg: (-len(sg[1]["sessions"]), -sg[1]["count"], sg[0]))
@@ -143,7 +144,7 @@ def run(a):
         print("  ".join(EFFECT_FIELDS if a.by else FIELDS))
     for row in out:
         if a.by:
-            text = f"{row['first']}  {row['last']}  {row['effect']}  {' | '.join(row['steps'])}"
+            text = f"{row['first']}  {row['last']}  {row['effect']}  {'  //  '.join(row['steps'])}"
         else:
             share = "-" if row["exit_fail_share"] is None else f"{row['exit_fail_share']:.2f}"
             text = f"{share}  {row['first']}  {row['last']}  {row['shape']}"
