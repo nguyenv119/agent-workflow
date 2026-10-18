@@ -195,3 +195,5 @@ PR: https://github.com/acme/app/pull/1526.
 - **ALWAYS** use the `quick-reviewer` agent type for the review step, not a
   generic subagent — its lower effort level is what makes this actually
   cheaper, not just fewer reviewers.
+
+<!-- scratch acceptance line, throwaway PR -->
