@@ -7,6 +7,7 @@ import io
 import json
 import os
 import re
+import shutil
 import sys
 import time
 import unittest
@@ -161,13 +162,31 @@ class Canary(FakeGhCase):
         commit(self.app, files, "main moves")
         run(GIT + ["push", "-q", "origin", "HEAD:main"], self.app)
 
-    def canary(self, *args, env=None):
+    def canary(self, *args, env=None, via=None, cwd=None):
+        """Run via's agent-cli (default the app's) from cwd (default via itself)."""
         e = {"PATH": f"{self.bin}{os.pathsep}{os.environ['PATH']}", "HOME": str(self.user),
              "FAKE_GH_LOG": str(self.gh_log), "FAKE_LOOP_LOG": str(self.loop_log),
              "FAKE_GH_PR": getattr(self, "pr_json", "{}"), "HARNESS_CANARY_SOURCE": str(self.src),
              "HARNESS_LOOP_HOME": None, "HARNESS_EXAM_ENV_FILE": None, "HARNESS_CANARY_REF": None,
              "CLAUDE_CODE_REMOTE": None, **(env or {})}
-        return agent_cli(self.app, "harness", "canary", *args, env=e)
+        return agent_cli(via or self.app, "harness", "canary", *args, env=e, cwd=cwd)
+
+    def other_install(self, name, git=True):
+        """Another project with agent-cli installed and a HARNESS_VERSION (git=False: a plain dir, as when an
+        install on PATH is a copy outside any checkout)."""
+        other = make_project(self.tmp / name)
+        commit(other, {".claude/HARNESS_VERSION": json.dumps(self.pin) + "\n"})
+        if not git:
+            shutil.rmtree(other / ".git")
+        return other
+
+    def assert_refused(self, r, here, install, example):
+        """Exit 2 naming both repos and the cwd repo's own call, and nothing asked of gh, fetched or run."""
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        self.assertIn(str(install), r.stderr)
+        self.assertIn(str(here), r.stderr)
+        self.assertIn(f"example: {example}", r.stderr)
+        self.assertEqual((self.gh_calls(), self.loops(), self.fetched()), ([], [], False))
 
     def loops(self):
         return [json.loads(x) for x in self.loop_log.read_text().splitlines()] if self.loop_log.is_file() else []
@@ -607,6 +626,110 @@ class Canary(FakeGhCase):
                 # THEN exit 2 with an example
                 self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
                 self.assertIn("example: agent-cli harness canary", r.stderr)
+
+    def test_agent_cli_from_another_repo_refuses_before_gh(self):
+        """
+        What: run from installing repo A's checkout, an agent-cli installed in repo B exits 2 naming both and
+        A's own call `<A>/.claude/bin/agent-cli harness canary --pr 7`, with no gh call, fetch or exam.
+        Why: the agent-cli on PATH can belong to another project; the canary would read B's pin and fetch in B.
+        Breaks: B's install runs A's PR, then posts error "git fetch ... failed" on it.
+        """
+        # GIVEN repo A with a PR that needs the exam, and repo B with its own install
+        self.pr({"AGENTS.md": "# Agents v2\n"})
+        other = self.other_install("other")
+        # WHEN B's agent-cli runs from A's checkout
+        r = self.canary("--pr", "7", via=other, cwd=self.app)
+        # THEN refused before any gh call
+        self.assertIn("nothing posted", r.stderr)
+        self.assert_refused(r, self.app, other, f"{self.app}/.claude/bin/agent-cli harness canary --pr 7")
+
+    def test_agent_cli_outside_any_git_repo_refuses_and_keeps_the_flags(self):
+        """
+        What: an agent-cli whose install is not in any git repo (a copy with a HARNESS_VERSION), run from repo
+        A's checkout, exits 2 with no gh call; the example repeats the flags given (--repo, --no-status).
+        Why: the case seen for real: every git fetch in that install fails. Breaks: an error status on A's PR.
+        """
+        # GIVEN repo A with a PR, and an install in a plain directory
+        self.pr({"AGENTS.md": "# Agents v2\n"})
+        plain = self.other_install("plain", git=False)
+        # WHEN that agent-cli runs from A's checkout with --repo and --no-status
+        r = self.canary("--pr", "7", "--repo", "owner/app", "--no-status", via=plain, cwd=self.app)
+        # THEN refused, naming A's own agent-cli with the same flags
+        self.assert_refused(r, self.app, plain, f"{self.app}/.claude/bin/agent-cli harness canary --pr 7 "
+                                                "--repo owner/app --no-status")
+
+    def test_source_tree_cwd_with_an_installing_repos_agent_cli_refuses(self):
+        """
+        What: from an agent-workflow source tree (no HARNESS_VERSION), an installing repo's agent-cli exits 2
+        with no gh call, naming the source tree's own agent-cli.
+        Why: the install would clone a pinned agent-workflow and exam the wrong repo's PR.
+        Breaks: agent-workflow's PR gets a status computed in another repo.
+        """
+        # GIVEN an agent-workflow source tree with agent-cli installed and no pin
+        aw = make_project(self.tmp / "aw")
+        commit(aw, {"README.md": "aw\n"})
+        # WHEN the installing repo's agent-cli runs from it
+        r = self.canary("--pr", "9", cwd=aw)
+        # THEN refused before any gh call
+        self.assert_refused(r, aw, self.app, f"{aw}/.claude/bin/agent-cli harness canary --pr 9")
+
+    def test_cwd_repo_without_agent_cli_says_so(self):
+        """
+        What: when the cwd's repo has no .claude/bin/agent-cli, the refusal says so and points at the PR repo's
+        install. Why: the example would name a file that does not exist. Breaks: a copy-paste that fails again.
+        """
+        # GIVEN a repo with no agent-cli installed
+        bare = make_project(self.tmp / "bare", install=False)
+        commit(bare, {"README.md": "bare\n"})
+        # WHEN the app's agent-cli runs from it in tree mode
+        r = self.canary("--candidate", "c", "--baseline", "b", cwd=bare)
+        # THEN refused, saying the repo has no agent-cli
+        self.assertIn(f"{bare} has no .claude/bin/agent-cli", r.stderr)
+        self.assert_refused(r, bare, self.app, f"{bare}/.claude/bin/agent-cli harness canary --candidate c "
+                                               "--baseline b")
+
+    def test_a_worktree_or_subdirectory_of_the_install_repo_runs_as_before(self):
+        """
+        What: from another worktree of the install's repo, or a subdirectory of it, the canary runs as before:
+        a not-needed PR posts pending then success and exits 0.
+        Why: worktrees share one git common dir; /work runs from them. Breaks: every /work canary refuses.
+        """
+        # GIVEN a not-needed PR, a second worktree of the app, and a subdirectory of the app
+        head = self.pr({".claude/skills/deploy/SKILL.md": SKILL.format("deploy", "Ship it carefully.")})
+        wt = self.tmp / "app-wt"
+        run(GIT + ["worktree", "add", "-q", "-b", "wt", str(wt)], self.app)
+        for cwd in (wt, self.app / ".claude/skills"):
+            with self.subTest(cwd=cwd):
+                self.gh_log.unlink(missing_ok=True)
+                # WHEN the app's agent-cli runs from there
+                r = self.canary("--pr", "7", cwd=cwd)
+                # THEN the usual not-needed run
+                self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+                self.assertEqual(self.statuses(), [self.status(head, "pending", PENDING),
+                                                   self.status(head, "success", "not needed (no loaded file)")])
+
+    def test_cwd_outside_git_uses_the_install_unless_claude_project_dir_is_another_repo(self):
+        """
+        What: tree mode from a directory in no git repo runs the exam with the install as before; with
+        CLAUDE_PROJECT_DIR naming another repo it exits 2 and runs nothing.
+        Why: with no repo at the cwd only the session's project says which repo is meant.
+        Breaks: a canary of trees from a scratch dir stops working, or a session in B runs A's install.
+        """
+        # GIVEN a directory git cannot place in any repo (the ceiling stops the walk up), two trees, repo B
+        nowhere = self.tmp / "nowhere"
+        nowhere.mkdir()
+        cand, base = self.tree("cand", self.old), self.tree("base", self.old)
+        other = self.other_install("other")
+        args = ("--candidate", str(cand), "--baseline", str(base))
+        env = {"GIT_CEILING_DIRECTORIES": str(self.tmp)}
+        # WHEN the canary runs from there, without and then with CLAUDE_PROJECT_DIR=B
+        ok = self.canary(*args, env=env, cwd=nowhere)
+        self.assertEqual(ok.returncode, 0, ok.stdout + ok.stderr)
+        self.assertEqual(len(self.loops()), 1)
+        self.loop_log.unlink()
+        r = self.canary(*args, env={**env, "CLAUDE_PROJECT_DIR": str(other)}, cwd=nowhere)
+        # THEN the first ran the exam once; the second is refused naming B's own agent-cli
+        self.assert_refused(r, other, self.app, f"{other}/.claude/bin/agent-cli harness canary {' '.join(args)}")
 
 
 class SourceTree(FakeGhCase):
