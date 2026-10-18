@@ -5,13 +5,16 @@
 URLs -> <url:host> (<url> when the host looks like a value), X=value -> X=<v>, a flag's value -> <v>,
 other bare words -> <arg>; env files keep their basename (`<path>/.env.local`) and remote refs their
 remote (`origin/<arg>`). A command run by path keeps its name (`<path>/deploy.sh`), and so does the
-script an interpreter runs (`python3 <path>/loop.py`). The second word is
+script an interpreter runs (`python3 <path>/loop.py`); `.` and `source` keep theirs, and so do `+a`-style
+flags (`set +a`). The second word is
 kept only after a tool known to take subcommands (SUBCOMMAND_TOOLS, the subcommand-tools seam's
 lines, or a name ending in -cli), after git's global options; a third only after a two-level group
-(THIRD: `gh pr view`, `git worktree add`, `agent-cli wt list`); a short
-flag with a value glued on keeps its letter only (`-p<v>`). Leading `cd <x> &&` chains and the prefixes
+(THIRD: `gh pr view`, `git worktree add`, `agent-cli wt list`); package runners keep a script name
+with a `:` (COLON_TOOLS, e.g. pnpm/yarn/npm run test:unit); a short flag with a value glued on keeps its
+letter only (`-p<v>`). Leading `cd <x> &&` chains and the prefixes
 hook_rules.cmd_re knows (env, timeout N, VAR=x and the project's command-prefixes seam words) are
-stripped. The shape never holds a value from the command, so it is safe to store.
+stripped. Env-file basenames, script names and subcommand words are kept on purpose, as names; flag
+values, quoted text, numbers, ids, paths and hosts (other than URL hosts) never are, so it is safe to store.
 
 steps() splits one command into its step shapes (each pipeline of a chain, loop body or $( ) body), so a
 chore counts the same alone or as step 3 of a chain.
@@ -29,16 +32,21 @@ SUB = re.compile(r"[a-z][a-z0-9-]{0,23}(?::[a-z][a-z0-9-]{0,23})*")  # `db:query
 # Tools whose second word is a subcommand; after any other command the second word is a value.
 SUBCOMMAND_TOOLS = frozenset("""git gh bd agent-cli docker kubectl helm npm npx yarn cargo go pip pip3 uv poetry
 brew apt apt-get aws gcloud az terraform systemctl launchctl claude conda dolt hg svn rustup nix deno bun gem
-bundle dotnet swift xcrun tmux openssl pnpm""".split())
+bundle dotnet swift xcrun tmux openssl""".split()
+                             + ["pnpm"])  # e.g. pnpm db:query
 # Two-level groups: the word after (tool, group) is kept too; agent-cli keeps it after any group.
 THIRD = {"gh": {"pr", "run", "api", "issue", "release", "workflow"},
-         "git": {"worktree", "stash", "remote", "submodule"}, "npm": {"run"}, "pnpm": {"run"}, "yarn": {"run"}}
-COLON_TOOLS = {("pnpm",), ("yarn",), ("npm", "run"), ("pnpm", "run"), ("yarn", "run")}  # script names: test:unit
+         "git": {"worktree", "stash", "remote", "submodule"}, "npm": {"run"}, "yarn": {"run"},
+         "pnpm": {"run"}}  # e.g. pnpm run test:unit
+COLON_TOOLS = {("yarn",), ("npm", "run"), ("yarn", "run"),  # script names: test:unit
+               ("pnpm",), ("pnpm", "run")}  # e.g. pnpm db:query
 # git global options before the subcommand, and whether each takes the next word as its value.
 GIT_GLOBAL = {"-C": True, "-c": True, "--git-dir": True, "--work-tree": True, "--no-pager": False}
 ENV_FILE = re.compile(r"[\w.-]{0,40}\.env|\.env\.[\w.-]{1,40}")  # .env, prod.env, .env.local
 PLUS_FLAGS = re.compile(r"\+[A-Za-z]|\+[a-z]{2,4}")  # `set +a`, the off switch of -a
-STEP_SEP = re.compile(r" (?:&&|\|\||&) |; ")  # a `|` pipeline stays one step: `grep x f | sort` is one recipe
+# A `|` pipeline stays one step: `grep x f | sort` is one recipe. hook.quiet() has its own SEGMENT_SEP that
+# also splits on |, on purpose.
+STEP_SEP = re.compile(r" (?:&&|\|\||&) |; ")
 REDIR_PIECE = re.compile(r"\d*" + REDIR.pattern + r"(&(?:\d+-?|-))?")  # group 1: `2>&1`, which has no target
 KEYWORD_STEP = re.compile(r"done|fi|esac|\}|break|continue|(?:for|case|select) .*")
 ASSIGN_PIECE = re.compile(r"[A-Za-z_]\w*=<v>")
@@ -89,7 +97,9 @@ def steps(command, prefixes=None, subcommands=None):
 def steps_of_shape(s):
     """A shape string's steps: split on STEP_SEP, redirects dropped, keyword-only, loop-header-only and
     assignment-only steps dropped, whole-word <path> folded into <arg>, each cut to record.MAX_SHAPE,
-    repeats kept once in first order. Works on stored shapes, so readers of old rows use it too."""
+    repeats kept once in first order. Works on stored shapes, so readers of old rows use it too; an old
+    row keeps the masking it was recorded with, so its steps match new ones only where that masking did
+    not change."""
     from .record import MAX_SHAPE  # record imports this module
     out = []
     for step in STEP_SEP.split(s or ""):
@@ -99,9 +109,7 @@ def steps_of_shape(s):
             if skip or m:
                 skip = bool(m and not m[1])  # a redirect without &N takes the next word as its target
                 continue
-            w = "<arg>" if w == "<path>" else w
-            if not (words and w == words[-1] and w.startswith("<") and w != "<heredoc>"):  # as _segment does
-                words.append(w)
+            _push(words, "<arg>" if w == "<path>" else w)
         step = " ".join(words)
         rest = words[1:] if words and words[0] in LEAD_KEYWORDS else words
         if step and not KEYWORD_STEP.fullmatch(step) and not all(ASSIGN_PIECE.fullmatch(w) for w in rest):
@@ -193,9 +201,15 @@ def _segment(seg, tools):
         if i == 0 and tool and INTERPRETER.fullmatch(tool):
             script_slot = True  # the first word that is not a flag names the script (or is -c's code)
         after_flag = kind == "word" and piece.startswith("-") and piece not in ("-", "--") and "=" not in piece
-        if not (out and piece == out[-1] and piece.startswith("<") and piece != "<heredoc>"):
-            out.append(piece)
+        _push(out, piece)
     return " ".join(out)
+
+
+def _push(words, w):
+    """Append w unless it repeats the placeholder just before it (`<arg> <arg>` -> `<arg>`); heredocs
+    are each kept."""
+    if not (words and w == words[-1] and w.startswith("<") and w != "<heredoc>"):
+        words.append(w)
 
 
 def _script(t):
@@ -297,7 +311,7 @@ def _tokens(s, bodies=None):
             _, j = hook._scan(s, i + 2, True)
             if j > len(s) or s[j - 1] != ")":
                 return None
-            if bodies is not None:
+            if bodies is not None and not s.startswith("$((", i):  # $(( )) is arithmetic, not a command
                 bodies.append(s[i + 2:j - 1])
             buf.append(Q)
             i = j
@@ -354,7 +368,8 @@ def _dquote_bodies(s, i, end, bodies):
             _, j = hook._scan(s, i + 2, True)
             if j > end or s[j - 1] != ")":
                 return
-            bodies.append(s[i + 2:j - 1])
+            if not s.startswith("$((", i):  # arithmetic, as in _tokens
+                bodies.append(s[i + 2:j - 1])
             i = j
         elif s[i] == "`":
             j = s.find("`", i + 1)

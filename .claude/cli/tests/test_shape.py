@@ -9,6 +9,7 @@ from agent_cli import record  # noqa: E402
 from agent_cli.shape import shape, steps, steps_of_shape  # noqa: E402
 
 WRAP = ("wrapx", "wrapx raw")  # a made-up wrapper word, as a project's command-prefixes seam lists it
+TOOLS = ()  # no subcommand-tools seam words, so the developer's own seam never decides a row
 
 # (command, expected shape). Each row is one placeholder kind or one stripping rule.
 CASES = [
@@ -27,6 +28,7 @@ CASES = [
     ("nohup python3 server.py &", "python3 server.py"),
     ("wrapx raw DATABASE_URL=postgres://u:pw@h/db psql -c 'select 1' --csv", "psql -c <str> --csv"),
     ("X=$(git rev-parse HEAD) make", "make"),
+    ("sleep $((60*5))", "sleep <str>"),
     # quoted strings, backticks and heredocs
     ('psql -c "select count(*) from t" --csv', "psql -c <str> --csv"),
     ("echo 'hi there'", "echo <str>"),
@@ -96,21 +98,27 @@ CASES = [
     ("git --no-pager log -1", "git --no-pager log <n>"),
     ("git -c core.pager=cat --git-dir=/x/.git diff", "git -c <v> --git-dir=<v> diff"),
     ("git --work-tree /x --git-dir /x/.git status", "git --work-tree <path> --git-dir <path> status"),
-    # two-level CLIs keep a third word; pnpm/yarn/npm run keep script names with a colon
+    # two-level CLIs keep a third word; package runners keep script names with a colon
     ("gh pr list --state open", "gh pr list --state <v>"),
+    ("gh issue list --state open", "gh issue list --state <v>"),
+    ("gh release create v1.2", "gh release create <arg>"),
+    ("gh workflow run ci.yml", "gh workflow run <arg>"),
+    ("git remote add up https://g.example.test/a", "git remote add <arg> <url:g.example.test>"),
+    ("git submodule update --init", "git submodule update --init"),
     ("gh run view 99 --log", "gh run view <n> --log"),
     ("gh api repos/a/b/pulls", "gh api <path>"),
     ("git worktree add -b feat ../wt2", "git worktree add -b <v> <path>"),
     ("git stash pop", "git stash pop"),
     ("agent-cli wt list", "agent-cli wt list"),
     ("git log main", "git log <arg>"),
-    ("pnpm db:query 'select 1'", "pnpm db:query <str>"),
-    ("pnpm db:branch", "pnpm db:branch"),
+    ("pnpm db:query 'select 1'", "pnpm db:query <str>"),  # a built-in runner, e.g. pnpm with no seam
+    ("yarn db:branch", "yarn db:branch"),
     ("npm run test:unit", "npm run test:unit"),
+    ("yarn run test:unit", "yarn run test:unit"),
     ("yarn test:unit", "yarn test:unit"),
     ("git a:b", "git <arg>"),
-    ("pnpm db:c324f28ab", "pnpm <arg>"),
-    ("pnpm run2024:x", "pnpm <arg>"),
+    ("yarn db:c324f28ab", "yarn <arg>"),
+    ("yarn run2024:x", "yarn <arg>"),
     # remote branch refs keep their remote, so on-main checks are not read as file paths
     ("git log origin/main..", "git log origin/<arg>"),
     ("git show origin/main:a.ts", "git show origin/<arg>"),
@@ -139,7 +147,7 @@ class Shape(unittest.TestCase):
             with self.subTest(command=command):
                 # GIVEN a command and the wrapper seam words
                 # WHEN shaped
-                got = shape(command, WRAP)
+                got = shape(command, WRAP, TOOLS)
                 # THEN the shape is the expected one
                 self.assertEqual(got, expected)
 
@@ -209,22 +217,27 @@ class Shape(unittest.TestCase):
                     f"curl https://h.example.com/x?key={s}", f"curl https://h.example.com/{s}/x",
                     f"deploy --token {s}", f"deploy --token={s}", f"cat <<EOF\n{s}\nEOF", f"export K={s}",
                     f"{s} --x", f"tool -{s}", f"curl https://{s}@h.example.com",
-                    f"gh pr {w}", f"agent-cli wt {w}", f"pnpm db:{w}", f"git -C {w} status",
-                    f"git log origin/{s}", f"git log {s}..origin/{s}", f"echo $(cat {w})", f"echo \"$(tool {s})\""]
+                    # w is 25 chars, one over the 24-char subcommand limit, so it is never kept as one
+                    f"gh pr {w}", f"agent-cli wt {w}", f"yarn db:{w}", f"git -C {w} status",
+                    f"git log origin/{s}", f"git log {s}..origin/{s}", f"echo $(cat {w})", f"echo \"$(tool {s})\"",
+                    f"echo $(({w}+1))", f"source .env.prod && deploy --token {s} -m '{w}'"]
         for command in commands:
             with self.subTest(command=command):
                 # WHEN shaped, whole and as steps (steps also shape each $( ) body)
-                got = ((shape(command, WRAP) or "") + " " + " ".join(steps(command, WRAP))).lower()
+                got = ((shape(command, WRAP, TOOLS) or "") + " " + " ".join(steps(command, WRAP, TOOLS))).lower()
                 # THEN no 6-char piece of either secret survives
                 self.assertFalse([x[i:i + 6] for x in (s.lower(), w) for i in range(len(x) - 5)
                                   if x[i:i + 6] in got], got)
+        # AND an env-file basename is kept on purpose (a name, never a value) while the values beside it go
+        self.assertEqual(shape(f"source .env.prod && deploy --token {s} -m '{w}'", WRAP, TOOLS),
+                         "source .env.prod && deploy --token <v> -m <str>")
 
 
 # (command, expected steps). Each row is one splitting or dropping rule.
 STEP_CASES = [
     # the bead's example: a chained env-load and DB query split into its chores
-    ("cd x && set -a; . .env; set +a; pnpm db:query 'select 1' 2>&1 | tail -5",
-     ["set -a", ". .env", "set +a", "pnpm db:query <str> | tail <n>"]),
+    ("cd x && set -a; . .env; set +a; yarn db:query 'select 1' 2>&1 | tail -5",
+     ["set -a", ". .env", "set +a", "yarn db:query <str> | tail <n>"]),
     # a pipeline is one recipe; && || & ; and newlines split
     ("grep x f | sort | uniq -c", ["grep <arg> | sort | uniq -c"]),
     ("make && make test || echo bad & wait; ls\npwd", ["make", "make <arg>", "echo <arg>", "wait", "ls", "pwd"]),
@@ -237,6 +250,8 @@ STEP_CASES = [
     ("for f in a b; do echo $f; continue; done", ["echo <arg>"]),
     ("if test -f x; then echo hi; fi", ["test -f <v>", "echo <arg>"]),
     ("case $x in a) break;; esac; ls", ["ls"]),
+    ("select x in a b; do echo $x; done", ["echo <arg>"]),
+    ("{ echo a; }", ["echo <arg>"]),
     ("while read l; do echo $l; done < f", ["read <arg>", "echo <arg>"]),
     # assignment-only steps are dropped, a path assignment included
     ("F=/tmp/x; X=1 Y=2; ls", ["ls"]),
@@ -256,6 +271,11 @@ STEP_CASES = [
     ("echo `date`; date", ["echo <str>", "date"]),
     ("echo $(a $(b x))", ["echo <str>", "a <str>"]),
     ('echo "$(ls)" `ls`', ["echo <str>", "ls"]),
+    # $(( )) is arithmetic, not a command: masked, and its body adds no step
+    ("sleep $((60*5))", ["sleep <str>"]),
+    ("n=$((n+1)); echo $n", ["echo <arg>"]),
+    ('echo "elapsed $(( end - start ))s"', ["echo <str>"]),
+    ('echo "$(( a - b ))"', ["echo <str>"]),
 ]
 
 
@@ -272,7 +292,7 @@ class Steps(unittest.TestCase):
             with self.subTest(command=command):
                 # GIVEN a command and the wrapper seam words
                 # WHEN split into steps
-                got = steps(command, WRAP)
+                got = steps(command, WRAP, TOOLS)
                 # THEN the steps are the expected ones, in order
                 self.assertEqual(got, expected)
 
