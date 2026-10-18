@@ -19,7 +19,10 @@ from pathlib import Path
 API = "https://api.typesafe.ai/v1/systemone"
 SKIP = {"INDEX.md", "ARCHIVE.md"}
 MAX_CHOICE = 255  # a Jev Choice takes at most 255 options
-FILTER_ABOVE = 255  # past this many notes, rank only notes in the matched topics
+# ponytail: past this many notes, rank only notes in the matched topics. The topic prefilter cost 20 pts of
+# recall at 446 notes (18 Oct), so it stays off at today's sizes; ranking every note costs input tokens linearly
+# (~38k per route at 446 notes). Past 2000 the prefilter returns; revisit it before a KB gets that big.
+FILTER_ABOVE = 2000
 LINK = re.compile(r'^- \[(.+)\]\(([^)]+\.md)\)\s*$')
 
 
@@ -129,8 +132,9 @@ def summary(path, n=160):
 def route(kb, key, topics, question, top=15):
     """Two Jev passes run together: a Choice over every note (confident picks first), and one yes/no
     per note to order the rest. The Choice alone rounds all but its top few to 0.00, so its tail is
-    arbitrary; the yes/no pass gives every note its own score. 10-01 held-out set (42 questions):
-    right note within 8 lines 86% vs 71% for Choice-over-titles; see loop-evals/jev-harness-2026-09-30."""
+    arbitrary; the yes/no pass gives every note its own score. 42 held-out questions, right note within
+    8 lines: 86% at 255 notes (10-01, vs 71% for Choice-over-titles); 81% at 446 notes ranking every
+    note (10-18), vs 57-62% with the topic prefilter; see loop-evals/jev-harness-2026-09-30."""
     kb = Path(kb)
     alln = [(link, label) for link, label in notes(kb).items() if (kb / link).exists()]
     cand = alln
