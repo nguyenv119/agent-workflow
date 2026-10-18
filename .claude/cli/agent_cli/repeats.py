@@ -27,7 +27,7 @@ never --write-cache, so never the live warning.
 
 --polls finds a check repeated over separate calls by one agent: per (session, agent), rows in time order, a
 sequence is a maximal run of 3+ rows carrying the same poll key (poll_key: a listed step cut to its command and
-target, so `gh pr view <n> --json <v>` and `gh pr view <n> -q <v>` are one check), other rows in between allowed,
+masked target, so `gh pr view <n> --json <v>` and `gh pr view <n> -q <v>` are one check), other rows in between allowed,
 whose gaps are all within [15 s, 30 min]. Per agent, because parallel subagents share their parent's session id
 and would chain one busy step into fake sequences. Rows with no session are skipped. Never --write-cache, so
 never the live warning.
@@ -101,8 +101,9 @@ command (effects never feed the warning).
 the first `|` segment from its command word (past VAR=<v> words, shell keywords and git's global options),
 cut after the first later word holding a masked value (`gh pr view <n> --repo <arg> --json <v>` -> `gh pr
 view <n>`, `bd show <arg> | head <n>` -> `bd show <arg>`, `FOO=<v> npx tsx <arg> --x` -> `npx tsx <arg>`),
-or the whole segment when none does (`pnpm typecheck`); a key that is a shell basic (not a sleep or origin
-read) is dropped, and a run adds once to each distinct key. Per session and agent (parallel subagents share
+or the whole segment when none does (`tsc --noEmit`). The target stays masked, so checks of different PRs
+share one key. A key that is a shell basic (not a sleep or origin read) is dropped, and a run adds once to
+each distinct key. Per session and agent (parallel subagents share
 their parent's session), in time order, a sequence is a maximal run of 3 or more runs carrying the same key
 (other runs in between allowed) whose gaps are all from 15 s to 30 min inclusive; a gap outside that ends the
 run. Rows with no session are skipped. One row per key: sessions (with a sequence, each counted once however
@@ -115,7 +116,8 @@ with --by, --unit command or --write-cache.
 
 Exit codes (agent-cli's shared table): 0 ok: the report ran, an empty list included; 2 refused: bad
 usage; 3 blocked: the store or the --commands file cannot be read, a --commands line is not a
-{ts, session, cmd} object, or the cache cannot be written."""
+{ts, session, cmd} object (or its script or agent is not a string), or the cache cannot be
+written."""
 
 
 def register(sub):
@@ -134,7 +136,7 @@ def register(sub):
                    help="step: each step of a command, basics dropped (default); command: whole command shapes")
     p.add_argument("--by", choices=("effect",), help="effect: rank effect signals (hosts, env var names, .env "
                    "files, db:postgres) instead of steps")
-    p.add_argument("--polls", action="store_true", help="checks (a step's command and target) re-run 3+ times "
+    p.add_argument("--polls", action="store_true", help="checks (a step's command and masked target) re-run 3+ times "
                    "15 s to 30 min apart by one agent, ranked by sessions with such a run")
     p.add_argument("--commands", metavar="FILE",
                    help="JSONL of raw {ts, session, cmd, agent?, script?} rows instead of the store")
@@ -163,11 +165,8 @@ def run(a):
     if a.by:
         groups = group_effects(rows, step_test(group(rows), by_command) if live else None)
         covered = lambda s, g: 2 * g["covered"] >= g["count"]  # noqa: E731
-    elif a.polls:
-        groups = poll_groups(rows)
-        covered = lambda s, g: 2 * g["ruled"] >= g["count"] or by_command(s)  # noqa: E731
     else:
-        groups = group(rows, a.unit == "step")
+        groups = poll_groups(rows) if a.polls else group(rows, a.unit == "step")
         ok = step_test(groups, by_command)
         covered = lambda s, g: ok(s)  # noqa: E731
     repeated = [(s, g) for s, g in groups.items() if len(g["sessions"]) >= a.min_sessions]
@@ -358,7 +357,7 @@ def poll_key(step):
     """A step's check (see --polls): its first `|` segment from the command word, cut after the first later word
     holding a masked value; "" when the segment has no command word."""
     words = hook._words(hook.SEGMENT_SEP.split(step)[0])
-    cut = next((i for i, w in enumerate(words[1:], 2) if "<" in w), len(words))
+    cut = next((i for i, w in enumerate(words[1:], 2) if hook.PLACEHOLDER.search(w)), len(words))
     return " ".join(words[:cut])
 
 
@@ -383,7 +382,7 @@ def poll_groups(rows):
             tally[k][0] += 1
             tally[k][1] += bool(r.get("rules") or r.get("bypassed"))
         if r.get("session") and keys:
-            by_agent[(r["session"], r.get("agent") or None)].append((r["ts"], keys))
+            by_agent[(r["session"], r.get("agent"))].append((r["ts"], keys))
 
     def close(k, run, session):
         if len(run) < 3:

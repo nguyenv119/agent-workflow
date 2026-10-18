@@ -995,19 +995,20 @@ class Polls(StoreCase):
         return [x["step"] for x in self.polls(runs, "--covered", "none", "--min-sessions", "1", *args)]
 
     def test_four_pr_reads_minutes_apart_make_one_sequence_with_their_median_gap(self):
-        """A PR read at 10:00, 10:04, 10:09 and 10:15 in one session is one sequence under its check `gh pr view
+        """A PR read at 10:00, 10:04, 10:09 and 10:14:30 in one session is one sequence under its check `gh pr view
         <n>`: median gap 300 s, first and last its first and last run, steps the full step.
 
         A poll spread over separate calls is a chore no single-command rule sees; the row must show how
-        often it ran and how far apart, so a reader can size the wait command that replaces it.
+        often it ran and how far apart, so a reader can size the wait command that replaces it. The gaps'
+        mean is 290 s, so a mean in place of the median fails.
         """
-        # GIVEN 4 PR reads 4, 5 and 6 minutes apart in one session
-        runs = self.at([0, 240, 540, 900])
+        # GIVEN 4 PR reads 240, 300 and 330 s apart in one session
+        runs = self.at([0, 240, 540, 870])
         # WHEN --polls runs over them
         rows = self.polls(runs, "--covered", "none", "--min-sessions", "1")
         # THEN one row with every field
         self.assertEqual(rows, [{"step": PR_KEY, "sessions": 1, "sequences": 1, "median_gap_s": 300,
-                                 "first": "2026-04-02T10:00:00Z", "last": "2026-04-02T10:15:00Z",
+                                 "first": "2026-04-02T10:00:00Z", "last": "2026-04-02T10:14:30Z",
                                  "steps": ["gh pr view <n> --json <v>"]}])
 
     def test_spellings_of_one_pr_check_join_into_one_sequence(self):
@@ -1042,14 +1043,14 @@ class Polls(StoreCase):
         self.assertEqual(self.steps(runs), ["gh pr checks <n>", "sleep <n>"])
 
     def test_two_agents_interleaving_one_step_poll_each_on_their_own(self):
-        """Two agents of one session alternate a check every 60 s, each agent's own runs 2 minutes apart: one
-        sequence per agent (median 120 s), and the session counts once.
+        """Two agents of one session alternate a check, each agent's own runs 2 to 3 minutes apart: one
+        sequence per agent (gaps 120, 180, 120, 120: median 120 s, mean 135 s), and the session counts once.
 
         Parallel subagents carry their parent's session id; mixed together, their runs chain into one
         sequence with fake 60 s gaps.
         """
-        # GIVEN agent a1 at 0, 120, 240 s and agent a2 at 60, 180, 300 s, one session
-        runs = self.at([0, 120, 240], agent="a1") + self.at([60, 180, 300], agent="a2")
+        # GIVEN agent a1 at 0, 120, 300 s and agent a2 at 60, 180, 300 s, one session
+        runs = self.at([0, 120, 300], agent="a1") + self.at([60, 180, 300], agent="a2")
         # WHEN --polls runs
         rows = self.polls(runs, "--covered", "none", "--min-sessions", "1")
         # THEN 2 sequences, 1 session, gaps of each agent's own runs
@@ -1150,17 +1151,18 @@ class Polls(StoreCase):
         self.assertEqual(self.steps(self.at([0, 60])), [])
 
     def test_a_short_gap_splits_six_runs_into_two_sequences(self):
-        """Six runs a minute apart with a 5 s gap in the middle are 2 sequences; the 5 s gap is not in the median.
+        """Six runs with a 5 s gap in the middle are 2 sequences; the 5 s gap is not in the median.
 
-        The gap that ends a run is not a wait; counting it would drag the median toward retries.
+        The gap that ends a run is not a wait; counting it would drag the median toward retries. Gaps 60,
+        120, 180, 180: median 150 s (mean 135 s; with the 5 s gap the median would be 120 s).
         """
-        # GIVEN 6 PR reads: 3 a minute apart, 5 s, then 3 a minute apart
-        runs = self.at([0, 60, 120, 125, 185, 245])
+        # GIVEN 6 PR reads: 3 at 60 and 120 s gaps, 5 s, then 3 at 180 s gaps
+        runs = self.at([0, 60, 180, 185, 365, 545])
         # WHEN --polls runs
         rows = self.polls(runs, "--covered", "none", "--min-sessions", "1")
-        # THEN 2 sequences, median 60 s, spanning the first and last run
+        # THEN 2 sequences, median 150 s, spanning the first and last run
         self.assertEqual([(x["sequences"], x["median_gap_s"], x["first"], x["last"]) for x in rows],
-                         [(2, 60, "2026-04-02T10:00:00Z", "2026-04-02T10:04:05Z")])
+                         [(2, 150, "2026-04-02T10:00:00Z", "2026-04-02T10:09:05Z")])
 
     def test_other_runs_between_do_not_break_a_sequence(self):
         """Other commands typed between the polls leave the sequence whole; their own 2 runs make none.
@@ -1178,12 +1180,12 @@ class Polls(StoreCase):
 
         A replay file or the store's day files need not be in order; a gap read off file order could be negative.
         """
-        # GIVEN 3 PR reads a minute apart, written last first
-        runs = self.at([120, 60, 0])
+        # GIVEN 4 PR reads 240, 300 and 330 s apart, written last first
+        runs = self.at([870, 540, 240, 0])
         # WHEN --polls runs
-        # THEN one sequence with a 60 s median
+        # THEN one sequence with a 300 s median
         self.assertEqual([(x["sequences"], x["median_gap_s"]) for x in
-                          self.polls(runs, "--covered", "none", "--min-sessions", "1")], [(1, 60)])
+                          self.polls(runs, "--covered", "none", "--min-sessions", "1")], [(1, 300)])
 
     def test_min_sessions_counts_sessions_with_a_sequence(self):
         """--min-sessions counts sessions holding a sequence, not sessions that typed the step.
@@ -1203,9 +1205,11 @@ class Polls(StoreCase):
 
         A poll in more sessions is the better command candidate, and ties must break the same way every run.
         """
-        # GIVEN zeta polled in 2 sessions, beta twice in one session, alpha once in one session
+        # GIVEN zeta polled in 2 sessions, beta twice in one session (6 runs), alpha once in one session plus
+        # 4 runs 2 hours apart (7 runs, still one sequence)
         runs = (self.at([0, 60, 120], "zeta-tool", "a") + self.at([0, 60, 120], "zeta-tool", "b")
-                + self.at([0, 60, 120, 3600, 3660, 3720], "beta-tool", "a") + self.at([0, 60, 120], "alpha-tool", "a"))
+                + self.at([0, 60, 120, 3600, 3660, 3720], "beta-tool", "a")
+                + self.at([0, 60, 120, 7200, 14400, 21600, 28800], "alpha-tool", "a"))
         # WHEN --polls runs, then with --top 2
         # THEN zeta, beta, alpha; --top 2 drops alpha
         self.assertEqual(self.steps(runs), ["zeta-tool", "beta-tool", "alpha-tool"])
@@ -1242,6 +1246,45 @@ class Polls(StoreCase):
                 rows = self.polls(runs, "--min-sessions", "1")
                 # THEN 0 of 3 and 2 of 5 matched keep the key; 3 of 6 (exactly half) drops it
                 self.assertEqual([x["step"] for x in rows], want)
+
+    def test_a_run_that_bypassed_the_rule_counts_toward_the_half_share(self):
+        """A run that skipped the rule with `# agent-cli: allow <id>` counts as rule-matched in the key's share.
+
+        A bypass means the rule's command exists and the agent chose not to use it; the key needs no new command.
+        """
+        # GIVEN 3 unmatched PR reads in a sequence, and 3 matched reads 2 hours apart that bypass the rule
+        runs = (self.at([0, 60, 120], "gh pr view 12 --web")
+                + self.at([7200, 14400, 21600], PR_VIEW + "  # agent-cli: allow hand-pr-status"))
+        # WHEN --polls runs live, and with none
+        # THEN 3 of 6 (exactly half) drops it live; none keeps it
+        self.assertEqual(self.polls(runs, "--min-sessions", "1"), [])
+        self.assertEqual(self.steps(runs), [PR_KEY])
+
+    def test_key_is_the_first_pipe_segment(self):
+        """A polled `tsc --noEmit | tail -5`, some runs `| tail -20`, is the check `tsc --noEmit`.
+
+        The tail only trims what the agent reads; keyed on the whole step, one check would split by its tail.
+        """
+        # GIVEN the typecheck piped to two tails, 3 times a minute apart
+        runs = self.at([0, 60], "tsc --noEmit | tail -5") + self.at([120], "tsc --noEmit | tail -20")
+        # WHEN --polls runs
+        # THEN the key is the first segment alone
+        self.assertEqual(self.steps(runs), ["tsc --noEmit"])
+
+    def test_first_is_the_earliest_run_across_sessions_and_agents(self):
+        """first is the earliest sequence's first run and last the latest's last, whichever session or agent
+        is read first.
+
+        Sessions are read in input order; a row keeping the first-read sequence's times would misdate the poll.
+        """
+        # GIVEN session s2 (written first) polls an hour after session s1, and agent a2 of s1 later still
+        runs = (self.at([3600, 3660, 3720], session="s2") + self.at([0, 60, 120], session="s1")
+                + self.at([1800, 1860, 1920], session="s1", agent="a2"))
+        # WHEN --polls runs
+        rows = self.polls(runs, "--covered", "none", "--min-sessions", "1")
+        # THEN first is s1's first run and last is s2's last
+        self.assertEqual([(x["sequences"], x["first"], x["last"]) for x in rows],
+                         [(3, "2026-04-02T10:00:00Z", "2026-04-02T11:02:00Z")])
 
     def test_basic_steps_and_basic_keys_are_never_listed(self):
         """A polled chain of shell basics (`cat`, `git add`) lists nothing, and neither does a listed step whose
