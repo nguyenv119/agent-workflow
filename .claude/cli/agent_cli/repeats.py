@@ -72,7 +72,7 @@ reads (cat, export, set -a, mkdir, git add, `[ -n ... ]`, cut -c, inline python)
 except waits (`sleep <n>`) and git log/show of origin/<arg>. Steps are listed in groups: every uncovered
 step joins the group of its tool and subcommand, from the command word of its first `|` segment that is not a
 shell basic, else its first (`git worktree list | head <n>` and `git worktree remove <arg> --force` are `git
-worktree`; `cat <arg> | jq <str>` is `jq`; gh and npm/yarn/pnpm run keep one word more: `gh pr view`, `gh pr
+worktree`; `cat <arg> | jq <str>` is `jq`; gh and npm/yarn run keep one word more: `gh pr view`, `gh pr
 checks`; an interpreter keeps its script: `python3 loop.py`; a flag or masked value ends the key: `pkill -f <v>`
 is `pkill`; each word by its last path part: `<path>/gh pr view` is `gh pr view`, `. <path>/.env` is `. .env`).
 A group is listed when its merged distinct sessions reach --min-sessions, even if no one spelling does; a run

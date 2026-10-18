@@ -815,7 +815,7 @@ class WordPair(unittest.TestCase):
         self.check([(". <path>/.env", ". .env"), (". .env", ". .env"), ("bd show <arg> | head <n>", "bd show"),
                     ("git worktree list | head <n>", "git worktree"), ("git worktree remove <arg> --force", "git worktree"),
                     ("git -C <arg> worktree list", "git worktree"), ("FOO=<v> deploy-tool push", "deploy-tool push"),
-                    ("pnpm db:query <arg>", "pnpm db:query")])
+                    ("yarn test:unit <arg>", "yarn test:unit")])
 
     def test_a_flag_or_masked_value_ends_the_key(self):
         """A word starting with `-`, a masked value or a redirect ends the key, so `pkill -f <v>` is `pkill`.
@@ -830,7 +830,7 @@ class WordPair(unittest.TestCase):
                     ("<path>/deploy.sh <arg>", "deploy.sh"), ("make 2>&1", "make"), ("ship-tool X=<v>", "ship-tool")])
 
     def test_gh_and_npm_run_keep_the_command_after_the_group(self):
-        """gh's group word (`pr`, `api`, ...) and npm/yarn/pnpm `run` take one more name: `gh pr view` and `gh pr
+        """gh's group word (`pr`, `api`, ...) and npm/yarn `run` take one more name: `gh pr view` and `gh pr
         checks` are two keys; git's two-level groups do not (`git worktree list` is `git worktree`).
 
         Every gh command is `gh <group> <command>`: reading a PR and waiting on its checks are different chores,
