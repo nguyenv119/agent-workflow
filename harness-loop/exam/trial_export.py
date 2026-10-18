@@ -174,7 +174,7 @@ def _read(path):
     return path.read_text().strip() if path.is_file() else None
 
 
-def write_result(agent_logs, bead, harness_commit, harness_version=None):
+def write_result(agent_logs, bead, harness_commit, harness_version=None, installed_sha256=None):
     """Write <agent_logs>/exam/result.json (+ transcript.jsonl) after the run.
 
     agent_logs is Harbor's downloaded agent dir: claude-code.txt (stream-json),
@@ -182,7 +182,8 @@ def write_result(agent_logs, bead, harness_commit, harness_version=None):
     setup_task.sh and finish_task.sh wrote). status: rate_limited when claude
     hit a usage limit (run_exam stops the run; the try is not scored), ok on a
     normal finish, budget_cut when --max-budget-usd stopped it, else error. harness_version is
-    the .claude/HARNESS_VERSION this trial installed (run_exam checks it).
+    the .claude/HARNESS_VERSION this trial installed and installed_sha256 the packed tree's hash in
+    --installed mode (run_exam checks both).
     """
     agent_logs = Path(agent_logs)
     exam = agent_logs / "exam"
@@ -200,6 +201,7 @@ def write_result(agent_logs, bead, harness_commit, harness_version=None):
         "origin_url": _read(exam / "origin_url.txt"),
         "harness_commit": harness_commit,
         "harness_version": harness_version,
+        **({"installed_sha256": installed_sha256} if installed_sha256 else {}),
         "status": "rate_limited" if stream["rate_limited"] else STATUS_BY_SUBTYPE.get(stream["subtype"], "error"),
         "subtype": stream["subtype"],
         "rate_limited": stream["rate_limited"],

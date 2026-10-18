@@ -3,6 +3,7 @@
     PYTHONPATH=harness-loop/exam harbor run --agent workflow_agent:WorkflowAgent \\
       --path <task dir> --env docker \\
       --agent-kwarg harness_commit=<sha> --agent-kwarg max_budget_usd=<usd> \\
+      (or --agent-kwarg harness_installed=<abs dir>: an already-installed .claude + AGENTS.md, packed as it is)
       [--agent-kwarg title=... test_command=... workdir=... model_access=subscription|bedrock|api model=...]
 
 Harbor's own ClaudeCode agent pipes the task text straight to `claude --print`,
@@ -46,13 +47,15 @@ from harbor.models.agent.context import AgentContext
 
 EXAM_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(EXAM_DIR))
+sys.path.insert(0, str(EXAM_DIR.parent))
+import install_harness  # noqa: E402
 import trial_export  # noqa: E402
 
 AW_ROOT = EXAM_DIR.parent.parent
 INSTALLER = EXAM_DIR.parent / "install_harness.py"
 REMOTE = PurePosixPath("/installed-agent/exam")
 # Kwargs this agent owns; ClaudeCode's option model rejects unknown ones.
-OWN_KWARGS = ("harness_commit", "harness_addon", "model_access", "model", "title",
+OWN_KWARGS = ("harness_commit", "harness_addon", "harness_installed", "model_access", "model", "title",
               "test_command", "run_name", "workdir")
 # sandbox_env values Harbor's scrubber must know about (it only reads agent env).
 SECRET_KEYS = ("AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "ANTHROPIC_API_KEY", trial_export.OAUTH_TOKEN)
@@ -81,10 +84,13 @@ def resolve_commit(ref):
 
 class WorkflowAgent(ClaudeCode):
     def __init__(self, logs_dir: Path, *args, harness_commit="HEAD", harness_addon=None,
-                 model_access=None, model=None, title=None, test_command=None,
+                 harness_installed=None, model_access=None, model=None, title=None, test_command=None,
                  run_name=None, workdir=None, **kwargs):
         # Resolved now: the run records the sha that ran, and HEAD may move.
-        self._harness_commit = resolve_commit(_text(harness_commit))
+        self._installed = _text(harness_installed)
+        self._installed_sha256: str | None = None  # set when _pack_harness packs the installed tree
+        self._harness_commit = ((install_harness.installed_version(self._installed) or {}).get("commit")
+                                if self._installed else resolve_commit(_text(harness_commit)))
         self._harness_addon = _text(harness_addon)
         # None: the route HARNESS_MODEL_ACCESS names (run_exam passes it explicitly).
         self._model_access = _text(model_access) or trial_export.model_route(os.environ)
@@ -134,6 +140,15 @@ class WorkflowAgent(ClaudeCode):
         return self._resolve_auth_env()["ANTHROPIC_MODEL"]
 
     def _pack_harness(self, out_dir: Path) -> Path:
+        tarball = out_dir / "harness.tgz"
+        if self._installed:  # the tree is the harness: pack exactly the files installed_sha256 hashes
+            files = install_harness.installed_files(self._installed)
+            self._harness_version = install_harness.installed_version(self._installed)
+            self._installed_sha256 = install_harness.addon_sha256(files)
+            with tarfile.open(tarball, "w:gz", dereference=True) as tar:
+                for rel, path in files:
+                    tar.add(path, arcname=rel)
+            return tarball
         target = out_dir / "harness"
         cmd = [sys.executable, str(INSTALLER), "--repo", str(AW_ROOT),
                "--commit", self._harness_commit, "--target", str(target)]
@@ -141,7 +156,6 @@ class WorkflowAgent(ClaudeCode):
             cmd += ["--addon", self._harness_addon]
         subprocess.run(cmd, check=True, capture_output=True, text=True)
         self._harness_version = json.loads((target / ".claude/HARNESS_VERSION").read_text())
-        tarball = out_dir / "harness.tgz"
         with tarfile.open(tarball, "w:gz") as tar:
             for name in (".claude", "AGENTS.md"):
                 tar.add(target / name, arcname=name)
@@ -200,6 +214,6 @@ class WorkflowAgent(ClaudeCode):
     def populate_context_post_run(self, context: AgentContext) -> None:
         super().populate_context_post_run(context)
         result = trial_export.write_result(self.logs_dir, self._bead, self._harness_commit,
-                                           self._harness_version)
+                                           self._harness_version, self._installed_sha256)
         if result["total_cost_usd"] is not None:
             context.cost_usd = float(result["total_cost_usd"])

@@ -357,6 +357,36 @@ class PostRunTest(AgentCase):
         self.assertEqual(json.loads((agent.logs_dir / "exam" / "result.json").read_text())["harness_version"],
                          installed)
 
+    def test_installed_tree_is_packed_as_it_is_and_its_hash_exported(self):
+        """
+        What: harness_installed=<dir> packs exactly install_harness.installed_files(dir) (no install), and the
+        export records the tree's HARNESS_VERSION, its commit and installed_sha256.
+        Why: the canary of an installing repo tests its installed files; run_exam checks the hash per try.
+        Breaks: a pack of agent-workflow instead, or a try run_exam cannot tell apart from another tree.
+        """
+        import tarfile
+        import install_harness
+        from helpers import installed_tree
+        with tempfile.TemporaryDirectory() as tmp:
+            # GIVEN an installed tree pinned to commit ccc... (plus a __pycache__ the pack must skip)
+            version = {"commit": "c" * 40, "addon": None, "addon_sha256": None}
+            tree = installed_tree(Path(tmp) / "install", version)
+            (tree / ".claude/__pycache__").mkdir()
+            (tree / ".claude/__pycache__/x.pyc").write_bytes(b"x")
+            agent = self.make_agent(harness_installed=str(tree))
+            # WHEN it packs and post-run exports
+            out = Path(tmp) / "out"
+            out.mkdir()
+            with tarfile.open(agent._pack_harness(out)) as tar:
+                names = sorted(m.name for m in tar.getmembers() if m.isfile())
+            agent.populate_context_post_run(AgentContext())
+            # THEN the tarball holds the tree's files, and the export names its version, commit and hash
+            self.assertEqual(names, [rel for rel, _ in install_harness.installed_files(tree)])
+            self.assertNotIn(".claude/__pycache__/x.pyc", names)
+            result = json.loads((agent.logs_dir / "exam" / "result.json").read_text())
+            self.assertEqual((result["harness_version"], result["harness_commit"], result["installed_sha256"]),
+                             (version, "c" * 40, install_harness.installed_sha256(tree)))
+
     def test_post_run_without_result_line_leaves_cost_unset(self):
         """A run killed before its result line has no cost: None, never 0."""
         # GIVEN logs with no stream at all

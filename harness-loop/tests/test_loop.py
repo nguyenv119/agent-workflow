@@ -98,7 +98,8 @@ class LoopRepo:
         self.origin = self.tmp / "origin.git"
         run(GIT + ["init", "-q", "--bare", str(self.origin)], self.tmp)
         files = dict(BASE_FILES)
-        for rel in ("loop.py", "install_harness.py", "project_check.py", "exam/compare.py", "exam/trial_export.py"):
+        for rel in ("loop.py", "install_harness.py", "project_check.py", "exam/compare.py", "exam/trial_export.py",
+                    "exam/envfile.py"):
             files[f"harness-loop/{rel}"] = (LOOP_DIR / rel).read_text()
         self.aw, self.base_sha = make_repo(self.tmp / "aw", files)
         run(GIT + ["remote", "add", "origin", str(self.origin)], self.aw)
@@ -169,9 +170,11 @@ class LoopRepo:
     def exam_calls(self):
         return [json.loads(line) for line in self.exam_log.read_text().splitlines()] if self.exam_log.is_file() else []
 
-    def base_run(self, booked=True, env=None):
-        """A sealed main screen run at base_sha; the round reuses it only if booked in spend.jsonl."""
-        p = subprocess.run([sys.executable, str(FIXTURES / "fake_run_exam.py"), "--harness", self.base_sha,
+    def base_run(self, booked=True, env=None, harness=None):
+        """A sealed main screen run at base_sha (or of harness: e.g. ("--installed", dir)); the round reuses it
+        only if booked in spend.jsonl."""
+        harness = harness or ("--harness", self.base_sha)
+        p = subprocess.run([sys.executable, str(FIXTURES / "fake_run_exam.py"), *harness,
                             "--tasks", str(self.manifest), "--budget-usd", "9", "--screen", "--kind", "baseline"],
                            env={**self.env, **(env or {})}, capture_output=True, text=True, check=True)
         self.exam_log.unlink()
@@ -2226,6 +2229,22 @@ class ExamPR(LoopTestCase):
         # AND both runs are booked against the PR
         rows = [json.loads(x) for x in (self.r.home / "spend.jsonl").read_text().splitlines()]
         self.assertEqual([(r["kind"], r["round"]) for r in rows], [("exam-baseline", "pr-5"), ("exam-candidate", "pr-5")])
+
+    def test_exam_screen_still_passes_one_fewer_solved_than_main(self):
+        """
+        A plain PR exam (not the canary) keeps the round's slack: 2/3 vs main's 3/3 passes, and its candidate
+        run gets no --early-stop-slack. Breaks: the canary's slack 0 leaks into rounds and exams.
+        """
+        # GIVEN a PR changing a reviewer skill, main solving 3/3 and the candidate 2/3
+        head = self.pr_head({self.REVIEWER: BASE_FILES[self.REVIEWER] + "Also check names.\n"})
+        spec = {"baseline": {t: [1, 2.0] for t in ("t1", "t2", "t3")},
+                "candidate": {"t1": [1, 2.0], "t2": [1, 2.0], "t3": [0, 2.0]}}
+        # WHEN examined
+        p = self.exam(head, env={"FAKE_EXAM_SPEC": json.dumps(spec)})
+        # THEN the screen passes, and the candidate ran with the default early-stop slack
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertTrue(self.block()[0].endswith("solved 2/3 $6.00 | screen=pass"), self.block())
+        self.assertNotIn("--early-stop-slack", self.r.exam_calls()[1])
 
     def test_early_stopped_candidate_gets_an_early_stop_line(self):
         """A candidate run that stopped early fails the screen, and the block says why it stopped."""

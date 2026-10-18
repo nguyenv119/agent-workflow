@@ -35,11 +35,13 @@ import compare  # noqa: E402
 import run_exam  # noqa: E402
 
 FAKE_HARBOR = textwrap.dedent('''\
-    import json, os, sys
+    import hashlib, json, os, sys
     from pathlib import Path
     log, spec_path, argv = sys.argv[1], sys.argv[2], sys.argv[3:]
+    token = os.environ.get("CLAUDE_CODE_OAUTH_TOKEN")  # logged as a hash: the value never lands in a file
     with open(log, "a") as fh:
-        fh.write(json.dumps({"argv": argv, "env": sorted(os.environ)}) + "\\n")
+        fh.write(json.dumps({"argv": argv, "env": sorted(os.environ),
+                             "token_sha256": hashlib.sha256(token.encode()).hexdigest() if token else None}) + "\\n")
     def opt(*names):
         for i, a in enumerate(argv):
             if a in names:
@@ -79,7 +81,15 @@ FAKE_HARBOR = textwrap.dedent('''\
         (exam / name).write_text(text + "\\n")
     (agent_dir / "claude-code.txt").write_text('{"type": "result"}\\n')
     subtype = spec.get("subtype", "success")
-    if "harness_version" in spec:
+    installed = {}
+    if "harness_installed" in ak:  # what _pack_harness records for an installed tree
+        sys.path.insert(0, LOOP_DIR)
+        import install_harness
+        installed = {"installed_sha256": spec.get("installed_sha256",
+                                                  install_harness.installed_sha256(ak["harness_installed"]))}
+        version = spec.get("harness_version", install_harness.installed_version(ak["harness_installed"]))
+        ak["harness_commit"] = (version or {}).get("commit")
+    elif "harness_version" in spec:
         version = spec["harness_version"]
     else:  # what WorkflowAgent._pack_harness records: a real install of the same kwargs
         import subprocess, tempfile
@@ -94,7 +104,7 @@ FAKE_HARBOR = textwrap.dedent('''\
         "harness_commit": spec.get("harness_commit", ak["harness_commit"]), "branch": branch or None,
         "origin_url": "file:///tmp/origin.git", "rate_limited": spec.get("rate_limited"),
         "status": "rate_limited" if spec.get("rate_limited") else status,
-        "total_cost_usd": cost, "exam_no_pr_line": True, "harness_version": version}))
+        "total_cost_usd": cost, "exam_no_pr_line": True, "harness_version": version, **installed}))
     inner = agent_dir / "tries/app/exam-1/try-1"
     inner.mkdir(parents=True)
     (inner / "note.md").write_text("inner try\\n")
@@ -125,7 +135,8 @@ class RunExamTest(unittest.TestCase):
         self.home = self.root / "home"
         self.fake = self.root / "fake_harbor.py"
         self.fake.write_text(FAKE_HARBOR.replace("INSTALLER, ", f"{str(run_exam.INSTALLER)!r}, ", 1)
-                             .replace("AW_ROOT, ", f"{str(run_exam.AW_ROOT)!r}, ", 1))
+                             .replace("AW_ROOT, ", f"{str(run_exam.AW_ROOT)!r}, ", 1)
+                             .replace("LOOP_DIR)", f"{str(run_exam.LOOP_DIR)!r})", 1))
         self.log = self.root / "harbor.log"
         self.spec = self.root / "spec.json"
         self.spec.write_text("{}")
@@ -160,13 +171,13 @@ class RunExamTest(unittest.TestCase):
         m.write_text(json.dumps({"set": "demo", "source": "test", "tasks": rows}))
         return m
 
-    def run_exam(self, *args, check=True, extra_env=None):
+    def run_exam(self, *args, check=True, extra_env=None, harness=("--harness", "HEAD")):
         env = {k: v for k, v in os.environ.items() if k not in ("HARNESS_MODEL_ACCESS", "CLAUDE_CODE_OAUTH_TOKEN")}
         env = {**env, "HARNESS_LOOP_HOME": str(self.home), "CLAUDE_CODE_OAUTH_TOKEN": "oauth-test",
                "EXAM_HARBOR": f"{sys.executable} {self.fake} {self.log} {self.spec} run",
                "EXAM_DOCKER": f"{sys.executable} {self.fake_docker} {self.docker_log} {self.docker_spec}",
                **(extra_env or {})}
-        p = subprocess.run([sys.executable, str(SCRIPT), "--harness", "HEAD", *map(str, args)],
+        p = subprocess.run([sys.executable, str(SCRIPT), *map(str, harness), *map(str, args)],
                            env=env, text=True, capture_output=True)
         if check:
             self.assertEqual(p.returncode, 0, p.stderr)
@@ -185,6 +196,10 @@ class RunExamTest(unittest.TestCase):
 
     def envs(self):
         return [json.loads(l)["env"] for l in self.log.read_text().splitlines()]
+
+    def token_hashes(self):
+        """sha256 of the CLAUDE_CODE_OAUTH_TOKEN each harbor call got (None when it had none)."""
+        return [json.loads(l)["token_sha256"] for l in self.log.read_text().splitlines()]
 
     def docker_calls(self):
         if not self.docker_log.exists():
@@ -474,6 +489,24 @@ class RunExamTest(unittest.TestCase):
         run = next(d for d in (self.home / "runs").iterdir() if d != base)
         meta = json.loads((run / "run.json").read_text())
         self.assertEqual((meta["status"], meta.get("early_stop")), ("complete", None))
+
+    def test_early_stop_slack_0_stops_once_the_candidate_cannot_match_mains_solved(self):
+        """
+        --early-stop-slack reaches the early stop: with 0, a candidate that misses main's cheapest task can
+        reach at most 2 of main's 3 solved, so nothing more starts (slack 1 would run on: 2 >= 3 - 1).
+        Breaks: the canary (slack 0) pays for tasks of a candidate its screen already fails.
+        """
+        # GIVEN main's sealed screen run (3/3), and a candidate that misses t2 (main's cheapest task)
+        m, base = self.screen_baseline()
+        self.log.unlink()
+        self.spec.write_text(json.dumps({"t2": {"reward": 0}}))
+        # WHEN the candidate screen runs with --early-stop-vs main's run and --early-stop-slack 0
+        self.run_exam("--tasks", m, "--budget-usd", 100, "--screen", "--early-stop-vs", base,
+                      "--early-stop-slack", 0, check=False)
+        # THEN only t2 ran, and the run stopped on the solved rule
+        self.assertEqual([Path(a[a.index("-p") + 1]).name for a in self.argvs()], ["t2"])
+        run = next(d for d in (self.home / "runs").iterdir() if d != base)
+        self.assertIn("solved", json.loads((run / "run.json").read_text())["early_stop"])
 
     def test_early_stop_without_screen_is_refused(self):
         """Early stop mirrors the screen rule only; on a full exam it would cut a run the margin needs."""
@@ -906,7 +939,8 @@ class ScheduleEarlyStop(unittest.TestCase):
             st, reward, cost = outcomes[task["id"]]
             return {"task": task["id"], "try": k, "agent": agent, "status": st, "reward": reward, "cost_usd": cost}
 
-        args = argparse.Namespace(agent="workflow", concurrency=2, budget_usd=100.0, max_budget_usd=12.05)
+        args = argparse.Namespace(agent="workflow", concurrency=2, budget_usd=100.0, max_budget_usd=12.05,
+                                  early_stop_slack=compare.SCREEN_SOLVED_SLACK)
         self.ctx = {"args": args, "early": base}
         jobs = [({"id": t}, 1, "workflow") for t in outcomes]
         with unittest.mock.patch.object(run_exam, "run_try", run_try), \

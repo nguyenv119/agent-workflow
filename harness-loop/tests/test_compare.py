@@ -216,6 +216,22 @@ class CompareTest(unittest.TestCase):
         # GIVEN A solves 3, B solves 1 / WHEN screened / THEN fail
         self.assertEqual(self.screen(3, 1, 100, 100), "fail")
 
+    def test_screen_with_solved_slack_0_fails_one_fewer_solved(self):
+        """
+        What: --solved-slack 0 fails a candidate solving 2/3 against main's 3/3, which the default slack passes.
+        Why: the canary screens on three tasks, where one lost task is a third of the signal; a harmful harness
+        line scored 2/3 vs 3/3 and passed the slack-1 rule.
+        Breaks: a regressing harness PR gets a green canary.
+        """
+        # GIVEN main solves 3/3 and the candidate 2/3 at the same cost
+        a = make_run(self.root, "a", {f"t{i}": [ok(1)] for i in range(3)})
+        b = make_run(self.root, "b", {f"t{i}": [ok(int(i < 2))] for i in range(3)})
+        # WHEN screened with the default slack and with --solved-slack 0
+        default = self.fields(self.cmp(a, b, "--screen-rule").stdout)["screen"]
+        strict = self.fields(self.cmp(a, b, "--screen-rule", "--solved-slack", "0").stdout)["screen"]
+        # THEN only slack 0 fails it
+        self.assertEqual((default, strict), ("pass", "fail"))
+
     def test_screen_cost_125_percent_passes(self):
         """Exactly 1.25x the baseline cost is the allowed edge."""
         # GIVEN B costs 125 vs A's 100 / WHEN screened / THEN pass
@@ -283,6 +299,24 @@ class ScreenFailDecidedTest(unittest.TestCase):
         self.assertIsNone(self.decided([res(t, reward=0) for t in ("t0", "t1", "t2")]))
         # WHEN it also misses t3 (0 + 1 left < 2)
         why = self.decided([res(t, reward=0) for t in ("t0", "t1", "t2", "t3")])
+        # THEN the fail is decided, naming the solved rule
+        self.assertIn("solved", why)
+
+    def test_slack_0_decides_fail_once_the_candidate_can_no_longer_match_mains_solved(self):
+        """
+        With slack 0 the screen needs solvedB >= solvedA. Missing two of main's three solved tasks still leaves
+        3 reachable; missing the third leaves 2 < 3, so the run stops there (slack 1 would go on: 2 >= 3 - 1).
+        Breaks: a canary candidate that can no longer pass pays for every remaining task.
+        """
+        tasks = {f"t{i}" for i in range(5)}
+
+        def decided(done):
+            return compare.screen_fail_decided(self.base, done, tasks - {r["task"] for r in done}, CAP, slack=0)
+
+        # GIVEN main solved 3, and the candidate missed t0 and t1: 0 + 3 left = 3, still reachable
+        self.assertIsNone(decided([res(t, reward=0) for t in ("t0", "t1")]))
+        # WHEN it also misses t2 (0 + 2 left < 3)
+        why = decided([res(t, reward=0) for t in ("t0", "t1", "t2")])
         # THEN the fail is decided, naming the solved rule
         self.assertIn("solved", why)
 
