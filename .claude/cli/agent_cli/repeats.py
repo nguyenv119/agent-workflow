@@ -9,7 +9,10 @@ Unit: a step (shape.steps, one pipeline of a chain, loop body or $( ) body) by d
 Those old rows keep the masking they were recorded with, so while old rows are in the window (14 days
 by default) one chore can sit under an old and a new step key; accepted, with no shape-version field.
 Shell basics (hook.basic) are dropped, except sleeps and on-main git reads (hook.report_only).
---unit command ranks whole command shapes, as before steps.
+The step report lists groups, not steps: every uncovered step (whatever its session count) joins the group
+of its word_pair key (`gh pr view`, `git worktree`, `python3 loop.py`), and a group is listed when its merged
+distinct sessions reach --min-sessions, so spellings each under the bar add up; a run adds once per group.
+The cache (cache_of) stays keyed by step. --unit command ranks whole command shapes, as before steps.
 
 Covered (--covered live): a step or shape is covered when (a) a hook rule matched at least half of its runs,
 counting a rule a run skipped with `# agent-cli: allow <id>` (a deny rule blocks its command, so the
@@ -58,13 +61,22 @@ POLL_GAP = (15, 30 * 60)  # seconds between two runs of a sequence, both ends in
 TS = "%Y-%m-%dT%H:%M:%SZ"
 STORE_TS = re.compile(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ")
 DESCRIPTION = """\
-Lists steps run in --min-sessions or more distinct sessions inside the window, minus covered steps,
-ranked by sessions, then runs, then step. A step is one pipeline of a command (each part of a `&&` or
+Lists groups of uncovered steps run in --min-sessions or more distinct sessions inside the window (see
+below). A step is one pipeline of a command (each part of a `&&` or
 `;` chain, a loop body, a $( ) body) with every value masked (`gh pr view <n> --json <v>`); see
 `agent-cli hook posttooluse`. A run adds once to each distinct step it holds. Shell basics and generic
 reads (cat, export, set -a, mkdir, git add, `[ -n ... ]`, cut -c, inline python) are never listed,
-except waits (`sleep <n>`) and git log/show of origin/<arg>. --unit command ranks whole command shapes
-instead, basics included; the `shape` field holds the step, or the command shape with --unit command.
+except waits (`sleep <n>`) and git log/show of origin/<arg>. Steps are listed in groups: every uncovered
+step joins the group of its tool and subcommand, from the first `|` segment's command word (`git worktree list
+| head <n>` and `git worktree remove <arg> --force` are `git worktree`; gh and npm/yarn/pnpm run keep one word
+more: `gh pr view`, `gh pr checks`; an interpreter keeps its script: `python3 loop.py`; a flag or masked value
+ends the key: `pkill -f <v>` is `pkill`). A group is listed when its merged distinct sessions reach
+--min-sessions, even if no one spelling does; a run adds once to each group it holds. Groups rank by merged
+sessions, then runs, then key; --top counts groups. Each row's fields are the group's, plus `group` (the key),
+`shape` (its top spelling) and, with --json, `spellings`: every uncovered spelling in the group with its own
+fields. In text mode a group of 2+ spellings shows its key in the shape column, then its top 3 spellings
+indented 4 spaces. --unit command ranks whole command shapes instead, ungrouped, basics included; the `shape`
+field holds the command shape there.
 
 Source: the recorder's store (${AGENT_CLI_SHAPES_DIR:-~/.claude/agent-cli/shapes}), or with --commands a
 JSONL file of {"ts", "session", "cmd"} rows (optional "repo", "exit", "agent": the subagent id, missing or
@@ -173,6 +185,10 @@ def run(a):
         covered = lambda s, g: ok(s)  # noqa: E731
     repeated = [(s, g) for s, g in groups.items() if len(g["sessions"]) >= a.min_sessions]
     listed = [(s, g) for s, g in repeated if not (live and covered(s, g))]
+    covered_n, pair = len(repeated) - len(listed), None
+    if not (a.by or a.polls) and a.unit == "step":  # list word-pair groups of every uncovered spelling
+        pair = {s: word_pair(s) for s in groups if not (live and ok(s))}
+        listed = [(k, g) for k, g in group(rows, key=pair.get).items() if len(g["sessions"]) >= a.min_sessions]
     rank = "sequences" if a.polls else "count"
     listed.sort(key=lambda sg: (-len(sg[1]["sessions"]), -sg[1][rank], sg[0]))
     if a.write_cache:
@@ -181,22 +197,30 @@ def run(a):
             core.write_atomic(record.store_dir() / CACHE, json.dumps(cache, sort_keys=True) + "\n")
         except OSError as e:
             core.die(Exit.BLOCKED, f"cannot write {record.store_dir() / CACHE}: {e.strerror}", EXAMPLES[3])
-    out = [(poll_row if a.polls else effect_row if a.by else report_row)(s, g) for s, g in listed[:a.top]]
+    if pair is not None:
+        spellings = collections.defaultdict(list)
+        for s, k in pair.items():
+            spellings[k].append(s)
+        out = [group_row(k, g, [report_row(s, groups[s]) for s in spellings[k]]) for k, g in listed[:a.top]]
+    else:
+        out = [(poll_row if a.polls else effect_row if a.by else report_row)(s, g) for s, g in listed[:a.top]]
     if not a.json:
         print("  ".join(POLL_FIELDS if a.polls else EFFECT_FIELDS if a.by else FIELDS))
     for row in out:
         if a.polls:
-            text = (f"{row['sequences']}  {row['median_gap_s']}  {row['first']}  {row['last']}  {row['step']}  "
-                    f"{'  //  '.join(row['steps'])}")
+            text = (f"{row['sessions']}  {row['sequences']}  {row['median_gap_s']}  {row['first']}  {row['last']}  "
+                    f"{row['step']}  {'  //  '.join(row['steps'])}")
         elif a.by:
-            text = f"{row['count']}  {row['first']}  {row['last']}  {row['effect']}  {'  //  '.join(row['steps'])}"
+            text = (f"{row['sessions']}  {row['count']}  {row['first']}  {row['last']}  {row['effect']}  "
+                    f"{'  //  '.join(row['steps'])}")
+        elif len(row.get("spellings", ())) > 1:
+            text = "\n".join([step_line(row, row["group"])] + ["    " + step_line(x) for x in row["spellings"][:3]])
         else:
-            share = "-" if row["exit_fail_share"] is None else f"{row['exit_fail_share']:.2f}"
-            text = f"{row['count']}  {share}  {row['first']}  {row['last']}  {row['shape']}"
-        core.out(a, row, f"{row['sessions']}  {text}")
+            text = step_line(row)
+        core.out(a, row, text)
     unit = "checks with sequences" if a.polls else "effects" if a.by else "steps" if a.unit == "step" else "shapes"
     sys.stderr.write(f"repeats: {len(rows)} runs in window, {len(repeated)} {unit} in {a.min_sessions}+ sessions, "
-                     f"{len(repeated) - len(listed)} covered, {len(out)} printed"
+                     f"{covered_n} covered, {len(out)} {'groups ' if pair is not None else ''}printed"
                      + (f", {skipped} unreadable store lines skipped" if skipped else "") + "\n")
     return Exit.OK
 
@@ -298,6 +322,8 @@ def group(rows, by_step=True, key=None):
             continue
         keys = listed_steps(r, split) if by_step else (s,)
         for k in dict.fromkeys(map(key, keys)) if key else keys:
+            if k is None:  # key maps a step it leaves out (a covered spelling) to None
+                continue
             g = groups.get(k)
             if g is None:
                 g = groups[k] = {"sessions": set(), "count": 0, "first": r["ts"], "last": r["ts"], "failed": 0,
@@ -462,3 +488,43 @@ def command_word(s, lead):
 def report_row(s, g):
     return {"shape": s, "sessions": len(g["sessions"]), "count": g["count"], "first": g["first"], "last": g["last"],
             "exit_fail_share": round(g["failed"] / g["known"], 4) if g["known"] else None}
+
+
+def group_row(k, g, spellings):
+    """A word-pair group's row: report_row over the merged group, shape its top spelling, group its key, and
+    spellings (report_row dicts) ranked by their own sessions, runs, then text."""
+    spellings.sort(key=lambda x: (-x["sessions"], -x["count"], x["shape"]))
+    return dict(report_row(spellings[0]["shape"], g), group=k, spellings=spellings)
+
+
+def step_line(row, label=None):
+    """A step report text line: the FIELDS of row, the shape column replaced by label when given."""
+    share = "-" if row["exit_fail_share"] is None else f"{row['exit_fail_share']:.2f}"
+    return f"{row['sessions']}  {row['count']}  {share}  {row['first']}  {row['last']}  {label or row['shape']}"
+
+
+NAME = re.compile(r"(?:<path>/)?[\w.:+-]+")  # a literal name word, maybe under a masked path: `<path>/.env`
+PAIR_THIRD = {t: g for t, g in shape.THIRD.items() if t != "git"}  # `gh pr view`, `npm run <script>`
+
+
+def word_pair(step):
+    """The steps report's group key of a listed step, from its first `|` segment's command word (hook._words):
+    the tool plus the next word, or the next two after a PAIR_THIRD group word (`gh pr view`), each taken only
+    while it is a NAME not starting with `-` (`pkill -f <v>` -> `pkill`, `git worktree list | head <n>` -> `git
+    worktree`). An interpreter keys on its first non-flag word when that is a script (`python3 -u loop.py` ->
+    `python3 loop.py`, `python3 -m <v>` -> `python3`). A step with no literal command word is its own key."""
+    words = hook._words(hook.SEGMENT_SEP.split(step)[0])
+    if not words or hook.PLACEHOLDER.fullmatch(words[0]):
+        return step
+    tool, rest = words[0], words[1:]
+    base = tool.rsplit("/", 1)[-1]
+    if shape.INTERPRETER.fullmatch(base):
+        script = next((w for w in rest if not w.startswith("-")), "")
+        is_script = NAME.fullmatch(script) and shape.SCRIPT.fullmatch(script.rsplit("/", 1)[-1])
+        return f"{tool} {script}" if is_script else tool
+    key = [tool]
+    for w in rest[:2 if rest[:1] and rest[0] in PAIR_THIRD.get(base, ()) else 1]:
+        if w.startswith("-") or not NAME.fullmatch(w):
+            break
+        key.append(w)
+    return " ".join(key)
