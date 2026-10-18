@@ -49,7 +49,7 @@ DB_RUNNERS = frozenset({"npm", "yarn", "bun"} | {t[0] for t in COLON_TOOLS})
 DB_SCRIPT = re.compile(r"(?:(?:--filter|--dir|--prefix|--workspace|-[FCw]) \S+ |-\S+ |run )*[\"']?db:")
 # a Postgres client library imported in inline code (JS, then Python); the library name is matched whole
 DB_CODE = re.compile(r"(?:require\(|\bfrom\s+|\bimport\s*\(?)\s*" + Q_
-                     + r"(?:pg|postgres|@neondatabase/serverless)" + Q_
+                     + r"(?:pg|postgres|@neondatabase/serverless)" + Q_  # e.g. a serverless driver
                      + r"|\bimport\s+pg\b(?![.-])"
                      r"|\b(?:import|from)\s+(?:[\w.]+\s*,\s*)*(?:psycopg2?|asyncpg)(?![\w-])")
 NAME_ARG = re.compile(r"([A-Za-z_]\w*)(?:=.*)?")

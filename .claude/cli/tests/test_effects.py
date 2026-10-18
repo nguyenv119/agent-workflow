@@ -290,7 +290,7 @@ class Postgres(unittest.TestCase):
         """
         for code in ('node -e "const { Client } = require(\\"pg\\")"', "node -e 'import pg from \"pg\"'",
                      "node --input-type=module -e 'import sql from \"postgres\"'",
-                     "tsx -e 'import { neon } from \"@neondatabase/serverless\"'",
+                     "tsx -e 'import { neon } from \"@neondatabase/serverless\"'",  # e.g. a serverless driver
                      "python3 - <<'EOF'\nimport psycopg2\nEOF", "python3 -c 'import asyncpg'",
                      "python3 - <<'EOF'\nfrom psycopg.rows import dict_row\nEOF",
                      "cat > /tmp/q.py <<'EOF'\nimport psycopg\nEOF\npython3 /tmp/q.py"):
