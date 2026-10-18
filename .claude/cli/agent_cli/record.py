@@ -1,9 +1,11 @@
 """The shape recorder: one JSON line per Bash call, holding the command's shape and never the command.
 
-Row: {ts, session, agent, repo, shape, steps, exit, rules, bypassed} appended to
+Row: {ts, session, agent, repo, shape, steps, effects, exit, rules, bypassed} appended to
 ${AGENT_CLI_SHAPES_DIR:-~/.claude/agent-cli/shapes}/<UTC YYYY-MM-DD>.jsonl with one os.write on an
 O_APPEND fd (atomic for a line this short). `steps` = shape.steps() of the command, at most MAX_STEPS
-(rows from before it have none; readers split `shape` instead). `rules` = ids of the active hook rules
+(rows from before it have none; readers split `shape` instead). `effects` = effects.effects() of the
+command: names only (`host:<h>`, `env:<NAME>`, `envfile:<basename>`, `db:postgres`), never values (rows from before it
+have none, and add nothing to `repeats --by effect`). `rules` = ids of the active hook rules
 that match the raw command, computed in memory, so a report can tell covered shapes from uncovered ones
 without the raw text; `bypassed` = the ids of rules that match but were skipped by `# agent-cli: allow <id>` (a deny
 rule's chore is only ever recorded when bypassed). Day files older than AGENT_CLI_SHAPES_KEEP_DAYS
@@ -18,6 +20,7 @@ import sys
 from pathlib import Path
 
 from . import core, hook
+from .effects import effects
 from .shape import shape, steps
 
 MAX_SHAPE = 1024
@@ -65,17 +68,27 @@ def append_line(path, line):
 
 
 def fields(command, rules, prefixes=None, tools=None):
-    """{shape, steps, rules, bypassed} for a raw command, the part of a row that comes from its text (the
-    report calls this too, for raw commands it replays): the shape cut to MAX_SHAPE, the first MAX_STEPS
-    step shapes (each already cut to MAX_SHAPE), the ids of the rules that fire, and those of the rules
-    that match but a `# agent-cli: allow <id>` comment skips.
+    """{shape, steps, effects, rules, bypassed} for a raw command, the part of a row that comes from its text
+    (the report calls this too, for raw commands it replays): the shape cut to MAX_SHAPE, the first MAX_STEPS
+    step shapes (each already cut to MAX_SHAPE), its effect signals (effects() caps them), the ids of the rules
+    that fire, and those of the rules that match but a `# agent-cli: allow <id>` comment skips.
     prefixes/tools: as shape()'s (None reads the seams)."""
     s = shape(command, prefixes, tools)
     hits = [r["id"] for r in hook.evaluate(command, rules, honor_bypass=False)]
     allowed = set(hook.BYPASS.findall(command)) if hits else set()
     return {"shape": s[:MAX_SHAPE] if s else None, "steps": steps(command, prefixes, tools)[:MAX_STEPS],
+            "effects": _effects(command, prefixes),
             "rules": [i for i in hits if i not in allowed],
             "bypassed": [i for i in hits if i in allowed]}
+
+
+def _effects(command, prefixes):
+    """effects() of command, or [] when it fails (e.g. RecursionError on ~1000 nested `$(`): the row still
+    keeps its shape and steps."""
+    try:
+        return effects(command, prefixes)
+    except Exception:  # the newest reader must never cost the row
+        return []
 
 
 def _short(v):

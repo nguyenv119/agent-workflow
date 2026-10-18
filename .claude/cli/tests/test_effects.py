@@ -1,0 +1,604 @@
+"""Tests for agent_cli.effects: the hosts, env var names and .env files a Bash command touches, never values."""
+import sys
+import time
+import unittest
+
+from helpers import CLAUDE
+
+sys.path.insert(0, str(CLAUDE / "cli"))
+from agent_cli.effects import effects  # noqa: E402
+
+WRAP = ("wrapx", "wrapx raw")  # a made-up wrapper word, as a project's command-prefixes seam lists it
+
+# The commit form Claude Code writes: the message is a heredoc inside "$( )".
+COMMIT = ("git commit -m \"$(cat <<'EOF'\nfix: thing\n\nhttps://claude.com/claude-code\nEOF\n)\"")
+
+
+def fx(command):
+    return effects(command, WRAP)
+
+
+class BeadExamples(unittest.TestCase):
+    def test_env_load_and_api_call_give_names_file_and_host(self):
+        """The task's first example: an env load plus an authorized curl gives the two variable names, the
+        env file and the API host, sorted.
+
+        This is the chore the weekly count exists to find (one database-API call typed many ways); missing any of
+        the four signals splits or hides it.
+        """
+        # GIVEN the env-load-then-curl chain
+        cmd = ('set -a; . ../.env; set +a; curl -s -H "Authorization: Bearer $DBAPI_KEY" '
+               "https://console.dbapi.example.test/api/v2/projects/$DBAPI_PROJECT_ID/branches")
+        # WHEN its effects are read
+        # THEN names, file and host, sorted
+        self.assertEqual(fx(cmd), ["env:DBAPI_KEY", "env:DBAPI_PROJECT_ID", "envfile:.env",
+                                   "host:console.dbapi.example.test"])
+
+    def test_grep_pattern_is_ignored_but_its_file_counts(self):
+        """The task's second example: `grep -n NAME file.env.example` gives the env file only.
+
+        A review grep for a variable name does not read the variable; counting it would fill the report with
+        reads of the code, not of the environment.
+        """
+        # WHEN a grep for a variable name in an env example file is read
+        # THEN only the file
+        self.assertEqual(fx("grep -n DBAPI_KEY .claude/.env.example"), ["envfile:.env.example"])
+
+    def test_commit_message_url_gives_nothing(self):
+        """The task's third example: a commit whose message holds a URL gives no effect.
+
+        On the dev week `host:claude.com` came from commit and PR bodies in 40 sessions; it is text, not a call.
+        """
+        # WHEN a commit with a URL in its -m text is read
+        # THEN nothing
+        self.assertEqual(fx('git commit -m "fix: x https://claude.com/claude-code"'), [])
+
+
+class Signals(unittest.TestCase):
+    def test_host_drops_userinfo_and_port_and_is_lowercased(self):
+        """A URL's host is stored without its user, password or port, in lowercase.
+
+        The userinfo of a connection URL is where its password sits; the port and case would split one host
+        into several rows.
+        """
+        # WHEN a connection URL with user, password and port is read
+        got = fx("psql postgres://admin:hunter2pw@DB.Example.Test:5432/app")
+        # THEN the bare lowercase host, beside the db signal
+        self.assertEqual(got, ["db:postgres", "host:db.example.test"])
+
+    def test_host_with_4_digit_run_or_odd_chars_is_skipped(self):
+        """A host holding a 4+ digit run (an id or a generated name) or chars a host cannot hold is not stored.
+
+        Such hosts are values (a preview deploy id, a tunnel id), not a place a chore keeps going.
+        """
+        # WHEN URLs with a digit-laden host and with a variable as host are read
+        # THEN neither is stored
+        self.assertEqual(fx("curl https://pr-12345.example.test/x https://$host/y"), [])
+
+    def test_quoted_url_host_is_cut_at_the_quote(self):
+        """A URL inside quotes gives its host without the closing quote.
+
+        Most real calls quote their URL; a host with a quote glued on would fail the host check and the
+        call would vanish from the count.
+        """
+        # WHEN a quoted URL is read
+        # THEN its host
+        self.assertEqual(fx("curl -s 'https://api.example.test'"), ["host:api.example.test"])
+
+    def test_each_env_read_form_counts_in_both_quote_styles(self):
+        """$NAME, ${NAME...}, os.environ[...], os.environ.get, os.getenv, process.env.NAME and ENV[...] each
+        give env:NAME, with single or double quotes around the name.
+
+        Agents write the same read many ways; a form left out would hide a chore behind its spelling.
+        """
+        cases = [("echo ok; tool $ALPHA_KEY", "ALPHA_KEY"), ('tool "${BETA_KEY:-x}"', "BETA_KEY"),
+                 ("python3 -c \"import os; os.environ['GAMMA_KEY']\"", "GAMMA_KEY"),
+                 ("python3 -c 'import os; os.environ[\"DELTA_KEY\"]'", "DELTA_KEY"),
+                 ("python3 -c \"import os; os.environ.get('EPS_KEY')\"", "EPS_KEY"),
+                 ("python3 -c 'import os; os.getenv(\"ZETA_KEY\")'", "ZETA_KEY"),
+                 ("node -e 'console.log(process.env.ETA_KEY)'", "ETA_KEY"),
+                 ("ruby -e 'puts ENV[\"THETA_KEY\"]'", "THETA_KEY")]
+        for cmd, name in cases:
+            with self.subTest(cmd=cmd):
+                # WHEN the command is read
+                # THEN the name
+                self.assertEqual(fx(cmd), [f"env:{name}"])
+
+    def test_names_outside_the_name_rule_or_on_the_stop_list_are_dropped(self):
+        """Lowercase or short names, names with a 4+ digit run and shell basics (HOME, PATH, ...) give nothing.
+
+        Every command touches HOME or PATH; listing them would put noise at the top of every report.
+        """
+        # WHEN a command reads only such names
+        cmd = 'tool "$HOME" $PATH $PWD $USER $TMPDIR $IFS $lower $AB $KEY12345 "${BASH_SOURCE[0]}"'
+        # THEN nothing
+        self.assertEqual(fx(cmd), [])
+
+    def test_env_file_forms_count_by_basename(self):
+        """.env, .env.<x> and <x>.env count by basename, as a bare word, a quoted string, a flag value or in code.
+
+        The env file is the third effect a secret chore leaves; its path differs per worktree, so only the
+        basename joins the runs.
+        """
+        # WHEN commands load env files in four ways
+        # THEN each basename once; process.env (code, not a file) is not one
+        cmd = ("source ../../.env.local; docker run --env-file=prod.env img; "
+               "python3 -c \"from dotenv import load_dotenv; load_dotenv('.env')\"; "
+               "node -e 'Object.keys(process.env)'")
+        self.assertEqual(fx(cmd), ["envfile:.env", "envfile:.env.local", "envfile:prod.env"])
+
+    def test_at_most_32_sorted_effects(self):
+        """A command touching 40 hosts gives the first 32 effects in sorted order.
+
+        Rows are appended with one write by many sessions; an unbounded list would make long lines.
+        """
+        # WHEN a command calls 40 hosts
+        cmd = " && ".join(f"curl https://h{chr(97 + i // 26)}{chr(97 + i % 26)}.example.test" for i in range(40))
+        got = fx(cmd)
+        # THEN 32, sorted
+        self.assertEqual(len(got), 32)
+        self.assertEqual(got, sorted(got))
+        self.assertEqual(got[0], "host:haa.example.test")
+
+
+class InlineCode(unittest.TestCase):
+    def test_python_heredoc_env_read_counts(self):
+        """Code fed to an interpreter as a heredoc counts: its env reads and URLs are what the chore does.
+
+        Dev-DB queries run as `python3 - <<'EOF'`; skipping heredoc bodies would hide every one of them.
+        """
+        # GIVEN an inline python query
+        cmd = "python3 - <<'EOF'\nimport os, psycopg\nc = psycopg.connect(os.environ['DATABASE_URL'])\nEOF"
+        # WHEN read
+        # THEN its env read, and the client import
+        self.assertEqual(fx(cmd), ["db:postgres", "env:DATABASE_URL"])
+
+    def test_node_e_and_psql_with_flags_count(self):
+        """`node -e` code and `psql "$DATABASE_URL" -c ...` give the variable, whatever the flags.
+
+        The same query is typed with varying flags; the effect is what makes those runs one chore.
+        """
+        self.assertEqual(fx("node -e 'const u = process.env.DATABASE_URL; console.log(u)'"), ["env:DATABASE_URL"])
+        for cmd in ('psql "$DATABASE_URL" -At -c "select count(*) from t"',
+                    'wrapx raw psql "$DATABASE_URL" -c "select 1"'):
+            with self.subTest(cmd=cmd):
+                self.assertEqual(fx(cmd), ["db:postgres", "env:DATABASE_URL"])
+
+    def test_heredoc_written_to_a_file_is_skipped(self):
+        """A heredoc redirected to a file (`cat > f <<EOF`, `cat <<EOF > f`, `tee f <<EOF`) gives nothing.
+
+        Writing a doc or a script is not running it; the doc's URLs and variable names are text.
+        """
+        body = "\nSee https://docs.example.test and $API_TOKEN\nEOF"
+        for cmd in ("cat > notes.md <<'EOF'" + body, "cat <<EOF > notes.md" + body, "tee notes.md <<EOF" + body):
+            with self.subTest(cmd=cmd.split("\n")[0]):
+                self.assertEqual(fx(cmd), [])
+
+    def test_heredoc_written_then_run_by_the_same_command_counts(self):
+        """A heredoc written to a file counts when a later step of the same command runs that file: node, tsx
+        through npx or `yarn exec`, bash, the path at command position, or `source`, matched exactly or by basename.
+
+        Dev-DB queries are often typed as `cat > /tmp/q.mjs <<'EOF' ... EOF` then `node /tmp/q.mjs`; on the dev
+        week that hid DATABASE_URL in 29 sessions. The code is on the command line and the command runs it.
+        """
+        js = "<<'EOF'\nconst u = process.env.DATABASE_URL\nEOF\n"
+        sh = "<<'EOF'\npsql \"$DATABASE_URL\" -c 'select 1'\nEOF\n"
+        for cmd in ("cat > /tmp/q.mjs " + js + "node /tmp/q.mjs",
+                    "cat > /tmp/q.mts " + js + "npx tsx /tmp/q.mts",
+                    "cat > /tmp/q.ts " + js + "yarn exec tsx /tmp/q.ts",
+                    "wrapx cat >> /tmp/q.mjs " + js + "cd /tmp && wrapx node --no-warnings q.mjs",
+                    "tee -a /tmp/x.sh " + sh + "bash /tmp/x.sh",
+                    "cat <<'EOF' > x.sh\npsql \"$DATABASE_URL\" -c 'select 1'\nEOF\nchmod +x x.sh && ./x.sh",
+                    "cat > /tmp/x.sh " + sh + "source /tmp/x.sh"):
+            with self.subTest(cmd=cmd):
+                # WHEN a written-then-run heredoc is read
+                # THEN its env read counts
+                self.assertEqual(fx(cmd), ["env:DATABASE_URL"])
+
+    def test_heredoc_written_but_not_run_stays_ignored(self):
+        """A file heredoc gives nothing when the command runs another file, runs it only before writing it, or
+        just commits it; a JS file's `${NAME}` (template text) stays text even when node runs it.
+
+        Notes, PR bodies and docs written with `cat > f` name hosts and variables without touching them.
+        """
+        js = "<<'EOF'\nconst u = process.env.DATABASE_URL\nEOF\n"
+        for cmd in ("cat > /tmp/a.mjs " + js + "node /tmp/b.mjs",
+                    "node /tmp/q.mjs; cat > /tmp/q.mjs " + js,
+                    "cat > notes.md <<EOF\nSee https://h.example.test\nEOF\ngit add notes.md",
+                    "cat > /tmp/q.mjs <<'EOF'\nconsole.log(`${API_TOKEN}`)\nEOF\nnode /tmp/q.mjs"):
+            with self.subTest(cmd=cmd):
+                # WHEN read
+                # THEN nothing
+                self.assertEqual(fx(cmd), [])
+
+    def test_dollar_name_in_a_quoted_heredoc_fed_to_python_is_text(self):
+        """`$NAME` in a quoted heredoc (`<<'EOF'`) fed to python is text, not a read; os.environ there still counts.
+
+        No shell expands a quoted heredoc and python never expands `$`; on the dev week `env:JSON` reached 18
+        sessions only from python code that edits shell scripts.
+        """
+        # GIVEN python editing a shell script that mentions $JSON_OUT, and reading API_TOKEN itself
+        cmd = "python3 - <<'EOF'\nimport os\ns = s.replace('$JSON_OUT', 'x')\nos.environ['API_TOKEN']\nEOF"
+        # WHEN read
+        # THEN only the python read
+        self.assertEqual(fx(cmd), ["env:API_TOKEN"])
+
+    def test_dollar_name_counts_in_unquoted_heredocs_and_shell_heredocs(self):
+        """`$NAME` counts in an unquoted heredoc (the shell expands it) and in a quoted one fed to bash.
+
+        Both are real reads: the shell substitutes the value before python runs, or bash runs the body.
+        """
+        for cmd in ("python3 - <<EOF\nprint('$API_TOKEN')\nEOF", "bash <<'EOF'\ncurl -H \"x: $API_TOKEN\"\nEOF"):
+            with self.subTest(cmd=cmd.split("\n")[0]):
+                self.assertEqual(fx(cmd), ["env:API_TOKEN"])
+
+    def test_heredoc_to_cat_without_a_file_still_counts(self):
+        """`cat <<EOF | python3 -` feeds code to an interpreter: its reads count.
+
+        Only a heredoc written to a file is a written script; skipping every cat heredoc would hide piped code.
+        """
+        cmd = "cat <<'EOF' | python3 -\nimport os; os.environ['DATABASE_URL']\nEOF"
+        self.assertEqual(fx(cmd), ["env:DATABASE_URL"])
+
+
+class Postgres(unittest.TestCase):
+    """db:postgres: the command touches a Postgres database, whatever its flags or spelling."""
+
+    def test_postgres_cli_command_word_counts_with_any_flags(self):
+        """A step whose command word is a Postgres CLI gives db:postgres, past wrappers, env and timeout.
+
+        The dev-DB query chore is typed with different flags every time; without a constant signal it only
+        joined when its text happened to name $DATABASE_URL, so it never reached the weekly report.
+        """
+        for cmd in ("psql -At -U u -d x -c 'select 1'", "wrapx raw PGOPTIONS=y timeout 9 pg_dump -Fc x",
+                    "cd /tmp && /usr/bin/pg_restore -d x f.dump", "pgcli x", "pg_dumpall -g",
+                    "n=$(psql -At -c 'select 1')"):
+            with self.subTest(cmd=cmd):
+                # WHEN read  THEN the constant signal
+                self.assertEqual(fx(cmd), ["db:postgres"])
+
+    def test_postgres_cli_host_flag_gives_its_host_and_no_other_flag_value(self):
+        """`-h h`, `--host h` and `--host=h` give host:<h> (lowercased); -U, -d and passwords are never stored.
+
+        The host says which database a chore hits; any other flag value could be a user name or a secret.
+        """
+        for cmd in ("psql -h DB.Example.Test -U admin -d app", "pg_dump --host db.example.test app",
+                    "pg_restore --host='db.example.test' -d app f"):
+            with self.subTest(cmd=cmd):
+                # WHEN read  THEN the signal and the host only
+                self.assertEqual(fx(cmd), ["db:postgres", "host:db.example.test"])
+        # AND a host flag that is a variable, or carries a 4-digit run, gives no host
+        self.assertEqual(fx('psql -h "$PGHOST" -c x'), ["db:postgres", "env:PGHOST"])
+        self.assertEqual(fx("psql -h db20240101.example.test"), ["db:postgres"])
+
+    def test_runner_db_script_counts_in_every_runner_form(self):
+        """A package runner running a `db:` script gives db:postgres, with or without run, a filter or a dir.
+
+        Projects wrap their database chores as db:* scripts; the runner's spelling must not split them.
+        """
+        for cmd in ("yarn db:query", "npm run db:migrate", "yarn --filter web db:seed",
+                    "yarn -C apps/web run db:push", "bun run db:studio", "npm --prefix=apps/web run db:x"):
+            with self.subTest(cmd=cmd):
+                # WHEN read  THEN the constant signal
+                self.assertEqual(fx(cmd), ["db:postgres"])
+
+    def test_inline_code_importing_a_postgres_client_counts(self):
+        """Inline JS or Python that imports a Postgres client library gives db:postgres.
+
+        Dev-DB queries run as `node -e` or `python3 - <<EOF` with a client library; the import is the one
+        stable mark they all share.
+        """
+        for code in ('node -e "const { Client } = require(\\"pg\\")"', "node -e 'import pg from \"pg\"'",
+                     "node --input-type=module -e 'import sql from \"postgres\"'",
+                     "tsx -e 'import { neon } from \"@neondatabase/serverless\"'",  # e.g. a serverless driver
+                     "python3 - <<'EOF'\nimport psycopg2\nEOF", "python3 -c 'import asyncpg'",
+                     "python3 - <<'EOF'\nfrom psycopg.rows import dict_row\nEOF",
+                     "cat > /tmp/q.py <<'EOF'\nimport psycopg\nEOF\npython3 /tmp/q.py"):
+            with self.subTest(code=code):
+                # WHEN read  THEN the constant signal
+                self.assertEqual(fx(code), ["db:postgres"])
+
+    def test_postgres_url_scheme_counts_beside_its_host(self):
+        """A postgres:// or postgresql:// URL gives db:postgres as well as its host.
+
+        A connection string in the command is the database itself, even when no CLI or library is named.
+        """
+        for cmd in ("some-tool 'postgres://u@db.example.test/x'", "x --url postgresql://db.example.test/x"):
+            with self.subTest(cmd=cmd):
+                # WHEN read  THEN the signal and the URL's host
+                self.assertEqual(fx(cmd), ["db:postgres", "host:db.example.test"])
+
+    def test_text_that_names_postgres_without_touching_it_gives_nothing(self):
+        """Grep patterns, echo text, commit messages, unrun file heredocs, non-db scripts and near-miss libraries
+        give no db:postgres.
+
+        These name a database tool without running it; counting them would put review and doc work in the
+        dev-DB row.
+        """
+        for cmd in ("grep -n psql notes.md", 'echo "run psql"', 'git commit -m "fix psql call"',
+                    "cat > doc.md <<'EOF'\npsql -c 'select 1'\nimport psycopg\nEOF", "npm run test:unit",
+                    "yarn dbx:seed", "node -e 'require(\"pg-format\")'", "python3 -c 'import pgvector'",
+                    "# psql -c x\nls", "python3 -c 'import psycopg_pool_x'"):
+            with self.subTest(cmd=cmd):
+                # WHEN read  THEN nothing
+                self.assertEqual(fx(cmd), [])
+
+
+class Guards(unittest.TestCase):
+    def test_git_and_gh_text_is_ignored(self):
+        """The Claude Code commit heredoc, a body piped to `gh pr create --body-file -` and --title/--body
+        strings give nothing.
+
+        Commit and PR bodies carry links and names as prose; they are the biggest false-alarm source.
+        """
+        for cmd in (COMMIT, "cat <<'EOF' | gh pr create --body-file -\nSee https://h.example.test $API_TOKEN\nEOF",
+                    'gh pr create --title "Use $API_TOKEN" --body "see https://h.example.test"',
+                    'wrapx git commit -m "$(tool https://h.example.test)"',
+                    'env -u GH_TOKEN -i gh pr create --body "see https://h.example.test"'):
+            with self.subTest(cmd=cmd.split("\n")[0]):
+                self.assertEqual(fx(cmd), [])
+
+    def test_git_bare_word_url_and_var_still_count(self):
+        """A git command's bare-word URL and $NAME still count: `git clone https://...`, `git push $REMOTE_URL`.
+
+        Those are real calls; the guard drops only text git stores (messages and bodies).
+        """
+        # WHEN a clone and a push with bare words are read
+        # THEN host and name
+        self.assertEqual(fx("git clone https://h.example.test/x && git push $REMOTE_URL main"),
+                         ["env:REMOTE_URL", "host:h.example.test"])
+
+    def test_grep_family_pattern_ignored_by_position_and_by_flag(self):
+        """grep/rg/sed/awk ignore the pattern argument (first non-flag word, or -e's value) but keep the rest;
+        -f takes a file, not a pattern.
+
+        A pattern names what is searched for, not what is touched; the file searched is touched.
+        """
+        cases = [("rg -n 'https://h.example.test' .env", ["envfile:.env"]),
+                 ("grep -A 3 -e '$DATABASE_URL' -e \"$API_TOKEN\" prod.env", ["envfile:prod.env"]),
+                 ("grep -m 1 $API_TOKEN prod.env", ["envfile:prod.env"]),
+                 ("sed -n 's/$API_TOKEN/x/p' .env.local", ["envfile:.env.local"]),
+                 ("awk -F= '/DATABASE_URL/ {print $2}' .env", ["envfile:.env"]),
+                 ("grep -f .env.patterns $LOG_FILE", ["env:LOG_FILE", "envfile:.env.patterns"]),
+                 ("wrapx grep -rn '$API_TOKEN' src/", [])]
+        for cmd, want in cases:
+            with self.subTest(cmd=cmd):
+                self.assertEqual(fx(cmd), want)
+
+    def test_echo_and_printf_arguments_are_ignored(self):
+        """echo/printf arguments give nothing; a command after them still counts.
+
+        Printed text is a message to the reader, not a call.
+        """
+        # WHEN echo and printf print URLs and names, then a real call follows
+        cmd = 'echo "see https://h.example.test $API_TOKEN" && printf "%s\\n" $OTHER_KEY; curl $SVC_URL'
+        # THEN only the call's name
+        self.assertEqual(fx(cmd), ["env:SVC_URL"])
+
+    def test_substitution_bodies_are_read_with_the_same_guards(self):
+        """A $( ) body is read as its own command: its file counts, its grep pattern does not, and the name it
+        fills is the script's own.
+
+        `TOKEN=$(grep KEY .env | cut ...)` is how secrets get loaded; skipping bodies would lose the env file,
+        and reading them without the guards would count the pattern.
+        """
+        cmd = "TOKEN=$(grep '$API_TOKEN' .env | cut -d= -f2) && curl -H \"x: $TOKEN\" https://h.example.test"
+        self.assertEqual(fx(cmd), ["envfile:.env", "host:h.example.test"])
+
+    def test_comments_are_ignored(self):
+        """A # comment's URL or name gives nothing; the command before it still counts.
+
+        A comment is a note to the reader, never run.
+        """
+        self.assertEqual(fx("curl https://a.example.test  # see https://b.example.test and $API_TOKEN"),
+                         ["host:a.example.test"])
+
+    def test_non_git_quoted_text_still_counts(self):
+        """Quoted text of other commands counts: `curl -H "Authorization: Bearer $API_TOKEN"`.
+
+        The guard is for git and gh only; dropping every quoted string would lose most real reads.
+        """
+        self.assertEqual(fx('curl -H "Authorization: Bearer $API_TOKEN" https://h.example.test'),
+                         ["env:API_TOKEN", "host:h.example.test"])
+
+
+class AssignedNames(unittest.TestCase):
+    def test_names_the_shell_assigns_are_dropped(self):
+        """NAME=, export NAME=, read NAME, for NAME in, local and declare NAME: the script's own variables.
+
+        On the dev week REPO, JSON, URI, OUT and HOST showed in 11-24 sessions only because scripts set them.
+        """
+        # WHEN a command sets each name its own way and then reads all of them
+        cmd = ("OUT_DIR=/tmp/x; export REPO_NAME=a; read -r LINE_TEXT; for ITEM_ID in a b; do :; done; "
+               "local LOCAL_VAR; declare -a ARR_VAR; "
+               "tool $OUT_DIR $REPO_NAME $LINE_TEXT $ITEM_ID $LOCAL_VAR $ARR_VAR $KEPT_KEY")
+        # THEN only the name it never set
+        self.assertEqual(fx(cmd), ["env:KEPT_KEY"])
+
+    def test_python_assignment_does_not_hide_the_read(self):
+        """A python line `DATABASE_URL = os.environ[...]` inside inline code still gives the name.
+
+        Assigned names come from the shell level only; reading them from the code would drop exactly the
+        reads the report needs.
+        """
+        cmd = "python3 - <<'EOF'\nimport os\nDATABASE_URL = os.environ['DATABASE_URL']\nEOF"
+        self.assertEqual(fx(cmd), ["env:DATABASE_URL"])
+
+
+class SingleQuotes(unittest.TestCase):
+    """`$NAME` inside single quotes is text unless the command is a shell, ssh or eval, which expand it."""
+
+    def test_dollar_in_a_single_quoted_secret_never_becomes_a_name(self):
+        """A `$` inside a single-quoted password, URL, header or inline code gives no env name.
+
+        No shell expands single quotes, so the text after `$` is part of a value: storing it as env:<NAME>
+        would write a piece of a password into a plain file under the home dir.
+        """
+        cases = [("export PGPASSWORD='Hx9$KQ7PZR2LM'; psql -h ep-a.example.test", "KQ7PZR2LM",
+                  ["db:postgres", "host:ep-a.example.test"]),
+                 ("psql 'postgresql://owner:Ab$CDEFGH@ep-a.example.test/db'", "CDEFGH",
+                  ["db:postgres", "host:ep-a.example.test"]),
+                 ("curl -u 'admin:Pa$SW0RDX' https://api.example.test", "SW0RDX", ["host:api.example.test"]),
+                 ("curl -H 'Authorization: Bearer abc$TOKENPART' https://api.example.test", "TOKENPART",
+                  ["host:api.example.test"]),
+                 ("python3 -c 'print(\"$ABCSECRET\")'", "ABCSECRET", [])]
+        for cmd, secret, want in cases:
+            with self.subTest(secret=secret):
+                # WHEN the command is read
+                got = fx(cmd)
+                # THEN no effect holds the secret's fragment, and only the real signals remain
+                self.assertNotIn(secret, " ".join(got))
+                self.assertEqual(got, want)
+
+    def test_code_env_reads_and_shell_expanded_names_still_count(self):
+        """process.env in single-quoted inline code counts, and `$NAME` counts under bash -c, ssh and eval.
+
+        Those are real reads: the code asks for the variable, or the shell given the string expands it.
+        """
+        cases = [("node -e 'const u = process.env.DATABASE_URL'", "env:DATABASE_URL"),
+                 ("bash -c 'echo $FOO_BAR'", "env:FOO_BAR"), ("sh -c 'tool $FOO_BAR'", "env:FOO_BAR"),
+                 ("ssh box 'tool $FOO_BAR'", "env:FOO_BAR"), ("eval 'tool $FOO_BAR'", "env:FOO_BAR")]
+        for cmd, want in cases:
+            with self.subTest(cmd=cmd):
+                # WHEN the command is read
+                # THEN the name
+                self.assertEqual(fx(cmd), [want])
+
+    def test_backslash_escaped_dollar_is_text(self):
+        """`\\$NAME` is never expanded, so the text after it is part of a value; `\\\\$NAME` still expands.
+
+        A password written `pa\\$SW0RDX` in double quotes or bare would otherwise leave SW0RDX as an env name.
+        """
+        cases = [('PGPASSWORD="pa\\$SW0RDX" psql -h db.example.test', ["db:postgres", "host:db.example.test"]),
+                 ("PGPASSWORD=pa\\$SW0RDX psql -h db.example.test", ["db:postgres", "host:db.example.test"]),
+                 ('curl -u "admin:Pa\\$SW0RDX" https://h.example.test', ["host:h.example.test"])]
+        for cmd, want in cases:
+            with self.subTest(cmd=cmd):
+                # WHEN the command is read
+                got = fx(cmd)
+                # THEN no fragment of the password, only the real signals
+                self.assertNotIn("SW0RDX", " ".join(got))
+                self.assertEqual(got, want)
+        # an escaped backslash before a real expansion: the name is read
+        self.assertEqual(fx('tool "a\\\\$FOO_BAR"'), ["env:FOO_BAR"])
+
+    def test_apostrophe_in_a_comment_of_a_shell_read_heredoc_opens_no_quote(self):
+        """An apostrophe in a `#` comment of a heredoc a shell reads does not start a single-quoted span.
+
+        Taken as a quote, `# don't stop` would turn every `$NAME` up to the next `'` into text and hide the
+        real reads of a multi-line chore script, the kind --by effect exists to count.
+        """
+        # GIVEN a quoted heredoc fed to bash whose comment holds an apostrophe, then a real read
+        cmd = "bash <<'EOF'\n# don't stop\ncurl -H \"x: $API_TOKEN_X\" https://api.example.test\necho 'done'\nEOF"
+        # WHEN the command is read
+        got = fx(cmd)
+        # THEN the read after the comment still counts
+        self.assertEqual(got, ["env:API_TOKEN_X", "host:api.example.test"])
+        # and a single-quoted secret in a sourced env file is still text
+        self.assertEqual(fx("cat > a.env <<'EOF'\n# it's local\nPW='x#y$SECRETZ'\nEOF\n. ./a.env"), ["envfile:a.env"])
+
+    def test_wrapped_shell_expands_its_single_quoted_script(self):
+        """A shell reached through a wrapper (`-- sh -c`, sudo, xargs) still reads the names in its script.
+
+        Only the command word was checked, so a wrapped `sh -c '... $DATABASE_URL'` gave no read at all.
+        """
+        cases = ["somecli env exec --worktree w -- sh -c 'q \"$DATABASE_URL\"'",
+                 "sudo -u x bash -c 'q \"$DATABASE_URL\"'", "xargs sh -lc 'q \"$DATABASE_URL\"'"]
+        for cmd in cases:
+            with self.subTest(cmd=cmd):
+                # WHEN read
+                # THEN the name
+                self.assertEqual(fx(cmd), ["env:DATABASE_URL"])
+        # a -c flag on a non-shell does not expand: grep's count flag leaves the pattern as text
+        self.assertEqual(fx("grep -c 'x$FOO_BAR' f.txt"), [])
+        # a single-quoted value before the wrapped shell stays text
+        self.assertEqual(fx("tool 'pa$SECRETTAIL' -- sh -c 'q $FOO_BAR'"), ["env:FOO_BAR"])
+
+    def test_single_quotes_in_a_quoted_heredoc_a_shell_runs_are_text(self):
+        """A quoted heredoc body a shell sources or reads keeps its single-quoted spans as values.
+
+        The shell that runs the body does not expand `'pa$SECRETTAIL'`; a bare `$DATABASE_URL` there is a read.
+        """
+        body = "DB_PASSWORD='pa$SECRETTAIL'\nURL=$DATABASE_URL\nEOF\n"
+        cases = ["cat > a.env <<'EOF'\n" + body + ". ./a.env", "bash <<'EOF'\n" + body]
+        for cmd in cases:
+            with self.subTest(cmd=cmd):
+                # WHEN read
+                got = fx(cmd)
+                # THEN the bare read counts and the single-quoted value gives nothing
+                self.assertNotIn("SECRETTAIL", " ".join(got))
+                self.assertIn("env:DATABASE_URL", got)
+
+
+class Urls(unittest.TestCase):
+    def test_password_with_slash_hash_or_query_char_gives_the_real_host(self):
+        """A URL whose password holds `/`, `#` or `?` gives the host after the `@`, never the user name.
+
+        Cutting the authority at the first `/` would store the user name as a host and split one database
+        into many rows.
+        """
+        for sep in "/#?":
+            with self.subTest(sep=sep):
+                # WHEN a URL with that char in its password is read
+                # THEN the real host
+                self.assertEqual(fx(f"curl https://user:p{sep}ss@host.example.test/x"), ["host:host.example.test"])
+
+    def test_at_sign_in_the_path_keeps_the_authority_host(self):
+        """An `@` in a URL's path or query (an email, a scoped package) does not move the host.
+
+        Only a `user:password` authority can hide a later `@`; a plain host or host:port stays as written.
+        """
+        for cmd in ("curl https://api.example.test/u/a@b.example.test",
+                    "curl https://api.example.test:8443/u?mail=a@b.example.test"):
+            with self.subTest(cmd=cmd):
+                self.assertEqual(fx(cmd), ["host:api.example.test"])
+
+    def test_at_sign_after_the_userinfo_never_becomes_the_host(self):
+        """The host follows the first `@` after the scheme; a query that looks like userinfo gives no host.
+
+        Taking the last `@` of the token stored a query value (`next=a@secretvalue`) or an email's domain as
+        a host.
+        """
+        # WHEN a password holds `/` and the query holds another `@`
+        got = fx("curl 'https://user:p/ss@host.example.test/x?next=a@secretvalue'")
+        # THEN the real host, never the query value
+        self.assertEqual(got, ["host:host.example.test"])
+        # WHEN the text before the only `@` is a host, a bad port and a query
+        # THEN no host: the email's domain is not one
+        self.assertEqual(fx("curl 'https://host.example.test:abc/path?email=me@example.org'"), [])
+
+
+class Speed(unittest.TestCase):
+    def test_one_long_word_and_an_unclosed_quote_read_fast(self):
+        """A 40K-char single word and a 30K-char unclosed quote each read in well under a second.
+
+        The recorder hook has a 5s timeout; a URL scan that restarts at every char of a long word is
+        quadratic and loses the whole row.
+        """
+        for cmd in ("a" * 40000, "curl '" + "a" * 30000, "a " * 20000, "sh " * 20000):
+            with self.subTest(n=len(cmd)):
+                # WHEN read
+                t = time.monotonic()
+                fx(cmd)
+                # THEN quickly
+                self.assertLess(time.monotonic() - t, 0.5)
+
+    def test_a_long_command_reads_in_linear_time(self):
+        """A 200 KB command of many quoted parts and heredocs reads in well under a second.
+
+        effects() runs on every recorded Bash call and on ~46K commands per replay; a slow regex would stall
+        the recorder hook.
+        """
+        # GIVEN a long command
+        part = "curl -H \"x: $TOKEN_A\" 'https://h.example.test' | grep -e 'aaaa' .env; "
+        cmd = part * 3000 + "python3 - <<'EOF'\n" + "x = 1\n" * 3000 + "EOF"
+        # WHEN read
+        t = time.monotonic()
+        got = fx(cmd)
+        # THEN the signals, quickly
+        self.assertEqual(got, ["env:TOKEN_A", "envfile:.env", "host:h.example.test"])
+        self.assertLess(time.monotonic() - t, 1.5)
+
+
+if __name__ == "__main__":
+    unittest.main()

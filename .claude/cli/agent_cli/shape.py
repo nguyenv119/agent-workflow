@@ -155,17 +155,27 @@ def _word(it):
 
 
 def _strip(seg, cmd):
-    """seg without its leading keywords, VAR=x and prefix words (repeated: `wrapx X=1 timeout 5 cmd`).
-    A segment of assignments only (`X=1`) is kept whole."""
+    """seg without its leading keywords, VAR=x and prefix words (prefix_len). A segment of assignments only
+    (`X=1`) is kept whole."""
     seg = [it for it in seg if _word(it) != "}"]
-    rest = seg
-    while rest:
-        rep = " ".join(it[1].replace(" ", "_") if it[0] == "word" else "\x02" for it in rest) + " "
-        n = len(rep[:re.match(cmd, rep).end()].split())
+    return seg[prefix_len([it[1] if it[0] == "word" else "\x02" for it in seg], cmd):] or seg
+
+
+def prefix_len(words, cmd):
+    """How many of words (strings) come before the command word: keywords, VAR=x and prefix words, repeated
+    (`wrapx X=1 timeout 5 cmd`), and env's own options (`env -u A gh`). Only env's: after `command -v` the
+    next word is a value, never a command name to keep. cmd: prefix_re(...)."""
+    k = 0
+    while k < len(words):
+        rep = " ".join(w.replace(" ", "_").replace("\n", "_") for w in words[k:k + 16]) + " "
+        n = len(rep[:cmd.match(rep).end()].split())
+        env = n and words[k + n - 1] == "env"
+        while env and k + n < len(words) and words[k + n].startswith("-"):
+            n += 1 + (words[k + n] in ("-u", "--unset", "-C", "--chdir", "-S"))
         if not n:
             break
-        rest = rest[n:]
-    return rest or seg
+        k += n
+    return k
 
 
 def _segment(seg, tools):
