@@ -1,1 +1,2 @@
 cloud handoff acceptance: the cloud session appends one line below.
+cloud session was here
