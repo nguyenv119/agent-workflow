@@ -6,7 +6,7 @@ import unittest
 from helpers import CLAUDE
 
 sys.path.insert(0, str(CLAUDE / "cli"))
-from agent_cli.effects import effects  # noqa: E402
+from agent_cli.effects import effects, ran  # noqa: E402
 
 WRAP = ("wrapx", "wrapx raw")  # a made-up wrapper word, as a project's command-prefixes seam lists it
 
@@ -423,6 +423,70 @@ class AssignedNames(unittest.TestCase):
         """
         cmd = "python3 - <<'EOF'\nimport os\nDATABASE_URL = os.environ['DATABASE_URL']\nEOF"
         self.assertEqual(fx(cmd), ["env:DATABASE_URL"])
+
+    def test_names_a_written_shell_script_assigns_are_dropped_when_a_shell_runs_it(self):
+        """A heredoc-written q.sh that bash then runs drops the names it assigns (URI, SQL) and keeps the rest.
+
+        The script's own variables are not env reads; on the dev week a written q.sh listed its URI, PGURI and
+        SQL as reads because the drop only looked at the outer shell level.
+        """
+        # GIVEN a written q.sh that sets URI and SQL and reads API_TOKEN, run by bash in the same command
+        cmd = ("cat > q.sh <<'EOF'\nURI=postgres://h.example.test/x\nSQL=\"select 1\"\n"
+               "psql \"$URI\" -c \"$SQL\" $API_TOKEN\nEOF\nbash q.sh")
+        # WHEN read
+        # THEN only the name the script never set, plus its host and db signal
+        self.assertEqual(fx(cmd), ["db:postgres", "env:API_TOKEN", "host:h.example.test"])
+
+    def test_names_a_shell_heredoc_assigns_are_dropped(self):
+        """`bash <<'EOF'` and `cat <<'EOF' | sh` drop the names their body assigns, like any shell level.
+
+        The body is a shell script run in place; its `URI=x` then `$URI` is its own variable, not a read.
+        """
+        for cmd in ("bash <<'EOF'\nURI_X=h\ncurl $URI_X $API_TOKEN\nEOF",
+                    "cat <<'EOF' | sh\nURI_X=h\ncurl $URI_X $API_TOKEN\nEOF"):
+            with self.subTest(cmd=cmd.split("\n")[0]):
+                self.assertEqual(fx(cmd), ["env:API_TOKEN"])
+
+    def test_a_written_file_python_runs_keeps_its_name_equals_reads(self):
+        """A written q.py run by python keeps `URI_X=os.environ['URI_X']`: only a shell assigns shell names.
+
+        Dropping names from code a shell never reads would hide exactly the reads the report counts.
+        """
+        cmd = "cat > q.py <<'EOF'\nimport os\nURI_X=os.environ['URI_X']\nEOF\npython3 q.py"
+        self.assertEqual(fx(cmd), ["env:URI_X"])
+
+
+class CodeMode(unittest.TestCase):
+    def test_script_body_as_code_reads_code_signals_and_leaves_dollar_names_as_text(self):
+        """effects(text, code=True) reads a script body as code: env reads, URLs, .env files and Postgres
+        clients count, while `$NAME` in a string (Python "cost $TOTAL", JS `${API_BASE}`) is text.
+
+        A python or node script the agent wrote is read from disk without a shell around it; reading it as a
+        shell command would turn every `$` in its strings into a false env read.
+        """
+        # GIVEN a python script body
+        body = ("import os, psycopg2\nprint(\"cost $TOTAL\")\nu = f\"${API_BASE}/x\"\n"
+                "os.environ['DATABASE_URL']\nrequests.get('https://api.example.test/v1')\nopen('.env')\n")
+        # WHEN read as code, and (control) as a shell command
+        got, as_shell = effects(body, (), code=True), effects(body, ())
+        # THEN the code signals only; the shell reading would have listed the $ names
+        self.assertEqual(got, ["db:postgres", "env:DATABASE_URL", "envfile:.env", "host:api.example.test"])
+        self.assertIn("env:TOTAL", as_shell)
+
+
+class Ran(unittest.TestCase):
+    def test_ran_lists_each_file_the_command_runs_and_whether_a_shell_runs_it(self):
+        """ran() gives (path, by a shell) for each script a step runs, in order, past wrapper words.
+
+        The recorder reads those files to add their steps and effects; a shell script is read as shell, any
+        other as code, so the flag picks the reader.
+        """
+        # GIVEN a chain running a python file, a shell file three ways, and a path at command position
+        cmd = "wrapx python3 -u /tmp/q.py && bash ./x.sh; source ~/env.sh; ./run.py arg; ls -la"
+        # WHEN read
+        # THEN each run file, in order
+        self.assertEqual(ran(cmd, WRAP), [("/tmp/q.py", False), ("./x.sh", True), ("~/env.sh", True),
+                                          ("./run.py", False)])
 
 
 class SingleQuotes(unittest.TestCase):
