@@ -379,6 +379,37 @@ class StepLookup(RepeatCase):
         # THEN tool-a is named
         self.assertIn("`tool-a <arg>` was hand-written 8 times", out["additionalContext"])
 
+    def test_literal_characters_beat_a_longer_placeholder_heavy_step(self):
+        """A short, mostly literal step is named over a longer step that is mostly placeholders: specificity is
+        the literal text (16 characters against 6), not the step's length (27 against 36).
+
+        A placeholder-heavy step (`tool-a <arg> <str> ...`) matches almost any call of that tool, so naming it
+        would point the agent at the vaguest repeat in the chain.
+        """
+        # GIVEN both steps cached, the placeholder-heavy one first and in more sessions
+        cmd = "tool-a one 'two words' three 'four' five && " + CHORE
+        heavy = "tool-a <arg> <str> <arg> <str> <arg>"
+        self.assertEqual(shape.steps(cmd, (), ()), [heavy, CHORE_SHAPE])
+        self.write_cache({heavy: {"sessions": 9, "count": 50}, CHORE_SHAPE: {"sessions": 4, "count": 6}})
+        # WHEN the chain is typed
+        out = self.ask(cmd)
+        # THEN the chore is named
+        self.assertIn(f"`{CHORE_SHAPE}` was hand-written 6 times", out["additionalContext"])
+
+    def test_spaces_do_not_count_as_literal_characters(self):
+        """One long word (18 literal characters) is named over many short flags (16 literal characters plus 7
+        spaces): spaces between words are not literal text, so a step is not more specific for having more
+        words."""
+        # GIVEN both steps cached, the many-flag one first and in more sessions
+        cmd = "mk -a -b -c -d -e -f -g; deploy-toolkit-xyz"
+        self.assertEqual(shape.steps(cmd, (), ()), ["mk -a -b -c -d -e -f -g", "deploy-toolkit-xyz"])
+        self.write_cache({"mk -a -b -c -d -e -f -g": {"sessions": 9, "count": 50},
+                          "deploy-toolkit-xyz": {"sessions": 4, "count": 6}})
+        # WHEN the chain is typed
+        out = self.ask(cmd)
+        # THEN the long word is named
+        self.assertIn("`deploy-toolkit-xyz` was hand-written 6 times", out["additionalContext"])
+
     def test_a_session_gets_at_most_five_warnings_across_its_agents(self):
         """After 5 repeated-shape warnings in one session (main agent and subagents together), a 6th distinct
         step is silent for every agent and nothing more is written; another session still warns.
