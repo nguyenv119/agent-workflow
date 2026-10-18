@@ -38,7 +38,8 @@ class BasicSteps(unittest.TestCase):
                            ("<str> --headless=<v> --disable-gpu <url>", False),
                            ("<arg> -n <str> <arg>", True), ("<arg> -f <str> <arg>", True), ("<str> -eq <n> ]", True),
                            ("<v> ! -z <str> -a -d <arg> ]]", True), ("<arg> -n --force <arg>", False),
-                           ("<path> -f <arg>", False)):
+                           ("<path> -f <arg>", False), ("read <path>", True), ("git log --oneline -<n>", True),
+                           ("git log --format=<v> | sort | uniq -c | sort -rn", False), ("cat <path> | jq <str>", False)):
             with self.subTest(step=step):
                 self.assertIs(hook.basic(step), want)
 
@@ -54,7 +55,7 @@ class BasicSteps(unittest.TestCase):
                            ("git -C <arg> show origin/<arg>", True), ("git log origin/<arg> | head <n>", True),
                            ("git log --oneline", False), ("git fetch origin <arg>", False), ("cat <arg>", False),
                            ("deploy-tool origin/<arg>", False), ("git log origin/<arg> | psql <arg>", False),
-                           ("sleep <n> | deploy-tool <arg>", False)):
+                           ("sleep <n> | head <n>", False)):
             with self.subTest(step=step):
                 self.assertIs(hook.report_only(step), want)
 

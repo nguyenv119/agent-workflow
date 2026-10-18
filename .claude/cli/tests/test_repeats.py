@@ -498,6 +498,38 @@ class Usage(StoreCase):
         self.assertEqual((r.returncode, [x["shape"] for x in rows]), (0, ["lint-tool -q"]), r.stderr)
         self.assertIn("1 unreadable store lines skipped", r.stderr)
 
+    def test_a_store_row_with_bad_shape_or_steps_is_skipped_and_counted(self):
+        """A store row whose steps is not a list of strings, or whose shape is not a string, is skipped as
+        an unreadable line and counted on stderr; the other rows are still reported.
+
+        A hand-edited or foreign row must not crash the report the warning cache is built from, nor be
+        counted under a junk key.
+        """
+        # GIVEN a chore in 3 sessions and two bad rows in the same day file
+        self.rec("lint-tool -q", 3)
+        for bad in ({"steps": [1]}, {"shape": 7}):
+            record.append_line(self.store / "2026-04-02.jsonl", json.dumps(
+                dict({"ts": "2026-04-02T12:00:00Z", "session": "s9", "shape": "x-tool <arg>", "rules": []}, **bad)))
+        # WHEN the report runs
+        r, rows = self.repeats("--since", "3650d")
+        # THEN exit 0, the chore listed, both rows counted as skipped
+        self.assertEqual((r.returncode, [x["shape"] for x in rows]), (0, ["lint-tool -q"]), r.stderr)
+        self.assertIn("2 unreadable store lines skipped", r.stderr)
+
+    def test_summary_names_steps_or_shapes_by_unit(self):
+        """The stderr summary counts "steps" with --unit step and "shapes" with --unit command.
+
+        An agent reading the line must know which unit the counts are in; "shapes" over steps misleads it.
+        """
+        # GIVEN a chore in 3 sessions
+        self.rec("lint-tool -q", 3)
+        # WHEN the report runs in each unit
+        step, _ = self.repeats("--since", "3650d")
+        whole, _ = self.repeats("--since", "3650d", "--unit", "command")
+        # THEN each summary names its unit
+        self.assertIn("1 steps in 3+ sessions", step.stderr)
+        self.assertIn("1 shapes in 3+ sessions", whole.stderr)
+
     def test_unreadable_or_bad_commands_input_exits_3(self):
         """A missing --commands file, or a line that is not a {ts, session, cmd} object, exits 3 and
         names the line.
@@ -597,6 +629,19 @@ class Steps(StoreCase):
         # WHEN the report ranks steps (the default unit)
         # THEN `. .env` is the only row, seen in all 6 sessions
         self.assertEqual(self.rows("--commands", str(cmds), "--covered", "none"), [(". .env", 6, 6)])
+
+    def test_a_step_twice_in_one_run_counts_once(self):
+        """A run that holds the same step twice adds 1 to that step's count, not 2.
+
+        count is runs, the second ranking key after sessions; a chain that loads .env twice would
+        otherwise double its chore's runs and outrank chores typed as often.
+        """
+        # GIVEN a chain loading .env twice, in 3 sessions
+        cmds = self.write_commands([{"ts": "2026-04-02T12:00:00Z", "session": f"s{i}",
+                                     "cmd": ". .env && x-tool run && . .env"} for i in range(3)])
+        # WHEN the report runs
+        # THEN `. .env` has 3 runs in 3 sessions
+        self.assertIn((". .env", 3, 3), self.rows("--commands", str(cmds), "--covered", "none"))
 
     def test_unit_command_keeps_whole_shapes_and_basic_commands(self):
         """--unit command ranks whole command shapes as before steps existed: no step split, no basic drop.

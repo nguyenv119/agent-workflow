@@ -254,29 +254,13 @@ def _deny(reason):
 REPEAT_ID = "repeated-shape"
 # Generic reads: shapes made only of these top the repeats list (an agent reading files), but there is no
 # chore in them for a command to wrap, so they never warn (basic() counts them as basic) and the step
-# report drops them; --unit command keeps them. Transforms (sort, uniq, cut, tr, awk, jq) are left out on
+# report drops them; --unit command keeps them. Transforms (sort, uniq, cut -f, tr, awk, jq) are left out on
 # purpose: `git log ... | sort | uniq -c` is a recipe a command can wrap, not a look at a file.
 QUIET_WORDS = frozenset("""cat head tail less more sed grep egrep rg ls tree find wc diff stat file du df echo
 printf pwd cd read which type true sleep date basename dirname realpath readlink""".split())
-QUIET_GIT = frozenset("status diff log show".split())
 INLINE_CODE = frozenset(("-", "-c", "-e", "<heredoc>"))  # `python3 - <heredoc>`: the code is the value
 SEGMENT_SEP = re.compile(r" (?:&&|\|\||\||&) |; ")
 SESSION_CHARS = re.compile(r"[^\w-]")
-
-
-def quiet(s):
-    """True when every segment of shape s is a generic read: a QUIET_WORDS command, a git read, or an
-    interpreter running inline code (`python3 - <heredoc>`, `node -e <str>`); a named script is loud."""
-    from .shape import INTERPRETER
-    for seg in SEGMENT_SEP.split(s):
-        words = seg.split()
-        if not words:
-            continue
-        name, second = words[0].rsplit("/", 1)[-1], words[1] if len(words) > 1 else ""
-        if not (name in QUIET_WORDS and "/" not in words[0] or name == "git" and second in QUIET_GIT
-                or INTERPRETER.fullmatch(name) and second in INLINE_CODE):
-            return False
-    return True
 
 
 # Shell basics: no chore in them for a command to wrap. The step report drops basic steps (report_only
@@ -359,9 +343,9 @@ def report_only(step):
 
 def _repeat_rule(command, data):
     """The repeated-shape warning as a warn rule, the first time this session (and agent) types a step on
-    <store>/repeats-cache.json; None otherwise. The cache is keyed by step (shape.steps_of_shape), so the
-    command's whole shape is split: one step is looked up; two or more give None for now (picking which
-    step of a chain to name is a later change). A basic step, no session id, a bypass comment, a missing or
+    <store>/repeats-cache.json; None otherwise. The cache is keyed by step, so the command is split as the
+    recorder splits it (shape.steps, $( ) bodies included): one step is looked up; two or more give None
+    for now (picking which step of a chain to name is a later change). A basic step, no session id, a bypass comment, a missing or
     bad cache, or a store the once-only mark cannot be written to all give None: never warn twice. The cache
     is shared by every project on the store, so a step this project covers by a command (its `commands:`
     line, or agent-cli) is dropped here too."""
@@ -371,7 +355,7 @@ def _repeat_rule(command, data):
         if (not session or os.environ.get("AGENT_CLI_HOOKS") == "off" or len(command) > MAX_CMD
                 or REPEAT_ID in BYPASS.findall(command)):
             return None
-        steps = shape.steps_of_shape((shape.shape(command) or "")[:record.MAX_SHAPE])  # cut as the recorder does
+        steps = shape.steps(command)  # the recorder's split, each step already cut to MAX_SHAPE
         if len(steps) != 1:  # ponytail: one step only until the multi-step lookup lands
             return None
         s = steps[0]

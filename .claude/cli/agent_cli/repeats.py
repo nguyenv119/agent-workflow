@@ -5,8 +5,8 @@ that it shapes and rule-matches in memory; the raw text is never written anywher
 
 Unit: a step (shape.steps, one pipeline of a chain, loop body or $( ) body) by default, so `. .env` in
 40 different chains is one row; store rows from before rows carried `steps` are split from their shape.
-Those old rows keep the masking they were recorded with, so for up to the 14-day window one chore can
-sit under an old and a new step key; accepted, with no shape-version field, until that window clears.
+Those old rows keep the masking they were recorded with, so while old rows are in the window (14 days
+by default) one chore can sit under an old and a new step key; accepted, with no shape-version field.
 Shell basics (hook.basic) are dropped, except sleeps and on-main git reads (hook.report_only).
 --unit command ranks whole command shapes, as before steps.
 
@@ -16,7 +16,9 @@ recorder only sees a denied chore when an agent bypassed it on purpose, and the 
 exists for it). Half, not any: a generic shape (`python3 - <heredoc>`) holds many chores, and one run
 that matched a rule must not hide the rest (a 2-day replay had 1 such run in 60). Or (b) its first
 command word, after today's command-prefixes seam words are stripped, is agent-cli or a name on the
-`commands:` line under `## repeats` in .claude/project-rules.md.
+`commands:` line under `## repeats` in .claude/project-rules.md. Rule coverage is per run, not per
+step: a rule that matches any part of a chain counts for every step of that run (a known limit; a later
+change records which step a rule hit).
 """
 import datetime as dt
 import json
@@ -119,7 +121,8 @@ def run(a):
     for row in out:
         share = "-" if row["exit_fail_share"] is None else f"{row['exit_fail_share']:.2f}"
         core.out(a, row, f"{row['sessions']}  {row['count']}  {share}  {row['first']}  {row['last']}  {row['shape']}")
-    sys.stderr.write(f"repeats: {len(rows)} runs in window, {len(repeated)} shapes in {a.min_sessions}+ sessions, "
+    unit = "steps" if a.unit == "step" else "shapes"
+    sys.stderr.write(f"repeats: {len(rows)} runs in window, {len(repeated)} {unit} in {a.min_sessions}+ sessions, "
                      f"{len(repeated) - len(listed)} covered, {len(out)} printed"
                      + (f", {skipped} unreadable store lines skipped" if skipped else "") + "\n")
     return Exit.OK
@@ -164,6 +167,9 @@ def from_store(lo, hi):
             try:
                 row = json.loads(ln)
                 row["ts"] = norm_ts(row["ts"])
+                if not (row.get("shape") is None or isinstance(row["shape"], str)) or "steps" in row and not (
+                        isinstance(row["steps"], list) and all(isinstance(x, str) for x in row["steps"])):
+                    raise TypeError  # a hand-edited or foreign row: skipped like a cut-short one
             except (ValueError, KeyError, TypeError, AttributeError):  # e.g. a line cut short by a crash
                 skipped += 1
                 continue

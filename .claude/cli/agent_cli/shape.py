@@ -43,8 +43,8 @@ COLON_TOOLS = {("yarn",), ("npm", "run"), ("yarn", "run"),  # script names: test
 GIT_GLOBAL = {"-C": True, "-c": True, "--git-dir": True, "--work-tree": True, "--no-pager": False}
 ENV_FILE = re.compile(r"[\w.-]{0,40}\.env|\.env\.[\w.-]{1,40}")  # .env, prod.env, .env.local
 PLUS_FLAGS = re.compile(r"\+[A-Za-z]|\+[a-z]{2,4}")  # `set +a`, the off switch of -a
-# A `|` pipeline stays one step: `grep x f | sort` is one recipe. hook.quiet() has its own SEGMENT_SEP that
-# also splits on |, on purpose.
+# A `|` pipeline stays one step: `grep x f | sort` is one recipe. hook.basic()/report_only() split a step on
+# | themselves (SEGMENT_SEP), to judge each segment.
 STEP_SEP = re.compile(r" (?:&&|\|\||&) |; ")
 REDIR_PIECE = re.compile(r"\d*" + REDIR.pattern + r"(&(?:\d+-?|-))?")  # group 1: `2>&1`, which has no target
 KEYWORD_STEP = re.compile(r"done|fi|esac|\}|break|continue|(?:for|case|select) .*")

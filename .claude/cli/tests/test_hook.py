@@ -789,19 +789,6 @@ class QuietShapes(RepeatCase):
                 else:
                     self.assertIn("hand-written 40 times", out["additionalContext"])
 
-    def test_quiet_reads_whole_segments(self):
-        """quiet() is true only when every segment is a generic read; one real tool, or a transform such as
-        sort | uniq -c or jq (a recipe a command can wrap), makes it loud."""
-        # GIVEN shapes, WHEN each is checked, THEN only all-read ones are quiet
-        for s, want in (("cat <path>", True), ("read <path>", True), ("ls -la <path> && wc -l <path>", True),
-                        ("node -e <str>", True), ("python3 <heredoc>", True), ("git log --oneline -<n>", True),
-                        ("git push origin <arg>", False), ("python3 <path>/loop.py", False),
-                        ("grep <str> <path> | psql <arg>", False), ("for f in <arg>; do cat <path>; done", False),
-                        ("<path>/deploy.sh", False), ("git log --format=<v> | sort | uniq -c | sort -rn", False),
-                        ("cat <path> | jq <str>", False)):
-            with self.subTest(shape=s):
-                self.assertIs(hook.quiet(s), want)
-
 
 class StepBridge(RepeatCase):
     """Until the multi-step lookup lands, the warning looks up a one-step command's step in the step-keyed
@@ -823,6 +810,21 @@ class StepBridge(RepeatCase):
         self.assertIn("`deploy-tool <arg>` was hand-written 7 times across 4 sessions", first["additionalContext"])
         self.assertIsNone(again)
 
+    def test_a_substitution_body_step_warns_like_the_recorder_split_it(self):
+        """A command whose only step is a $( ) body (`X=$(deploy-tool push --env staging)`) warns on that
+        body's step, the key the recorder stored it under (a made-up tool: a built-in rule fires on
+        `gh pr view`, and a firing rule replaces the repeat warning).
+
+        The recorder splits commands with shape.steps(), $( ) bodies included; a warning that split the
+        whole shape instead would see only the assignment and never warn on a chore typed this way.
+        """
+        # GIVEN the body's step cached
+        self.write_cache({CHORE_SHAPE: {"sessions": 5, "count": 8}})
+        # WHEN the assignment is typed
+        out = self.ask(f"X=$({CHORE})")
+        # THEN it warns, naming the body's step
+        self.assertIn(f"`{CHORE_SHAPE}` was hand-written 8 times", out["additionalContext"])
+
     def test_a_chain_of_two_steps_is_silent_even_with_a_cached_step(self):
         """A command of two or more steps gives no warning, even when one of its steps is cached (control:
         the same step alone warns).
@@ -833,7 +835,7 @@ class StepBridge(RepeatCase):
         # GIVEN a cached step
         self.write_cache({CHORE_SHAPE: {"sessions": 4, "count": 6}})
         # WHEN it is typed inside a chain, and alone
-        chain = self.ask("set -a && " + CHORE)
+        chain = self.ask(CHORE + " && set -a")  # the cached step first: a steps[0] lookup would warn
         alone = self.ask(CHORE, session="live2")
         # THEN the chain is silent and the lone step warns
         self.assertIsNone(chain)
@@ -843,7 +845,7 @@ class StepBridge(RepeatCase):
         """A one-step command that is basic (inline interpreter code after a flag, git add, mkdir) never
         warns, even when a cache lists it.
 
-        quiet() let `python3 -I - <heredoc>` through, and a stale or hand-made cache can still hold such
+        A whole-shape read check once let `python3 -I - <heredoc>` through, and a stale or hand-made cache can still hold such
         a step; the warning must not tell agents to wrap a shell basic in a command.
         """
         cmds = {"python3 -I - <heredoc>": "python3 -I - <<'EOF'\nprint(1)\nEOF", "git -C <arg> add <arg>": "git -C ../wt add a.txt",
