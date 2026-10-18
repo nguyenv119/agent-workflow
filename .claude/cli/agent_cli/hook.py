@@ -288,6 +288,8 @@ BASIC_GIT = frozenset("add commit checkout switch restore branch fetch pull push
 ASSIGN_WORD = re.compile(r"[A-Za-z_]\w*=")
 INTERP_FLAG = re.compile(r"-[A-Za-z]{1,3}")  # -I, -u, -B before the inline code
 PLACEHOLDER = re.compile(r"<[^<>]*>")  # a masked word: <arg>, <str>, <url:host>
+# A test an old row stored with its `[` masked: `<arg> -n <str> <arg>` (shape keeps `[` since).
+TEST_OPS = frozenset("-n -z -e -f -d -s -x -r -w -L -h -eq -ne -lt -le -gt -ge = == != ! -a -o ] ]]".split())
 CUT_CHARS = re.compile(r"-[cb](?:<v>)?|--(?:characters|bytes)(?:=<v>)?")  # cut -c<v>: truncation only
 
 
@@ -312,13 +314,16 @@ def _words(seg):
 def basic(step):
     """True when every `|` segment of a step is a shell basic: a BASIC_WORDS or QUIET_WORDS command, by name
     or by path (`<path>/grep`), `cut` with only -c/-b (truncation), a command made only of placeholders
-    (`<arg>`: no literal word to wrap), git housekeeping or a git read (BASIC_GIT), or an interpreter
+    (`<arg>`: no literal word to wrap) or a placeholder then only test operators (an old row's masked
+    `[ -n <str> ]`), git housekeeping or a git read (BASIC_GIT), or an interpreter
     running inline code after short flags (`python3 -I - <heredoc>`, `node -e <str>`).
     `echo <str> | psql <arg>`, `cut -d<v> -f<v>` and `<str> --headless=<v>` are not basic."""
     from .shape import INTERPRETER
     for seg in SEGMENT_SEP.split(step):
         words = _words(seg)
         if all(PLACEHOLDER.fullmatch(w) for w in words):  # assignments only, or no literal word
+            continue
+        if words[0] in ("<arg>", "<str>", "<v>") and all(PLACEHOLDER.fullmatch(w) or w in TEST_OPS for w in words):
             continue
         name = words[0].rsplit("/", 1)[-1]
         if name == "git":
