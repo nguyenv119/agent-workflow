@@ -3,7 +3,8 @@
 
 Reads the Claude Code event JSON on stdin. Acts only on `git [global options] commit`;
 runs check_comment_bead_ids.py --staged in the repo being committed to, which does nothing when
-that repo's .claude/project-rules.md sets no bead-id-prefix under ## beads.
+that repo's .claude/project-rules.md (or, when it has none, $CLAUDE_PROJECT_DIR's) sets no
+bead-id-prefix under ## beads.
 
 Exit codes: 0 allow (also on any internal error: fail open), 2 block with the hits on stderr.
 Bypass: append  # agent-cli: allow bead-id-comment  to the command; AGENT_CLI_HOOKS=off skips it.

@@ -6,7 +6,8 @@ and the comment rots once the bead closes. The why belongs in the comment, the
 id belongs in the commit message, PR or bead.
 
 Rules come from <repo>/.claude/project-rules.md, section `## beads`, where
-<repo> is the git top level of the current directory:
+<repo> is the git top level of the current directory; when that file does not exist,
+from $CLAUDE_PROJECT_DIR/.claude/project-rules.md (the session's harness dir) instead:
   bead-id-prefix:  the tracker's id prefix, e.g. proj-  (no line = nothing to check)
   bead-id-allow:   comma list of words after the prefix that are not ids (tool names)
   bead-id-exclude: one path regex of files to skip
@@ -47,6 +48,7 @@ Examples:
 from __future__ import annotations
 
 import codecs
+import os
 import re
 import subprocess
 import sys
@@ -294,7 +296,8 @@ def main(argv: list[str]) -> int:
         return 2
     try:
         top = git("rev-parse", "--show-toplevel").strip()
-        rules = load_rules(top)
+        own = (Path(top) / ".claude/project-rules.md").is_file()
+        rules = load_rules(top if own else os.environ.get("CLAUDE_PROJECT_DIR") or top)
         if rules is None:
             print(f"{NAME}: no bead-id-prefix in .claude/project-rules.md, nothing to check",
                   file=sys.stderr)

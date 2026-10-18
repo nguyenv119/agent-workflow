@@ -609,7 +609,7 @@ class Modes(TmpCase):
 class NoRules(TmpCase):
     def setUp(self):
         super().setUp()
-        set_env(self, GIT_DIR=None, GIT_INDEX_FILE=None)
+        set_env(self, GIT_DIR=None, GIT_INDEX_FILE=None, CLAUDE_PROJECT_DIR=None)
 
     def check_off(self, rules: str | None):
         repo = Repo(self.tmp / "repo", rules=rules)
@@ -637,6 +637,63 @@ class NoRules(TmpCase):
         staged, hook = self.check_off(None)
         # THEN both exit 0
         self.assertEqual((staged.returncode, hook.returncode), (0, 0), (staged.stderr, hook.stderr))
+
+
+class ProjectDirRules(TmpCase):
+    """A commit in a repo without its own rules file, from a session whose harness dir has one."""
+
+    def setUp(self):
+        super().setUp()
+        set_env(self, GIT_DIR=None, GIT_INDEX_FILE=None)
+        self.work = self.tmp / "work"
+        self.work.mkdir()
+        run(GIT + ["init", "-q"], self.work)
+
+    def check(self, harness_rules: str | None, work_rules: str | None = None):
+        """Stage an id comment in the work repo; run the checker and the hook with the harness as project dir."""
+        harness = Repo(self.tmp / "harness", rules=harness_rules)
+        if work_rules is not None:
+            (self.work / ".claude").mkdir()
+            (self.work / ".claude/project-rules.md").write_text(work_rules)
+        (self.work / "new.py").write_text(f"# see {FULL} for why\n")
+        run(GIT + ["add", "-A"], self.work)
+        set_env(self, CLAUDE_PROJECT_DIR=str(harness.root))
+        return harness.run("--staged", cwd=self.work), harness.hook("git commit -m x", cwd=self.work)
+
+    def test_rules_fall_back_to_the_project_dir(self):
+        """A repo with no rules file is checked with the session's rules, so the hook is not silently off.
+
+        Why: when the harness lives in another dir (named by CLAUDE_PROJECT_DIR), the repo being
+        committed to has no .claude of its own, and reading rules only from its top level let ids through.
+        """
+        # GIVEN prefix rules in the project dir only and a staged id comment in the work repo
+        # WHEN the checker and the hook run from the work repo
+        staged, hook = self.check(RULES_TEXT)
+        # THEN the checker exits 9 and the hook blocks with 2, naming the file
+        self.assertEqual((staged.returncode, hook.returncode), (9, 2), (staged.stderr, hook.stderr))
+        self.assertIn("new.py:1:", hook.stderr)
+
+    def test_no_prefix_anywhere_turns_the_check_off(self):
+        """With no prefix in the repo or the project dir, nobody opted in, so commits pass."""
+        # GIVEN no rules file in either place and a staged id comment
+        # WHEN the checker and the hook run
+        staged, hook = self.check(None)
+        # THEN both exit 0
+        self.assertEqual((staged.returncode, hook.returncode), (0, 0), (staged.stderr, hook.stderr))
+        self.assertIn("no bead-id-prefix", staged.stderr)
+
+    def test_the_repos_own_rules_win_over_the_project_dir(self):
+        """A repo that has its own rules file owns the decision, even when it sets no prefix.
+
+        Why: the repo being committed to may belong to another project with another tracker;
+        the session's prefix must not be forced on it.
+        """
+        # GIVEN a work repo rules file without a prefix and prefix rules in the project dir
+        # WHEN the checker and the hook run
+        staged, hook = self.check(RULES_TEXT, work_rules="## beads\n- bead-id-allow: api\n")
+        # THEN both exit 0
+        self.assertEqual((staged.returncode, hook.returncode), (0, 0), (staged.stderr, hook.stderr))
+        self.assertIn("no bead-id-prefix", staged.stderr)
 
 
 class Hook(TmpCase):
