@@ -192,8 +192,9 @@ class Warn(HookCase):
     def test_sleeps_and_pr_reads_inside_a_loop_are_not_bare(self):
         """A sleep or PR read inside a for/while/until loop is left to the loop rules (or nothing).
 
-        hand-sleep-poll covers while/until loops; a `for` over a fixed list is not a wait, and a PR read
-        per item of a list is not a one-shot status check.
+        hand-sleep-poll covers while/until loops and counted `for` loops; a `for` over a fixed list is not
+        a wait (unless it polls a commit's CI state), and a PR read per item of a list is not a one-shot
+        status check.
         """
         # GIVEN loops holding a long sleep or a PR read, on one line and across lines
         # WHEN each is tested
@@ -203,6 +204,62 @@ class Warn(HookCase):
             ("for n in 53 54; do\n  gh pr view $n --json state\n  sleep 30\ndone", (0, [])),
             ("while true; do sleep 30; done", (0, ["hand-sleep-poll"])),
             ("until test -f /tmp/x; do\n  sleep 60\ndone", (0, ["hand-sleep-poll"])),
+        ])
+
+    def test_counted_for_loops_and_commit_ci_polls_warn_sleep_poll(self):
+        """A counted `for` loop sleeping 3s+, and any loop polling a commit's CI state, warn hand-sleep-poll.
+
+        `for i in $(seq 1 40)` is a wait with a hand-picked cap; a loop over a commit's status or check-runs
+        is a CI wait even over a fixed list. Warn, not the PR-poll deny: a commit may have no PR.
+        """
+        # GIVEN counted for loops in each shell form, and loops polling a commit's status or check-runs
+        # WHEN each is tested
+        # THEN each is allowed (exit 0) with hand-sleep-poll alone
+        poll = ["hand-sleep-poll"]
+        self.assert_fired([
+            ("for i in $(seq 1 40); do gh api repos/o/r/commits/abc123/status --jq .state | grep -q success "
+             "&& break; sleep 30; done", (0, poll)),
+            ("for i in $(seq 30); do test -s out && break; sleep 20; done", (0, poll)),
+            ("for i in {1..30}; do test -s out && break; sleep 20; done", (0, poll)),
+            ("for ((i=0; i<30; i++)); do test -s out && break; sleep 20; done", (0, poll)),
+            ("for i in 1 2 3 4 5; do\n  gh api repos/o/r/commits/$sha/check-runs\n  sleep 30\ndone", (0, poll)),
+        ])
+
+    def test_piped_agent_cli_wait_warns(self):
+        """`agent-cli wait` or `agent-cli pr wait` piped into tail/head warns piped-wait.
+
+        The pipe's exit is the last command's, so a timeout (4) or a failure (3) reads as 0.
+        """
+        # GIVEN waits piped with |, 2>&1 | and |&
+        # WHEN each is tested
+        # THEN each is allowed (exit 0) with piped-wait alone
+        piped = ["piped-wait"]
+        self.assert_fired([
+            ("agent-cli wait --until 'test -s out' --every 30 --cap 10m | tail -1", (0, piped)),
+            ("agent-cli wait --until 'test -s out' --cap 10m 2>&1 | tail -5", (0, piped)),
+            ("agent-cli pr wait 12 --cap 40m | tail -3", (0, piped)),
+            ("agent-cli wait --until x |& head", (0, piped)),
+        ])
+
+    def test_near_misses_of_the_wait_rules_are_silent(self):
+        """Unpiped waits, a pipe inside --until, ||, redirects, --help, one-shot reads and short or
+        quoted loops stay silent.
+
+        A warn that fires on look-alikes teaches agents to ignore every warn.
+        """
+        # GIVEN look-alikes of piped-wait and of the new hand-sleep-poll shapes
+        # WHEN each is tested
+        # THEN none fires
+        self.assert_fired([
+            ("agent-cli wait --until 'test -s out' --every 30 --cap 10m", (0, [])),
+            ("agent-cli wait --until 'gh pr checks 12 | grep -q pass' --cap 10m", (0, [])),
+            ("agent-cli wait --until x --cap 5m || echo timed out", (0, [])),
+            ("agent-cli wait --until x --cap 5m > out.json", (0, [])),
+            ("agent-cli wait --help | head", (0, [])),
+            ("gh api repos/o/r/commits/abc123/status --jq .state", (0, [])),
+            ("for i in $(seq 1 3); do echo $i; done", (0, [])),
+            ("for i in $(seq 1 5); do sleep 1; done", (0, [])),
+            ('git commit -m "for i in $(seq 1 3); do sleep 30; done"', (0, [])),
         ])
 
     def test_near_misses_of_the_pointer_rules_are_silent(self):
