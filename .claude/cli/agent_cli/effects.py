@@ -17,13 +17,16 @@ bodies and heredoc bodies anywhere in a pipeline that runs git or gh (commit and
 still count); the pattern argument of grep/rg/sed/awk; every argument of echo/printf; # comments; and `$NAME`
 (not os.environ or process.env) in a quoted heredoc (`<<'EOF'`) fed to anything but a shell, which no shell
 expands: Python that edits a shell script (a written file counts as fed to a shell when bash/sh/zsh,
-`.`/`source` or a `.sh` path at command position runs it), or in single quotes, unless the command is a
-shell, ssh or eval (`psql 'postgres://u:pa$SW0RD@h'` holds a value, `bash -c 'echo $A_KEY'` a read). A URL whose
-`user:password` authority holds / # or ? takes its host after the token's last @. Names the shell itself assigns in the command
+`.`/`source` or a `.sh` path at command position runs it), or in single quotes, unless an earlier word of
+the step is ssh, eval or a shell given -c, wrapped or not (`psql 'postgres://u:pa$SW0RD@h'` holds a value,
+`sudo bash -c 'echo $A_KEY'` a read), or in single quotes inside a quoted heredoc a shell reads, or after a
+backslash (`pa\\$SW0RD`). A URL whose `user:password` authority holds / # or ? takes its host after the first
+@, and none when the text before that @ holds = or & (a query). Names the shell itself assigns in the command
 (NAME=, read NAME, for NAME in, local/declare NAME) are the script's own variables and are dropped; they are
 read from the shell level only, never from inside inline code.
 Effects feed the weekly count (`agent-cli repeats --by effect`), never the live warning.
 """
+import itertools
 import re
 
 from . import core, hook
@@ -32,7 +35,8 @@ from .shape import COLON_TOOLS, DIGITS4, ENV_FILE, HOST, INTERPRETER, REDIR, pre
 MAX_EFFECTS = 32
 ENV_NAME = re.compile(r"[A-Z][A-Z0-9_]{2,63}")
 Q_ = r"\\?[\"']"  # a quote, maybe escaped inside a double-quoted shell string
-ENV_READ = re.compile(r"\$\{?#?([A-Z][A-Z0-9_]*)(?!\w)"
+# `\$X` is never expanded; `\\$X` is (an odd run of 3+ backslashes still reads as a name)
+ENV_READ = re.compile(r"(?<!(?<!\\)\\)\$\{?#?([A-Z][A-Z0-9_]*)(?!\w)"
                       r"|(?:os\.environ(?:\.get\(|\[)|os\.getenv\(|ENV\[|process\.env\[)\s*" + Q_ + r"(\w+)" + Q_
                       + r"|process\.env\.(\w+)")
 STOP = frozenset("""HOME PATH PWD OLDPWD USER SHELL TMPDIR TERM LANG IFS RANDOM SECONDS LINENO PPID UID
@@ -60,7 +64,8 @@ OUT_REDIR = re.compile(r"&>>?|>>|>\||>(?!&)")
 # a URL: the scheme starts a word (so a long word is scanned once), the token runs to whitespace or a quote
 URL = re.compile(r"(?<![\w+.-])[A-Za-z][\w+.-]*://([^\s\"'`]*)")
 AUTHORITY = re.compile(r"[^/?#]*")
-EXPANDS = SHELLS | {"ssh", "eval"}  # commands that expand the `$NAME` of a single-quoted argument
+SHELL_C = re.compile(r"-[A-Za-z]*c[A-Za-z]*")  # a shell's -c, alone or in a cluster (-lc)
+SINGLE = re.compile(r"\\.|\"(?:\\.|[^\"\\])*\"|'[^']*'", re.S)  # a single-quoted span, past escapes and "..."
 # grep-family tools: (flags whose value is the pattern, flags taking another value, flags naming a pattern
 # file). The first word that is not a flag is the pattern unless one of the first or last kind came first.
 PATTERN_TOOLS = {**dict.fromkeys(("grep", "egrep", "fgrep"), (("-e", "--regexp"), ("-A", "-B", "-C", "-m"),
@@ -83,7 +88,8 @@ def effects(text, prefixes=None):
     for m in URL.finditer(view):
         auth = AUTHORITY.match(m[1])[0]
         if "@" not in auth and "@" in m[1] and ":" in auth and not auth.rsplit(":", 1)[1].isdigit():
-            auth = AUTHORITY.match(m[1].rsplit("@", 1)[1])[0]  # user:pa/ss@host: the password held / # or ?
+            user, rest = m[1].split("@", 1)  # user:pa/ss@host: the password held / # or ?
+            auth = "" if "=" in user or "&" in user else AUTHORITY.match(rest)[0]  # a query: unclear, no host
         _host(auth.rsplit("@", 1)[-1].split(":", 1)[0], found)
         if m[0].lower().startswith(("postgres:", "postgresql:")):
             found.add(DB)
@@ -131,7 +137,8 @@ def _assigned(text):
 
 def _unrun(writes, runs, out, code):
     """Add to out each file heredoc no later step runs, and to code the quoted ones only a non-shell runs.
-    writes: (at, path, heredoc spans, quoted ones); runs: (at, path, by a shell). One pass from the end, so
+    writes: (at, path, heredoc spans, quoted ones, their single-quoted spans, text when a shell runs the
+    file); runs: (at, path, by a shell). One pass from the end, so
     `seen` holds exactly the later runs: keyed by path, by basename, and by basename of relative paths."""
     seen = {}
     for at, path, *rest in sorted(writes + runs, key=lambda e: e[0], reverse=True):
@@ -142,7 +149,7 @@ def _unrun(writes, runs, out, code):
             continue
         hits = [seen[k] for k in [(0, path), (2, b)] + [(1, b)] * rel if k in seen]
         out += rest[0] if not hits else []
-        code += rest[1] if hits and not any(hits) else []
+        code += (rest[2] if any(hits) else rest[1]) if hits else []
 
 
 def _ran(s, word, args):
@@ -301,7 +308,9 @@ def _judge(s, pipe, cmd_re, base, out, code, files):
     shell = any(name in SHELLS for _, (name, *_) in named)
     for c, (name, args, word) in named:
         at = base + (c.words[0][0] if c.words else 0)
-        literal = [] if shell else [(base + a, base + b) for a, b in c.literal]
+        singles = [(base + x, base + y) for a, b in c.literal for m in SINGLE.finditer(s, a, b)
+                   if m[0][0] == "'" for x, y in [m.span()]]  # a shell reading the body leaves these as text
+        literal = singles if shell else [(base + a, base + b) for a, b in c.literal]
         spans = c.quoted + c.subst + c.heredocs if git else []
         if name in ("echo", "printf"):
             spans += args
@@ -309,11 +318,12 @@ def _judge(s, pipe, cmd_re, base, out, code, files):
             spans += _patterns(s, args, *PATTERN_TOOLS[name])
         target = c.out if name == "cat" else next((s[a:b] for a, b in args if s[a] != "-"), "")
         if name in ("cat", "tee") and target and c.heredocs:  # kept only if a later step runs it: _unrun
-            files[0].append((at, target.strip("\"'"), [(base + a, base + b) for a, b in c.heredocs], literal))
+            files[0].append((at, target.strip("\"'"), [(base + a, base + b) for a, b in c.heredocs], literal,
+                             singles))
         else:
             code += literal
-        if name not in EXPANDS:  # no shell expands single quotes: `'pa$SW0RD'` is a value, not a read
-            code += [(base + a, base + b) for a, b in c.single]
+        p = _expander(s, c.words)  # no shell expands single quotes before it: `'pa$SW0RD'` is a value
+        code += [(base + a, base + b) for a, b in c.single if a < p]
         if run := word and _ran(s, word, args):
             files[1].append((at, *run))
         ws = [s[a:b] for a, b in args]
@@ -327,6 +337,17 @@ def _judge(s, pipe, cmd_re, base, out, code, files):
         for a, b in c.subst:
             if not any(x <= a and b <= y for x, y in spans):
                 _ignore(s[a:b], cmd_re, base + a, out, code, files)
+
+
+def _expander(s, words):
+    """Where the first word that expands later single-quoted `$NAME`s starts (ssh, eval, or a shell given -c
+    in its leading flags), or len(s): any word of the step, so a wrapped `-- sh -c '...'` counts."""
+    ws = [s[a:b].rsplit("/", 1)[-1] for a, b in words]
+    for k, w in enumerate(ws):
+        flags = itertools.takewhile(lambda t: t.startswith("-"), map(ws.__getitem__, range(k + 1, len(ws))))
+        if w in ("ssh", "eval") or w in SHELLS and any(SHELL_C.fullmatch(t) for t in flags):
+            return words[k][0]
+    return len(s)
 
 
 def _command(s, words, cmd_re):

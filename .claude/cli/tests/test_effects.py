@@ -464,6 +464,56 @@ class SingleQuotes(unittest.TestCase):
                 # THEN the name
                 self.assertEqual(fx(cmd), [want])
 
+    def test_backslash_escaped_dollar_is_text(self):
+        """`\\$NAME` is never expanded, so the text after it is part of a value; `\\\\$NAME` still expands.
+
+        A password written `pa\\$SW0RDX` in double quotes or bare would otherwise leave SW0RDX as an env name.
+        """
+        cases = [('PGPASSWORD="pa\\$SW0RDX" psql -h db.example.test', ["db:postgres", "host:db.example.test"]),
+                 ("PGPASSWORD=pa\\$SW0RDX psql -h db.example.test", ["db:postgres", "host:db.example.test"]),
+                 ('curl -u "admin:Pa\\$SW0RDX" https://h.example.test', ["host:h.example.test"])]
+        for cmd, want in cases:
+            with self.subTest(cmd=cmd):
+                # WHEN the command is read
+                got = fx(cmd)
+                # THEN no fragment of the password, only the real signals
+                self.assertNotIn("SW0RDX", " ".join(got))
+                self.assertEqual(got, want)
+        # an escaped backslash before a real expansion: the name is read
+        self.assertEqual(fx('tool "a\\\\$FOO_BAR"'), ["env:FOO_BAR"])
+
+    def test_wrapped_shell_expands_its_single_quoted_script(self):
+        """A shell reached through a wrapper (`-- sh -c`, sudo, xargs) still reads the names in its script.
+
+        Only the command word was checked, so a wrapped `sh -c '... $DATABASE_URL'` gave no read at all.
+        """
+        cases = ["somecli env exec --worktree w -- sh -c 'q \"$DATABASE_URL\"'",
+                 "sudo -u x bash -c 'q \"$DATABASE_URL\"'", "xargs sh -lc 'q \"$DATABASE_URL\"'"]
+        for cmd in cases:
+            with self.subTest(cmd=cmd):
+                # WHEN read
+                # THEN the name
+                self.assertEqual(fx(cmd), ["env:DATABASE_URL"])
+        # a -c flag on a non-shell does not expand: grep's count flag leaves the pattern as text
+        self.assertEqual(fx("grep -c 'x$FOO_BAR' f.txt"), [])
+        # a single-quoted value before the wrapped shell stays text
+        self.assertEqual(fx("tool 'pa$SECRETTAIL' -- sh -c 'q $FOO_BAR'"), ["env:FOO_BAR"])
+
+    def test_single_quotes_in_a_quoted_heredoc_a_shell_runs_are_text(self):
+        """A quoted heredoc body a shell sources or reads keeps its single-quoted spans as values.
+
+        The shell that runs the body does not expand `'pa$SECRETTAIL'`; a bare `$DATABASE_URL` there is a read.
+        """
+        body = "DB_PASSWORD='pa$SECRETTAIL'\nURL=$DATABASE_URL\nEOF\n"
+        cases = ["cat > a.env <<'EOF'\n" + body + ". ./a.env", "bash <<'EOF'\n" + body]
+        for cmd in cases:
+            with self.subTest(cmd=cmd):
+                # WHEN read
+                got = fx(cmd)
+                # THEN the bare read counts and the single-quoted value gives nothing
+                self.assertNotIn("SECRETTAIL", " ".join(got))
+                self.assertIn("env:DATABASE_URL", got)
+
 
 class Urls(unittest.TestCase):
     def test_password_with_slash_hash_or_query_char_gives_the_real_host(self):
@@ -488,6 +538,20 @@ class Urls(unittest.TestCase):
             with self.subTest(cmd=cmd):
                 self.assertEqual(fx(cmd), ["host:api.example.test"])
 
+    def test_at_sign_after_the_userinfo_never_becomes_the_host(self):
+        """The host follows the first `@` after the scheme; a query that looks like userinfo gives no host.
+
+        Taking the last `@` of the token stored a query value (`next=a@secretvalue`) or an email's domain as
+        a host.
+        """
+        # WHEN a password holds `/` and the query holds another `@`
+        got = fx("curl 'https://user:p/ss@host.example.test/x?next=a@secretvalue'")
+        # THEN the real host, never the query value
+        self.assertEqual(got, ["host:host.example.test"])
+        # WHEN the text before the only `@` is a host, a bad port and a query
+        # THEN no host: the email's domain is not one
+        self.assertEqual(fx("curl 'https://host.example.test:abc/path?email=me@example.org'"), [])
+
 
 class Speed(unittest.TestCase):
     def test_one_long_word_and_an_unclosed_quote_read_fast(self):
@@ -496,7 +560,7 @@ class Speed(unittest.TestCase):
         The recorder hook has a 5s timeout; a URL scan that restarts at every char of a long word is
         quadratic and loses the whole row.
         """
-        for cmd in ("a" * 40000, "curl '" + "a" * 30000):
+        for cmd in ("a" * 40000, "curl '" + "a" * 30000, "a " * 20000, "sh " * 20000):
             with self.subTest(n=len(cmd)):
                 # WHEN read
                 t = time.monotonic()
