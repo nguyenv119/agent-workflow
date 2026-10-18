@@ -25,9 +25,12 @@ change records which step a rule hit).
 chore's many spellings join on what they touch. Rows from before effects add nothing. Weekly count only:
 never --write-cache, so never the live warning.
 
---polls finds a check repeated over separate calls in one session: per session, rows in time order, a sequence
-is a maximal run of 3+ rows carrying the same listed step, other rows in between allowed, whose gaps are all
-within [15 s, 30 min]. Rows with no session are skipped. Never --write-cache, so never the live warning.
+--polls finds a check repeated over separate calls by one agent: per (session, agent), rows in time order, a
+sequence is a maximal run of 3+ rows carrying the same poll key (poll_key: a listed step cut to its command and
+target, so `gh pr view <n> --json <v>` and `gh pr view <n> -q <v>` are one check), other rows in between allowed,
+whose gaps are all within [15 s, 30 min]. Per agent, because parallel subagents share their parent's session id
+and would chain one busy step into fake sequences. Rows with no session are skipped. Never --write-cache, so
+never the live warning.
 """
 import collections
 import datetime as dt
@@ -50,7 +53,7 @@ EXAMPLES = ["agent-cli repeats --since 14d",
 CACHE = "repeats-cache.json"
 FIELDS = ("sessions", "count", "exit_fail_share", "first", "last", "shape")
 EFFECT_FIELDS = ("sessions", "count", "first", "last", "effect", "steps")
-POLL_FIELDS = ("sessions", "sequences", "median_gap_s", "first", "last", "step")
+POLL_FIELDS = ("sessions", "sequences", "median_gap_s", "first", "last", "step", "steps")
 POLL_GAP = (15, 30 * 60)  # seconds between two runs of a sequence, both ends inclusive
 TS = "%Y-%m-%dT%H:%M:%SZ"
 STORE_TS = re.compile(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ")
@@ -64,7 +67,8 @@ except waits (`sleep <n>`) and git log/show of origin/<arg>. --unit command rank
 instead, basics included; the `shape` field holds the step, or the command shape with --unit command.
 
 Source: the recorder's store (${AGENT_CLI_SHAPES_DIR:-~/.claude/agent-cli/shapes}), or with --commands a
-JSONL file of {"ts", "session", "cmd"} rows (optional "repo", "exit", and "script": the body of the
+JSONL file of {"ts", "session", "cmd"} rows (optional "repo", "exit", "agent": the subagent id, missing or
+empty for the main agent, and "script": the body of the
 first script file the command runs, as it stood then, read for its steps and effects as the recorder
 reads the file; env files and files a shell sources without a .sh/.bash/.zsh name are skipped, so
 `. .env; python3 q.py` takes q.py's body, and a command that runs no file reads none)
@@ -93,13 +97,21 @@ runs are: every listed step of the run passes the step test above, or, with no l
 the run. --min-sessions, --top, --repo, the window and --commands apply; not with --write-cache or --unit
 command (effects never feed the warning).
 
---polls: checks repeated over separate calls minutes apart. Per session, in time order, a sequence is a
-maximal run of 3 or more runs carrying the same listed step (other runs in between allowed) whose gaps are
-all from 15 s to 30 min inclusive; a gap outside that ends the run. Rows with no session are skipped. One row
-per step: sessions (with a sequence), sequences, median_gap_s (median of the gaps inside its sequences, whole
-seconds), first and last (UTC, runs inside a sequence), step; ranked by sessions, then sequences, then step.
---min-sessions counts sessions with a sequence; --covered live drops steps the step report calls covered.
-The window, --commands, --repo and --top apply; not with --by, --unit command or --write-cache.
+--polls: checks repeated over separate calls minutes apart. The key is a run's check: of each listed step,
+the first `|` segment from its command word (past VAR=<v> words, shell keywords and git's global options),
+cut after the first later word holding a masked value (`gh pr view <n> --repo <arg> --json <v>` -> `gh pr
+view <n>`, `bd show <arg> | head <n>` -> `bd show <arg>`, `FOO=<v> npx tsx <arg> --x` -> `npx tsx <arg>`),
+or the whole segment when none does (`pnpm typecheck`); a key that is a shell basic (not a sleep or origin
+read) is dropped, and a run adds once to each distinct key. Per session and agent (parallel subagents share
+their parent's session), in time order, a sequence is a maximal run of 3 or more runs carrying the same key
+(other runs in between allowed) whose gaps are all from 15 s to 30 min inclusive; a gap outside that ends the
+run. Rows with no session are skipped. One row per key: sessions (with a sequence, each counted once however
+many of its agents polled), sequences, median_gap_s (median of the gaps inside its sequences, whole seconds),
+first and last (UTC, runs inside a sequence), step (the key), and steps (the 3 most common full steps behind
+the key in those runs); ranked by sessions, then sequences, then key. --min-sessions counts sessions with a
+sequence. Under --covered live a key is covered when its command word is covered (as above), or a rule matched at
+least half of all the window's runs that carry the key. The window, --commands, --repo and --top apply; not
+with --by, --unit command or --write-cache.
 
 Exit codes (agent-cli's shared table): 0 ok: the report ran, an empty list included; 2 refused: bad
 usage; 3 blocked: the store or the --commands file cannot be read, a --commands line is not a
@@ -122,10 +134,10 @@ def register(sub):
                    help="step: each step of a command, basics dropped (default); command: whole command shapes")
     p.add_argument("--by", choices=("effect",), help="effect: rank effect signals (hosts, env var names, .env "
                    "files, db:postgres) instead of steps")
-    p.add_argument("--polls", action="store_true", help="steps re-run 3+ times 15 s to 30 min apart in one "
-                   "session, ranked by sessions with such a run")
+    p.add_argument("--polls", action="store_true", help="checks (a step's command and target) re-run 3+ times "
+                   "15 s to 30 min apart by one agent, ranked by sessions with such a run")
     p.add_argument("--commands", metavar="FILE",
-                   help="JSONL of raw {ts, session, cmd, script?} rows instead of the store")
+                   help="JSONL of raw {ts, session, cmd, agent?, script?} rows instead of the store")
     p.add_argument("--write-cache", action="store_true", help="also write <store>/repeats-cache.json")
     p.add_argument("--json", action="store_true", help="one JSON object per row")
     p.set_defaults(func=run)
@@ -151,12 +163,13 @@ def run(a):
     if a.by:
         groups = group_effects(rows, step_test(group(rows), by_command) if live else None)
         covered = lambda s, g: 2 * g["covered"] >= g["count"]  # noqa: E731
+    elif a.polls:
+        groups = poll_groups(rows)
+        covered = lambda s, g: 2 * g["ruled"] >= g["count"] or by_command(s)  # noqa: E731
     else:
         groups = group(rows, a.unit == "step")
         ok = step_test(groups, by_command)
         covered = lambda s, g: ok(s)  # noqa: E731
-        if a.polls:
-            groups = poll_groups(rows)
     repeated = [(s, g) for s, g in groups.items() if len(g["sessions"]) >= a.min_sessions]
     listed = [(s, g) for s, g in repeated if not (live and covered(s, g))]
     rank = "sequences" if a.polls else "count"
@@ -172,14 +185,15 @@ def run(a):
         print("  ".join(POLL_FIELDS if a.polls else EFFECT_FIELDS if a.by else FIELDS))
     for row in out:
         if a.polls:
-            text = f"{row['sequences']}  {row['median_gap_s']}  {row['first']}  {row['last']}  {row['step']}"
+            text = (f"{row['sequences']}  {row['median_gap_s']}  {row['first']}  {row['last']}  {row['step']}  "
+                    f"{'  //  '.join(row['steps'])}")
         elif a.by:
             text = f"{row['count']}  {row['first']}  {row['last']}  {row['effect']}  {'  //  '.join(row['steps'])}"
         else:
             share = "-" if row["exit_fail_share"] is None else f"{row['exit_fail_share']:.2f}"
             text = f"{row['count']}  {share}  {row['first']}  {row['last']}  {row['shape']}"
         core.out(a, row, f"{row['sessions']}  {text}")
-    unit = "steps with sequences" if a.polls else "effects" if a.by else "steps" if a.unit == "step" else "shapes"
+    unit = "checks with sequences" if a.polls else "effects" if a.by else "steps" if a.unit == "step" else "shapes"
     sys.stderr.write(f"repeats: {len(rows)} runs in window, {len(repeated)} {unit} in {a.min_sessions}+ sessions, "
                      f"{len(repeated) - len(listed)} covered, {len(out)} printed"
                      + (f", {skipped} unreadable store lines skipped" if skipped else "") + "\n")
@@ -254,15 +268,15 @@ def from_commands(path, lo, hi, live):
                 obj = json.loads(ln)
                 cmd, session, ts, script = obj["cmd"], obj["session"], norm_ts(obj["ts"]), obj.get("script")
                 if not (isinstance(cmd, str) and isinstance(session, str) and session
-                        and isinstance(script, (str, type(None)))):
+                        and isinstance(script, (str, type(None))) and isinstance(obj.get("agent"), (str, type(None)))):
                     raise TypeError
             except (ValueError, KeyError, TypeError, AttributeError):  # the line itself is never echoed
                 core.die(Exit.BLOCKED, f"line {n} of {path} is not a {{\"ts\", \"session\", \"cmd\"}} JSON object "
-                         "(script, when present, must be a string)",
+                         "(script and agent, when present, must be strings)",
                          EXAMPLES[2])
             if not lo <= ts < hi:
                 continue
-            row = {"ts": ts, "session": session, "repo": obj.get("repo"),
+            row = {"ts": ts, "session": session, "agent": obj.get("agent") or None, "repo": obj.get("repo"),
                    **record.fields(cmd, rules, prefixes, tools, script_text=script)}
             if "exit" in obj:
                 row["exit"] = obj["exit"]
@@ -340,38 +354,64 @@ def group_effects(rows, step_ok=None):
     return groups
 
 
+def poll_key(step):
+    """A step's check (see --polls): its first `|` segment from the command word, cut after the first later word
+    holding a masked value; "" when the segment has no command word."""
+    words = hook._words(hook.SEGMENT_SEP.split(step)[0])
+    cut = next((i for i, w in enumerate(words[1:], 2) if "<" in w), len(words))
+    return " ".join(words[:cut])
+
+
+def poll_keys(r, split):
+    """{key: [the row's listed steps behind it]} for a row, basic keys (not sleeps or origin reads) dropped."""
+    keys = collections.defaultdict(list)
+    for step in listed_steps(r, split):
+        k = poll_key(step)
+        if k and (not hook.basic(k) or hook.report_only(k)):
+            keys[k].append(step)
+    return keys
+
+
 def poll_groups(rows):
-    """{step: {sessions, sequences, gaps, first, last}} over sequences (see --polls): per session, rows sorted
-    by ts once, then one pass keeping each listed step's open run (its (time, ts) pairs)."""
-    by_session, split, groups = collections.defaultdict(list), {}, {}
+    """{key: {sessions, sequences, gaps, first, last, steps, count, ruled}}: sequences (see --polls) found per
+    (session, agent), rows sorted by ts once, then one pass keeping each key's open run (time, ts, steps);
+    count and ruled: every run in rows carrying the key, and those a rule matched (bypassed or not)."""
+    by_agent, split, groups, tally = collections.defaultdict(list), {}, {}, collections.defaultdict(lambda: [0, 0])
     for r in rows:
-        if r.get("session") and r.get("shape"):
-            by_session[r["session"]].append(r)
+        keys = poll_keys(r, split) if r.get("shape") else {}
+        for k in keys:
+            tally[k][0] += 1
+            tally[k][1] += bool(r.get("rules") or r.get("bypassed"))
+        if r.get("session") and keys:
+            by_agent[(r["session"], r.get("agent") or None)].append((r["ts"], keys))
 
     def close(k, run, session):
         if len(run) < 3:
             return
         g = groups.get(k)
         if g is None:
-            g = groups[k] = {"sessions": set(), "sequences": 0, "gaps": [], "first": run[0][1], "last": run[-1][1]}
+            g = groups[k] = {"sessions": set(), "sequences": 0, "gaps": [], "first": run[0][1], "last": run[-1][1],
+                             "steps": collections.Counter(), "count": tally[k][0], "ruled": tally[k][1]}
         g["sessions"].add(session)
         g["sequences"] += 1
         g["gaps"] += [int((q[0] - p[0]).total_seconds()) for p, q in zip(run, run[1:])]
         g["first"], g["last"] = min(g["first"], run[0][1]), max(g["last"], run[-1][1])
+        for _, _, steps in run:
+            g["steps"].update(steps)
 
-    for session, rs in by_session.items():
-        rs.sort(key=lambda r: r["ts"])  # TS strings sort in time order
+    for (session, _), rs in by_agent.items():
+        rs.sort(key=lambda tk: tk[0])  # TS strings sort in time order
         runs = {}
-        for r in rs:
-            t = dt.datetime.strptime(r["ts"], TS)
-            for k in listed_steps(r, split):
+        for ts, keys in rs:
+            t = dt.datetime.strptime(ts, TS)
+            for k, steps in keys.items():
                 run = runs.get(k)
                 if run and POLL_GAP[0] <= (t - run[-1][0]).total_seconds() <= POLL_GAP[1]:
-                    run.append((t, r["ts"]))
+                    run.append((t, ts, steps))
                 else:
                     if run:
                         close(k, run, session)
-                    runs[k] = [(t, r["ts"])]
+                    runs[k] = [(t, ts, steps)]
         for k, run in runs.items():
             close(k, run, session)
     return groups
@@ -379,13 +419,18 @@ def poll_groups(rows):
 
 def poll_row(s, g):
     return {"step": s, "sessions": len(g["sessions"]), "sequences": g["sequences"],
-            "median_gap_s": round(statistics.median(g["gaps"])), "first": g["first"], "last": g["last"]}
+            "median_gap_s": round(statistics.median(g["gaps"])), "first": g["first"], "last": g["last"],
+            "steps": top_steps(g["steps"])}
+
+
+def top_steps(counter):
+    """The 3 most common steps of a Counter, ties by step text."""
+    return [k for k, _ in sorted(counter.items(), key=lambda kv: (-kv[1], kv[0]))[:3]]
 
 
 def effect_row(e, g):
-    top = sorted(g["steps"].items(), key=lambda kv: (-kv[1], kv[0]))[:3]
     return {"effect": e, "sessions": len(g["sessions"]), "count": g["count"], "first": g["first"],
-            "last": g["last"], "steps": [k for k, _ in top]}
+            "last": g["last"], "steps": top_steps(g["steps"])}
 
 
 def command_covered():

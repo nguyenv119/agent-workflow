@@ -548,7 +548,7 @@ class Usage(StoreCase):
         self.assertEqual((missing.returncode, broken.returncode, bad_script.returncode), (3, 3, 3))
         self.assertIn("line 2", broken.stderr)
         self.assertIn("line 1", bad_script.stderr)
-        self.assertIn("script, when present, must be a string", bad_script.stderr)
+        self.assertIn("script and agent, when present, must be strings", bad_script.stderr)
         self.assertNotIn('"script": 5', bad_script.stderr)
 
     def test_usage_errors_exit_2_with_an_example(self):
@@ -973,27 +973,30 @@ class Effects(StoreCase):
 
 T0 = dt.datetime(2026, 4, 2, 10, 0, 0, tzinfo=UTC)
 PR_VIEW = "gh pr view 12 --json state"  # step `gh pr view <n> --json <v>`; the built-in hand-pr-status rule matches it
+PR_KEY = "gh pr view <n>"  # its poll key: the command and its target
 
 
 class Polls(StoreCase):
     def polls(self, runs, *args):
-        """`repeats --polls --json` over --commands rows; runs: (session, seconds after T0, cmd) triples."""
-        cmds = self.write_commands([{"ts": (T0 + dt.timedelta(seconds=s)).strftime(repeats.TS), "session": sess,
-                                     "cmd": c} for sess, s, c in runs])
+        """`repeats --polls --json` over --commands rows; runs: (session, seconds after T0, cmd[, agent]) tuples,
+        the agent field written only when given."""
+        cmds = self.write_commands([dict({"ts": (T0 + dt.timedelta(seconds=x[1])).strftime(repeats.TS),
+                                          "session": x[0], "cmd": x[2]}, **({"agent": x[3]} if len(x) > 3 else {}))
+                                    for x in runs])
         r, rows = self.repeats("--commands", str(cmds), "--polls", *args)
         self.assertEqual(r.returncode, 0, r.stderr)
         return rows
 
-    def at(self, seconds, cmd=PR_VIEW, session="s1"):
-        """runs of cmd in one session at each of the given seconds after T0."""
-        return [(session, s, cmd) for s in seconds]
+    def at(self, seconds, cmd=PR_VIEW, session="s1", agent=None):
+        """runs of cmd in one session (and agent, when given) at each of the given seconds after T0."""
+        return [(session, s, cmd) + (() if agent is None else (agent,)) for s in seconds]
 
     def steps(self, runs, *args):
         return [x["step"] for x in self.polls(runs, "--covered", "none", "--min-sessions", "1", *args)]
 
     def test_four_pr_reads_minutes_apart_make_one_sequence_with_their_median_gap(self):
-        """A PR read at 10:00, 10:04, 10:09 and 10:15 in one session is one sequence: median gap 300 s, first
-        and last its first and last run.
+        """A PR read at 10:00, 10:04, 10:09 and 10:15 in one session is one sequence under its check `gh pr view
+        <n>`: median gap 300 s, first and last its first and last run, steps the full step.
 
         A poll spread over separate calls is a chore no single-command rule sees; the row must show how
         often it ran and how far apart, so a reader can size the wait command that replaces it.
@@ -1003,11 +1006,30 @@ class Polls(StoreCase):
         # WHEN --polls runs over them
         rows = self.polls(runs, "--covered", "none", "--min-sessions", "1")
         # THEN one row with every field
-        self.assertEqual(rows, [{"step": "gh pr view <n> --json <v>", "sessions": 1, "sequences": 1,
-                                 "median_gap_s": 300, "first": "2026-04-02T10:00:00Z",
-                                 "last": "2026-04-02T10:15:00Z"}])
+        self.assertEqual(rows, [{"step": PR_KEY, "sessions": 1, "sequences": 1, "median_gap_s": 300,
+                                 "first": "2026-04-02T10:00:00Z", "last": "2026-04-02T10:15:00Z",
+                                 "steps": ["gh pr view <n> --json <v>"]}])
 
-    def test_a_sleep_then_check_loop_gives_a_sequence_for_both_steps(self):
+    def test_spellings_of_one_pr_check_join_into_one_sequence(self):
+        """`--json` alone, `--repo ... --jq`, `-q` and a pipe tail on one PR are one check: one sequence under
+        `gh pr view <n>`, steps the 3 most common spellings, ties by text.
+
+        One PR check has many spellings; keyed on the full step, each spelling ran too few times to reach
+        the top of a real week (the first PR check ranked 17th).
+        """
+        # GIVEN one agent checks PR 12 five times a minute apart, in four spellings
+        runs = (self.at([0, 240], PR_VIEW) + self.at([60], "gh pr view 12 --repo example/app --json state --jq .state")
+                + self.at([120], "gh pr view 12 -q .state --json state")
+                + self.at([180], "gh pr view 12 --json state | awk '{print $1}'"))
+        # WHEN --polls runs
+        rows = self.polls(runs, "--covered", "none", "--min-sessions", "1")
+        # THEN one sequence of 5 runs, the twice-run spelling first
+        self.assertEqual([(x["step"], x["sequences"], x["first"], x["last"], x["steps"]) for x in rows],
+                         [(PR_KEY, 1, "2026-04-02T10:00:00Z", "2026-04-02T10:04:00Z",
+                           ["gh pr view <n> --json <v>", "gh pr view <n> --json <v> | awk <str>",
+                            "gh pr view <n> --repo <arg> --json <v> --jq <v>"])])
+
+    def test_a_sleep_then_check_loop_gives_a_sequence_for_both_keys(self):
         """`sleep 60; gh pr checks 12` typed 4 times over 6 minutes is a sequence for the sleep and for the check.
 
         Both steps are what the step report would list (a sleep is report-only); the poll must show
@@ -1016,8 +1038,80 @@ class Polls(StoreCase):
         # GIVEN the sleep-then-check run 4 times, 2 minutes apart
         runs = self.at([0, 120, 240, 360], "sleep 60; gh pr checks 12")
         # WHEN --polls runs
-        # THEN both steps have one sequence each, ranked by name on the tie
+        # THEN both keys have one sequence each, ranked by name on the tie
         self.assertEqual(self.steps(runs), ["gh pr checks <n>", "sleep <n>"])
+
+    def test_two_agents_interleaving_one_step_poll_each_on_their_own(self):
+        """Two agents of one session alternate a check every 60 s, each agent's own runs 2 minutes apart: one
+        sequence per agent (median 120 s), and the session counts once.
+
+        Parallel subagents carry their parent's session id; mixed together, their runs chain into one
+        sequence with fake 60 s gaps.
+        """
+        # GIVEN agent a1 at 0, 120, 240 s and agent a2 at 60, 180, 300 s, one session
+        runs = self.at([0, 120, 240], agent="a1") + self.at([60, 180, 300], agent="a2")
+        # WHEN --polls runs
+        rows = self.polls(runs, "--covered", "none", "--min-sessions", "1")
+        # THEN 2 sequences, 1 session, gaps of each agent's own runs
+        self.assertEqual([(x["sessions"], x["sequences"], x["median_gap_s"]) for x in rows], [(1, 2, 120)])
+
+    def test_runs_only_a_chain_across_agents_make_no_sequence(self):
+        """Two agents with 2 runs each, alternating a minute apart, make no sequence.
+
+        Only the interleaving gives 3+ runs in a row; no single agent waited on the check.
+        """
+        # GIVEN a1 at 0 and 120 s, a2 at 60 and 180 s, one session
+        runs = self.at([0, 120], agent="a1") + self.at([60, 180], agent="a2")
+        # WHEN --polls runs
+        # THEN nothing is listed
+        self.assertEqual(self.steps(runs), [])
+
+    def test_a_missing_null_or_empty_agent_is_the_main_agent(self):
+        """Runs with no agent field, `"agent": null` and `"agent": ""` are one agent, the main one.
+
+        The recorder stores no agent id for the main agent; a replay file may write it empty instead,
+        and splitting the two would cut the main agent's poll apart.
+        """
+        # GIVEN 3 PR reads a minute apart: agent missing, null, then empty
+        runs = self.at([0]) + [("s1", 60, PR_VIEW, None)] + self.at([120], agent="")
+        # WHEN --polls runs
+        rows = self.polls(runs, "--covered", "none", "--min-sessions", "1")
+        # THEN one sequence of all 3
+        self.assertEqual([(x["sequences"], x["first"], x["last"]) for x in rows],
+                         [(1, "2026-04-02T10:00:00Z", "2026-04-02T10:02:00Z")])
+
+    def test_store_rows_poll_per_agent(self):
+        """Over the store, two agents' interleaved runs in one session make no sequence; one agent's 3 runs do.
+
+        Store rows carry the recorder's agent id; the store path must split on it as --commands does.
+        """
+        # GIVEN agent a1 runs a check at 0 and 120 s and a2 at 60 s, and a2 runs another check 3 times
+        for i, (cmd, agent) in enumerate((("lint-tool -q", "a1"), ("lint-tool -q", "a2"), ("lint-tool -q", "a1"))):
+            self.rec(cmd, ["s1"], at=T0 + dt.timedelta(seconds=60 * i), agent_id=agent)
+        for i in range(3):
+            self.rec("build-tool -q", ["s1"], at=T0 + dt.timedelta(seconds=60 * i), agent_id="a2")
+        # WHEN --polls runs over the store
+        r, rows = self.repeats("--polls", "--since", "3650d", "--covered", "none", "--min-sessions", "1")
+        # THEN only a2's own check is listed
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual([(x["step"], x["sequences"]) for x in rows], [("build-tool -q", 1)])
+
+    def test_a_non_string_agent_is_refused_with_exit_3(self):
+        """An `agent` that is not a string or null in --commands exits 3 naming the line, never echoing it.
+
+        A number or list there is a broken export; guessing an agent for it would join or split polls wrongly.
+        """
+        for bad in (7, ["a1"], {"id": "a1"}):
+            with self.subTest(agent=bad):
+                # GIVEN a commands file whose second line has a bad agent
+                cmds = self.write_commands([{"ts": "2026-04-02T10:00:00Z", "session": "s1", "cmd": PR_VIEW},
+                                            {"ts": "2026-04-02T10:01:00Z", "session": "s1", "cmd": PR_VIEW,
+                                             "agent": bad}])
+                # WHEN --polls runs
+                r, _ = self.repeats("--commands", str(cmds), "--polls")
+                # THEN exit 3 on line 2
+                self.assertEqual(r.returncode, 3, r.stderr)
+                self.assertIn("line 2 of", r.stderr)
 
     def test_runs_hours_apart_make_no_sequence(self):
         """Three runs 2 hours apart are no sequence.
@@ -1071,13 +1165,13 @@ class Polls(StoreCase):
     def test_other_runs_between_do_not_break_a_sequence(self):
         """Other commands typed between the polls leave the sequence whole; their own 2 runs make none.
 
-        An agent does other work while it waits; a poll is the same step coming back, whatever ran between.
+        An agent does other work while it waits; a poll is the same check coming back, whatever ran between.
         """
         # GIVEN 3 PR reads 2 minutes apart, with a deploy between each
         runs = self.at([0, 120, 240]) + self.at([60, 180], "deploy-tool push")
         # WHEN --polls runs
         # THEN the PR read is one sequence and the deploy is not listed
-        self.assertEqual(self.steps(runs), ["gh pr view <n> --json <v>"])
+        self.assertEqual(self.steps(runs), [PR_KEY])
 
     def test_rows_are_ordered_by_time_within_each_session(self):
         """Rows are put in time order per session before gaps are taken, whatever order the input has.
@@ -1105,7 +1199,7 @@ class Polls(StoreCase):
         self.assertEqual([x["sessions"] for x in self.polls(runs, "--covered", "none", "--min-sessions", "2")], [2])
 
     def test_rank_is_sessions_then_sequences_then_step_and_top_cuts(self):
-        """Rows rank by sessions, then sequences, then step; --top keeps the first N.
+        """Rows rank by sessions, then sequences, then key; --top keeps the first N.
 
         A poll in more sessions is the better command candidate, and ties must break the same way every run.
         """
@@ -1117,8 +1211,8 @@ class Polls(StoreCase):
         self.assertEqual(self.steps(runs), ["zeta-tool", "beta-tool", "alpha-tool"])
         self.assertEqual(self.steps(runs, "--top", "2"), ["zeta-tool", "beta-tool"])
 
-    def test_covered_live_drops_rule_and_command_covered_steps(self):
-        """--covered live drops a polled step a hook rule or agent-cli covers; --covered none keeps them.
+    def test_covered_live_drops_rule_and_command_covered_keys(self):
+        """--covered live drops a polled key a hook rule or agent-cli covers; --covered none keeps them.
 
         A poll a rule already points at a wait command needs no new command; the live list must hold only gaps.
         """
@@ -1130,17 +1224,37 @@ class Polls(StoreCase):
         none = self.steps(runs)
         # THEN live keeps only the uncovered tool
         self.assertEqual(live, ["tasker-tool <arg>"])
-        self.assertEqual(sorted(none), ["agent-cli pr status <n>", "gh pr view <n> --json <v>", "tasker-tool <arg>"])
+        self.assertEqual(sorted(none), ["agent-cli pr status <n>", PR_KEY, "tasker-tool <arg>"])
 
-    def test_basic_steps_are_never_listed(self):
-        """A polled chain of shell basics (`cat`, `git add`) lists nothing.
+    def test_covered_live_takes_the_rule_share_over_every_run_of_the_key(self):
+        """Under --covered live a key is covered when a rule matched at least half of all the window's runs
+        carrying it, spellings and runs outside a sequence included.
+
+        The hand-pr-status rule matches `gh pr view <n> --json <v>` but not `--web`; a key is one check, so
+        its coverage is the share over all its spellings, not over whichever spelling polled.
+        """
+        unruled = "gh pr view 12 --web"
+        for ruled_at, want in (((), [PR_KEY]), ((7200, 14400), [PR_KEY]), ((7200, 14400, 21600), [])):
+            with self.subTest(ruled_runs=len(ruled_at)):
+                # GIVEN 3 unmatched PR reads in a sequence, and 0, 2 or 3 matched reads 2 hours apart (no sequence)
+                runs = self.at([0, 60, 120], unruled) + self.at(ruled_at)
+                # WHEN --polls runs live
+                rows = self.polls(runs, "--min-sessions", "1")
+                # THEN 0 of 3 and 2 of 5 matched keep the key; 3 of 6 (exactly half) drops it
+                self.assertEqual([x["step"] for x in rows], want)
+
+    def test_basic_steps_and_basic_keys_are_never_listed(self):
+        """A polled chain of shell basics (`cat`, `git add`) lists nothing, and neither does a listed step whose
+        key is basic once cut (`cat <arg> | tasker-tool <arg>` -> `cat <arg>`).
 
         Basics are not chores a command can replace; the step report drops them and so must polls.
         """
-        # GIVEN cat and git add typed 3 times a minute apart
-        # WHEN --polls runs
-        # THEN nothing is listed
-        self.assertEqual(self.steps(self.at([0, 60, 120], "cat a.txt && git add a.txt")), [])
+        for cmd in ("cat a.txt && git add a.txt", "cat notes.txt | tasker-tool import"):
+            with self.subTest(cmd=cmd):
+                # GIVEN the command typed 3 times a minute apart
+                # WHEN --polls runs
+                # THEN nothing is listed
+                self.assertEqual(self.steps(self.at([0, 60, 120], cmd)), [])
 
     def test_store_rows_without_a_session_are_skipped(self):
         """Over the store, rows with no session make no sequence; a named session's poll is listed.
@@ -1159,7 +1273,7 @@ class Polls(StoreCase):
     def test_polls_refuses_by_effect_unit_command_and_write_cache(self):
         """--polls with --by effect, --unit command or --write-cache exits 2 with a --polls example.
 
-        Polls are counted per step and never feed the live warning; silently dropping a flag would hand
+        Polls are counted per key and never feed the live warning; silently dropping a flag would hand
         the caller a report it did not ask for.
         """
         self.store.mkdir()
@@ -1173,23 +1287,24 @@ class Polls(StoreCase):
                 self.assertIn("example: agent-cli repeats --since 7d --polls", r.stderr)
 
     def test_text_mode_prints_a_poll_table_and_help_has_an_example(self):
-        """Without --json --polls prints a header naming every field, then one line per step; --help shows
-        a --polls example.
+        """Without --json --polls prints a header naming every field, then one line per key with its steps
+        joined by `  //  `; --help shows a --polls example.
 
         house-rules: text output carries the same fields as --json, and help has runnable examples.
         """
-        # GIVEN a PR read polled 3 times a minute apart
+        # GIVEN a PR read polled 3 times a minute apart in two spellings
         cmds = self.write_commands([{"ts": (T0 + dt.timedelta(seconds=s)).strftime(repeats.TS), "session": "s1",
-                                     "cmd": PR_VIEW} for s in (0, 60, 120)])
+                                     "cmd": c} for s, c in ((0, PR_VIEW), (60, PR_VIEW), (120, "gh pr view 12 --web"))])
         # WHEN --polls runs in text mode, and help is asked for
         r = agent_cli(self.p, "repeats", "--commands", str(cmds), "--polls", "--covered", "none",
                       "--min-sessions", "1")
         h = agent_cli(self.p, "repeats", "--help")
         # THEN a header, the row, and the summary line on stderr
         self.assertEqual(r.stdout.splitlines(),
-                         ["sessions  sequences  median_gap_s  first  last  step",
-                          "1  1  60  2026-04-02T10:00:00Z  2026-04-02T10:02:00Z  gh pr view <n> --json <v>"])
-        self.assertIn("repeats: 3 runs in window, 1 steps with sequences in 1+ sessions, 0 covered, 1 printed",
+                         ["sessions  sequences  median_gap_s  first  last  step  steps",
+                          "1  1  60  2026-04-02T10:00:00Z  2026-04-02T10:02:00Z  gh pr view <n>  "
+                          "gh pr view <n> --json <v>  //  gh pr view <n> --web"])
+        self.assertIn("repeats: 3 runs in window, 1 checks with sequences in 1+ sessions, 0 covered, 1 printed",
                       r.stderr)
         self.assertIn("agent-cli repeats --since 7d --polls", h.stdout)
 
