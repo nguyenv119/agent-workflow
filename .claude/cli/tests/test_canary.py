@@ -29,8 +29,9 @@ FAKE_GH = """#!/usr/bin/env python3
 import json, os, sys
 argv = sys.argv[1:]
 log = os.environ["FAKE_GH_LOG"]
-if argv[0] == "api" and argv[1].endswith("/status"):  # read the log before this call is in it
-    latest, sha = {}, argv[1].split("/")[-2]
+path = argv[1].split("?")[0] if len(argv) > 1 else ""  # a read-back carries ?per_page=100
+if argv[0] == "api" and path.endswith("/status"):  # read the log before this call is in it
+    latest, sha = {}, path.split("/")[-2]
     for c in map(json.loads, open(log).read().splitlines() if os.path.exists(log) else []):
         if c[0] == "api" and c[1].endswith("/statuses/" + sha):
             f = dict(c[i + 1].split("=", 1) for i, x in enumerate(c) if x == "-f")
@@ -42,7 +43,7 @@ if os.environ.get("FAKE_GH_FAIL"):
 if argv[:2] == ["pr", "view"]:
     fields = argv[argv.index("--json") + 1].split(",") if "--json" in argv else []
     print(json.dumps({k: v for k, v in json.loads(os.environ["FAKE_GH_PR"]).items() if k in fields}))
-elif argv[0] == "api" and argv[1].endswith("/status"):
+elif argv[0] == "api" and path.endswith("/status"):
     print(json.dumps({"state": "pending", "statuses": list(reversed(latest.values()))}))
 """
 FAKE_LOOP = """import json, os, signal, subprocess, sys, time
@@ -106,7 +107,7 @@ class FakeGhCase(TmpCase):
 
     def reads(self):
         """The combined-status read-backs: one per settle."""
-        return [c for c in self.gh_calls() if c[0] == "api" and c[1].endswith("/status")]
+        return [c for c in self.gh_calls() if c[0] == "api" and c[1].endswith("/status?per_page=100")]
 
     def statuses(self):
         """(path, fields) of each status post, a pending's UTC minute written as <t>."""
