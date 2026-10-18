@@ -65,7 +65,8 @@ OUT_REDIR = re.compile(r"&>>?|>>|>\||>(?!&)")
 URL = re.compile(r"(?<![\w+.-])[A-Za-z][\w+.-]*://([^\s\"'`]*)")
 AUTHORITY = re.compile(r"[^/?#]*")
 SHELL_C = re.compile(r"-[A-Za-z]*c[A-Za-z]*")  # a shell's -c, alone or in a cluster (-lc)
-SINGLE = re.compile(r"\\.|\"(?:\\.|[^\"\\])*\"|'[^']*'", re.S)  # a single-quoted span, past escapes and "..."
+# a single-quoted span, past # comments (an apostrophe in `# don't` opens nothing), escapes and "..."
+SINGLE = re.compile(r"(?:^|(?<=[\s;&|(]))#[^\n]*|\\.|\"(?:\\.|[^\"\\])*\"|'[^']*'", re.S | re.M)
 # grep-family tools: (flags whose value is the pattern, flags taking another value, flags naming a pattern
 # file). The first word that is not a flag is the pattern unless one of the first or last kind came first.
 PATTERN_TOOLS = {**dict.fromkeys(("grep", "egrep", "fgrep"), (("-e", "--regexp"), ("-A", "-B", "-C", "-m"),

@@ -482,6 +482,21 @@ class SingleQuotes(unittest.TestCase):
         # an escaped backslash before a real expansion: the name is read
         self.assertEqual(fx('tool "a\\\\$FOO_BAR"'), ["env:FOO_BAR"])
 
+    def test_apostrophe_in_a_comment_of_a_shell_read_heredoc_opens_no_quote(self):
+        """An apostrophe in a `#` comment of a heredoc a shell reads does not start a single-quoted span.
+
+        Taken as a quote, `# don't stop` would turn every `$NAME` up to the next `'` into text and hide the
+        real reads of a multi-line chore script, the kind --by effect exists to count.
+        """
+        # GIVEN a quoted heredoc fed to bash whose comment holds an apostrophe, then a real read
+        cmd = "bash <<'EOF'\n# don't stop\ncurl -H \"x: $API_TOKEN_X\" https://api.example.test\necho 'done'\nEOF"
+        # WHEN the command is read
+        got = fx(cmd)
+        # THEN the read after the comment still counts
+        self.assertEqual(got, ["env:API_TOKEN_X", "host:api.example.test"])
+        # and a single-quoted secret in a sourced env file is still text
+        self.assertEqual(fx("cat > a.env <<'EOF'\n# it's local\nPW='x#y$SECRETZ'\nEOF\n. ./a.env"), ["envfile:a.env"])
+
     def test_wrapped_shell_expands_its_single_quoted_script(self):
         """A shell reached through a wrapper (`-- sh -c`, sudo, xargs) still reads the names in its script.
 
