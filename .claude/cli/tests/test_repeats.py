@@ -752,6 +752,43 @@ class Steps(StoreCase):
         self.assertEqual(json.loads((self.store / "repeats-cache.json").read_text()),
                          {". .env": {"sessions": 3, "count": 3}, "deploy-tool <arg>": {"sessions": 3, "count": 3}})
 
+    def test_cache_keys_quiet_tail_variants_by_their_chore_while_the_report_keeps_pipelines(self):
+        """`x-tool run`, `x-tool run | head -5` and `x-tool run | grep ok`, one per session in 3 sessions, write
+        one cache key `x-tool <arg>` in 3 sessions; the report still lists the three full pipelines.
+
+        Keyed by pipeline, each variant sat in 1 session and never reached the cache, or, once common, warned
+        on its own and spent the per-session cap; the report keeps the pipeline so a reader sees how it is typed.
+        """
+        # GIVEN the three variants, each in its own session
+        for s, cmd in enumerate(("x-tool run", "x-tool run | head -5", "x-tool run | grep ok")):
+            self.rec(cmd, [s])
+        # WHEN the cache is written, and the report runs from 1 session
+        r, _ = self.repeats("--since", "3650d", "--write-cache")
+        # THEN the cache holds one chore in 3 sessions, and the report the three pipelines
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(json.loads((self.store / "repeats-cache.json").read_text()),
+                         {"x-tool <arg>": {"sessions": 3, "count": 3}})
+        self.assertEqual(self.shapes("--since", "3650d", "--min-sessions", "1"),
+                         ["x-tool <arg>", "x-tool <arg> | grep <arg>", "x-tool <arg> | head <n>"])
+
+    def test_cache_of_runs_in_process_on_replayed_commands(self):
+        """cache_of() over from_commands() rows gives the same chore-keyed cache, a run adding once to a key
+        however many of its steps fold into it, and a recipe tail (`| tr`) kept as its own key.
+
+        The real acceptance replays transcripts through it (--write-cache refuses --commands), so it must
+        work in memory on replayed rows, not only through the store.
+        """
+        # GIVEN a commands file: a chain with two variants of one chore, and a recipe pipeline, in 3 sessions
+        cmds = self.write_commands([{"ts": "2026-04-02T12:00:00Z", "session": f"s{i}",
+                                     "cmd": "x-tool run | head -5 && x-tool go | grep ok; y-tool a | tr a b"}
+                                    for i in range(3)])
+        rows, _ = repeats.from_commands(str(cmds), "", "~", False)
+        # WHEN the cache is built in process
+        cache = repeats.cache_of(rows, 3, lambda s: False)
+        # THEN the chore counts each run once, and the recipe keeps its pipeline
+        self.assertEqual(cache, {"x-tool <arg>": {"sessions": 3, "count": 3},
+                                 "y-tool <arg> | tr <arg>": {"sessions": 3, "count": 3}})
+
 
 PY_DB = "python3 - <<'EOF'\nimport os; os.environ['DATABASE_URL']\nEOF"  # an inline query: a basic step
 DEMO_RULE = json.dumps([{"id": "demo-rule", "mode": "warn", "on": "raw", "match": "DEMO_TOKEN",

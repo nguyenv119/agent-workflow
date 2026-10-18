@@ -493,6 +493,65 @@ class StepLookup(RepeatCase):
                 self.assertIsNone(self.ask(cmd, session=f"b{i}"))
 
 
+class ChoreLookup(RepeatCase):
+    """A step piped into quiet reads (`| head`, `| grep`) is looked up, marked and named as its first segment."""
+
+    def test_a_quiet_tail_variant_warns_naming_the_chore(self):
+        """With `bd show <arg>` on the cache (recorded as `bd show x | head -20` in 3 sessions), typing
+        `bd show y | head -5` warns naming `bd show <arg>`, and `bd show z | grep open` in the same session and
+        agent is then silent.
+
+        Keyed by the whole pipeline, each quiet tail was a new step with its own warning, so one chore spent
+        the 5-per-session cap on its variants.
+        """
+        # GIVEN the chore recorded with a quiet tail in 3 sessions, and the cache written
+        self.seed("bd show x-1 | head -20")
+        self.assertEqual(set(json.loads((self.store / "repeats-cache.json").read_text())), {"bd show <arg>"})
+        # WHEN a head variant, then a grep variant, are typed in one session
+        first = self.ask("bd show x-2 | head -5")
+        grep = self.ask("bd show x-3 | grep open")
+        # THEN the first warns naming the chore, and the grep variant is silent
+        self.assertIn("`bd show <arg>` was hand-written 3 times across 3 sessions; propose a command",
+                      first["additionalContext"])
+        self.assertIsNone(grep)
+
+    def test_another_agent_gets_the_chore_warning_once(self):
+        """After the main agent was warned about `bd show <arg>`, a subagent of the same session typing a tail
+        variant is warned once, and its next variant is silent: once per (agent, chore)."""
+        # GIVEN the chore cached and already warned to the main agent
+        self.write_cache({"bd show <arg>": {"sessions": 4, "count": 9}})
+        self.assertIsNotNone(self.ask("bd show x-1"))
+        # WHEN a subagent types two tail variants
+        sub = self.ask("bd show x-2 | grep -n open | head -3", agent="agent-7")
+        sub_again = self.ask("bd show x-3 | tail -2", agent="agent-7")
+        # THEN it is warned once, naming the chore
+        self.assertIn("`bd show <arg>` was hand-written 9 times", sub["additionalContext"])
+        self.assertIsNone(sub_again)
+
+    def test_a_recipe_tail_is_not_folded(self):
+        """A step piped into a recipe (`| tr`) keeps its whole pipeline as the key: with only the first segment
+        cached it is silent, and with the whole pipeline cached it warns naming the pipeline."""
+        # GIVEN only the first segment cached
+        self.write_cache({"x-tool <arg>": {"sessions": 4, "count": 9}})
+        # WHEN the recipe pipeline is typed
+        # THEN nothing is printed
+        self.assertIsNone(self.ask("x-tool run | tr a b"))
+        # GIVEN the whole pipeline cached, WHEN it is typed in a new session, THEN the pipeline is named
+        self.write_cache({"x-tool <arg> | tr <arg>": {"sessions": 4, "count": 9}})
+        self.assertIn("`x-tool <arg> | tr <arg>` was hand-written 9 times",
+                      self.ask("x-tool run | tr a b", session="live2")["additionalContext"])
+
+    def test_the_cap_stays_five_with_tail_variants(self):
+        """Six distinct chores each typed with a quiet tail still give at most 5 warnings in a session."""
+        # GIVEN six cached chores
+        self.write_cache({f"tool{i} <arg>": {"sessions": 4, "count": 10 + i} for i in range(6)})
+        # WHEN each is typed piped into head
+        out = [self.ask(f"tool{i} x | head -3") for i in range(6)]
+        # THEN the first five warn, each naming its chore, and the sixth is silent
+        self.assertEqual([bool(o) for o in out], [True] * 5 + [False])
+        self.assertIn("`tool4 <arg>` was hand-written 14 times", out[4]["additionalContext"])
+
+
 class StepSpeed(unittest.TestCase):
     def test_a_20kb_chain_splits_and_looks_up_in_under_50ms(self):
         """shape.steps() on a ~20 KB realistic chain, and the whole warning lookup on it, each take under
