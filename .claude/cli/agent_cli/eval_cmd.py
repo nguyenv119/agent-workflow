@@ -19,7 +19,7 @@ from . import core, lock, wait
 from .core import Exit
 from .hook_rules import SENTINEL
 
-EVAL_LIB = Path(__file__).resolve().parent / "eval_lib"
+EVAL_LIB = Path(os.path.abspath(__file__)).parent / "eval_lib"  # unresolved, like core.CLAUDE_DIR
 DIR = ".claude/loop-evals/<epic-id>"
 ENTRIES = ("win.sh", "win.py")
 # script exit -> verdict; exit 0 is WIN or NO_SENTINEL, anything unlisted (a script's own 4 included) is FAIL.
