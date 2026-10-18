@@ -1,6 +1,6 @@
 """PreToolUse hook framework: the command's code view, rule loading and evaluation, the repeated-shape
-warning, the UserPromptSubmit phrase hook and the `hook` verbs (posttooluse/posttoolusefailure, the shape
-recorder, live in record.py).
+warning (one step per command, at most REPEAT_CAP per session), the UserPromptSubmit phrase hook and the
+`hook` verbs (posttooluse/posttoolusefailure, the shape recorder, live in record.py).
 
 Safety: fails open (any error prints nothing, exit 0); AGENT_CLI_HOOKS=off disables every rule and both
 warnings; `# agent-cli: allow <id>` skips one rule (`repeated-shape` for the repeat warning); Bash commands meet
@@ -219,7 +219,8 @@ def _shim(text):
 
 def pretooluse():
     """Read the PreToolUse JSON on stdin; print a deny or warn envelope, or nothing. Never raises.
-    With no rule firing, a shape on the repeats cache adds the repeated-shape warning (_repeat_rule)."""
+    Unless a rule denies, a step on the repeats cache adds the repeated-shape warning (_repeat_rule) after
+    any warn rules' messages."""
     try:
         data = json.loads(sys.stdin.read())
         tool, cwd = data.get("tool_name"), data.get("cwd") or os.getcwd()
@@ -236,9 +237,9 @@ def pretooluse():
         deny = [r for r in hits if r["mode"] == "deny"]
         if deny:
             return _deny(message(deny[0]))
-        # a rule that fires already names the command for this chore, so the repeat warning is only
-        # for commands no rule matches
-        hits = hits or [r for r in [_repeat_rule(command, data)] if r]
+        # warn rules and the repeat warning are both delivered: the pointer rules fire on many chains
+        # (any `sleep 20+`) and would otherwise mute every other step
+        hits += [r for r in [_repeat_rule(command, data)] if r]
         if hits:
             print(json.dumps({"hookSpecificOutput": {"hookEventName": "PreToolUse",
                                                      "additionalContext": "\n".join(message(r) for r in hits)}}))
@@ -252,6 +253,7 @@ def _deny(reason):
 
 
 REPEAT_ID = "repeated-shape"
+REPEAT_CAP = 5  # repeated-shape warnings per session, every agent together: what a person reads
 # Generic reads: shapes made only of these top the repeats list (an agent reading files), but there is no
 # chore in them for a command to wrap, so they never warn (basic() counts them as basic) and the step
 # report drops them; --unit command keeps them. Transforms (sort, uniq, cut -f, tr, awk, jq) are left out on
@@ -342,13 +344,15 @@ def report_only(step):
 
 
 def _repeat_rule(command, data):
-    """The repeated-shape warning as a warn rule, the first time this session (and agent) types a step on
-    <store>/repeats-cache.json; None otherwise. The cache is keyed by step, so the command is split as the
-    recorder splits it (shape.steps, $( ) bodies included): one step is looked up; two or more give None
-    for now (picking which step of a chain to name is a later change). A basic step, no session id, a bypass comment, a missing or
-    bad cache, or a store the once-only mark cannot be written to all give None: never warn twice. The cache
-    is shared by every project on the store, so a step this project covers by a command (its `commands:`
-    line, or agent-cli) is dropped here too."""
+    """The repeated-shape warning as a warn rule, naming one step of command on <store>/repeats-cache.json
+    that this session's agent was not yet warned about; None otherwise. The command is split as the
+    recorder splits it (shape.steps, $( ) bodies included) and each step looked up; among the hits the most
+    specific is named: most literal characters (outside <...> placeholders, spaces excluded), then more
+    sessions, then first typed. Once per (agent, step), and at most REPEAT_CAP warnings per session in all,
+    counted as the marks in warned/<session>.txt. Basic steps never warn, and the cache is shared by every
+    project on the store, so a step this project covers by a command (its `commands:` line, or agent-cli)
+    is dropped too. No session id, a bypass comment, a missing or bad cache, or a store the mark cannot be
+    written to all give None: never warn twice."""
     try:
         from . import record, repeats, shape
         session = SESSION_CHARS.sub("_", str(data.get("session_id") or ""))[:128]
@@ -356,27 +360,32 @@ def _repeat_rule(command, data):
                 or REPEAT_ID in BYPASS.findall(command)):
             return None
         steps = shape.steps(command)  # the recorder's split, each step already cut to MAX_SHAPE
-        if len(steps) != 1:  # ponytail: one step only until the multi-step lookup lands
-            return None
-        s = steps[0]
-        if basic(s) or repeats.command_covered()(s):
+        covered = repeats.command_covered()
+        todo = [s for s in steps if not basic(s) and not covered(s)]
+        if not todo:
             return None
         store = record.store_dir()
-        hit = json.loads((store / repeats.CACHE).read_text()).get(s)
-        if hit is None:
-            return None
-        count, sessions = int(hit["count"]), int(hit["sessions"])
-        mark = json.dumps([str(data.get("agent_id") or ""), s])
+        cache = json.loads((store / repeats.CACHE).read_text())
         warned = store / "warned"
         f = warned / f"{session}.txt"
-        if f.is_file() and mark in f.read_text(encoding="utf-8", errors="replace").splitlines():
+        marks = f.read_text(encoding="utf-8", errors="replace").splitlines() if f.is_file() else []
+        if len(marks) >= REPEAT_CAP:
             return None
+        agent = str(data.get("agent_id") or "")
+        hits = [(s, cache[s], json.dumps([agent, s])) for s in todo if s in cache]
+        hits = [h for h in hits if h[2] not in marks]
+        if not hits:
+            return None
+        # max() keeps the first of equals, so a full tie goes to the step typed first
+        s, hit, mark = max(hits, key=lambda h: (len(PLACEHOLDER.sub("", h[0]).replace(" ", "")), int(h[1]["sessions"])))
+        count, sessions = int(hit["count"]), int(hit["sessions"])
         warned.mkdir(mode=0o700, exist_ok=True)
         record.append_line(f, mark)
     except Exception:  # a missing or bad cache, or an unwritable store: no warning, and the rules still run
         return None
+    part = " (one step of this command)" if len(steps) > 1 else ""
     return {"id": REPEAT_ID, "mode": "warn",
-            "message": f"`{s}` was hand-written {count} times across {sessions} sessions; propose a command "
+            "message": f"`{s}` was hand-written {count} times across {sessions} sessions{part}; propose a command "
                        "(cli-for-agents skill: .claude/skills/cli-for-agents/SKILL.md and house-rules.md) "
                        "instead of typing it again; agent-cli repeats --top 10 lists the others."}
 
