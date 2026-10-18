@@ -5,7 +5,7 @@
                 [--screen] [--tries N] [--agent workflow|oracle|nop|controls]
                 [--kind baseline|candidate|harm|controls|pick] [--model opus|sonnet|<id>]
                 [--max-budget-usd 12.05] [--concurrency K] [--env docker|daytona]
-                [--early-stop-vs <sealed baseline run>]
+                [--early-stop-vs <sealed baseline run> [--early-stop-slack N]]
 
 Each task x try runs `harbor run` (WorkflowAgent, or Harbor's own oracle / nop
 agents; `controls` runs both) and becomes a try folder made by
@@ -53,9 +53,10 @@ a run that hits it is status budget_cut.
 Early stop (--early-stop-vs, --screen workflow runs only): tasks run cheapest first by the
 baseline's per-task cost (tasks the baseline has no ok try for last), and the first try runs alone
 before any other slot fills, so it is a cheap dry run of the candidate. After each batch of finished
-tries, compare.screen_fail_decided asks whether the
-screen rule can still pass; once it cannot, nothing more starts, runs in flight finish, and the run
-is marked incomplete with run.json early_stop = the reason (compare.py's screen then fails it).
+tries, compare.screen_fail_decided asks whether the screen rule, with --early-stop-slack as its solved
+slack (default compare.SCREEN_SOLVED_SLACK; the canary passes 0), can still pass; once it cannot,
+nothing more starts, runs in flight finish, and the run is marked incomplete with run.json
+early_stop = the reason (compare.py's screen then fails it).
 
 Where tasks run: --env docker (default) builds each task's container on this
 machine with the local Docker engine; --env daytona rents a cloud sandbox. Either
@@ -413,7 +414,7 @@ def schedule(ctx, jobs):
                 # neither done nor left, and its task would drop out of the pairing.
                 left = {j[0]["id"] for j in queue} | {futures[f][0]["id"] for f in pending}
                 why = ctx.get("early") and queue and compare.screen_fail_decided(
-                    ctx["early"], done, left, args.max_budget_usd)
+                    ctx["early"], done, left, args.max_budget_usd, args.early_stop_slack)
                 if why:
                     print(f"run_exam: early stop: {why}; {len(queue)} run(s) not started", file=sys.stderr)
                     ctx["early_stop"] = why
@@ -496,6 +497,8 @@ def main(argv=None):
     ap.add_argument("--env", default="docker", choices=["docker", "daytona"])
     ap.add_argument("--addon")
     ap.add_argument("--early-stop-vs", help="sealed baseline run: stop once the screen can no longer pass")
+    ap.add_argument("--early-stop-slack", type=int, default=compare.SCREEN_SOLVED_SLACK,
+                    help="the screen's solved slack for the early stop (compare.py --solved-slack)")
     args = ap.parse_args(argv)
     if bool(args.harness) == bool(args.installed) or (args.installed and args.addon):
         ap.error("give --harness <sha> [--addon <dir>] or --installed <dir>")

@@ -66,7 +66,10 @@ Then the path gate ("not needed" posts success, makes no run), the free checks, 
 working token: exit 4 naming the credential, never a value; EXAM_ROUTES is never walked), `docker info` (via
 EXAM_DOCKER; down: exit 5), the task fetch (tasks/fetch_cache.py <manifest>, or LOOP_FETCH_CACHE; only now, so a "not
 needed" PR downloads nothing; failed: exit 5), the screen and, on a screen fail, --rerun-on-fail more candidate runs
-(each a fresh run dir; the verdict is the last compare; a rerun whose tries all errored: exit 5). --post-status writes
+(each a fresh run dir; the verdict is the last compare; a rerun whose tries all errored: exit 5). The canary's screen
+passes only when the candidate solves at least as many tasks as main (CANARY_SOLVED_SLACK = 0, for compare.py
+--solved-slack and run_exam.py --early-stop-slack alike; the cost, cut, error and complete rules are the round's), so
+one lost task fails it and the one rerun absorbs a flake. --post-status writes
 commit status `harness-canary` on the PR head (or --status-sha) of GH_REPO (or --status-repo): "not needed (no loaded
 file)", "pass solved B/n vs main A/n", "fail (rerun) solved B/n vs main A/n", or state error "could not run: <reason>".
 A failed `gh pr edit` of the score block still posts the status, then exits 5 naming the kept body file.
@@ -217,6 +220,7 @@ NOT_SUBSCRIPTION = re.compile(r"^(CLAUDE_CODE_USE_(BEDROCK|VERTEX|FOUNDRY)|ANTHR
 RATE_LIMITED_EXIT = 4  # a usage limit paused the run: not a failure, run again once it resets
 COULD_NOT_RUN_EXIT = 5  # the canary could not start or finish (not a fail): leave the PR open, retry later
 CANARY_CONTEXT = "harness-canary"
+CANARY_SOLVED_SLACK = 0  # the canary passes only if the candidate solves at least as many tasks as main
 SUBSCRIPTION_ONLY = False  # --subscription-only: the exam route is the plan token or nothing (main sets it)
 
 # Gate guard (Long, 12 Oct): a change may add or sharpen checks, never remove or weaken one.
@@ -904,17 +908,22 @@ def check_screen_budget(budget, base_run, flag="--budget-usd"):
 
 
 def screen_against_main(base_sha, cand, manifest, budget, round_n, base_run=None, after_baseline=None,
-                        after_candidate=None):
+                        after_candidate=None, solved_slack=None):
     """Screen cand against main's screen run: base_run (find_base_run's) is reused, or main is run first
     (then after_baseline(run)); cand runs with early stop against it. after_candidate(base_run) may return a
-    reason to stop before scoring (cmd_round's tamper check). Returns (base_run, cand_run, stop, stats):
-    stop is that reason, or the exam settings main's run differs from cand's in, with stats None."""
+    reason to stop before scoring (cmd_round's tamper check). solved_slack: the screen's solved slack for the
+    early stop and compare (None: compare.py's default; the canary passes CANARY_SOLVED_SLACK). Returns
+    (base_run, cand_run, stop, stats): stop is that reason, or the exam settings main's run differs from
+    cand's in, with stats None."""
+    early_slack, rule_slack = ((), ()) if solved_slack is None else (
+        ("--early-stop-slack", str(solved_slack)), ("--solved-slack", str(solved_slack)))
     per_run = budget if base_run else budget / 2
     if base_run is None:
         base_run = run_exam(base_sha, manifest, "baseline", per_run, round_n)
         if after_baseline:
             after_baseline(base_run)
-    cand_run = run_exam(cand, manifest, "candidate", per_run, round_n, extra=("--early-stop-vs", str(base_run)))
+    cand_run = run_exam(cand, manifest, "candidate", per_run, round_n,
+                        extra=("--early-stop-vs", str(base_run), *early_slack))
     stop = after_candidate(base_run) if after_candidate else ""
     if stop:
         return base_run, cand_run, stop, None
@@ -922,7 +931,7 @@ def screen_against_main(base_sha, cand, manifest, budget, round_n, base_run=None
     if differ:
         return base_run, cand_run, (f"main run {rel_home(base_run)} differs from the candidate in "
                                     f"{', '.join(differ)}; the next screen re-runs main"), None
-    return base_run, cand_run, "", compare(base_run, cand_run, "--screen-rule")
+    return base_run, cand_run, "", compare(base_run, cand_run, "--screen-rule", *rule_slack)
 
 
 def mask_task(path, k=1):
@@ -1479,17 +1488,19 @@ def canary_screen(base, cand, manifest, budget, round_n, reruns, target):
     base_run = find_base_run(base, manifest)
     check_screen_budget(budget, base_run)
     per_run, reran = (budget if base_run else budget / 2), False
-    base_run, cand_run, stop, stats = screen_against_main(base, cand, manifest, budget, round_n, base_run)
+    base_run, cand_run, stop, stats = screen_against_main(base, cand, manifest, budget, round_n, base_run,
+                                                          solved_slack=CANARY_SOLVED_SLACK)
     if not stop and run_broken(base_run) and run_broken(cand_run):
         could_not_run(target, "main's and the candidate's runs both errored or stopped")
     for _ in range(0 if stop else reruns):
         if stats["screen"] == "pass":
             break
         print("canary: screen fail, rerunning the candidate once more")
-        cand_run = run_exam(cand, manifest, "candidate", per_run, round_n, extra=("--early-stop-vs", str(base_run)))
+        cand_run = run_exam(cand, manifest, "candidate", per_run, round_n,
+                            extra=("--early-stop-vs", str(base_run), "--early-stop-slack", str(CANARY_SOLVED_SLACK)))
         if run_broken(cand_run):
             could_not_run(target, "the candidate's rerun errored")
-        stats, reran = compare(base_run, cand_run, "--screen-rule"), True
+        stats, reran = compare(base_run, cand_run, "--screen-rule", "--solved-slack", str(CANARY_SOLVED_SLACK)), True
     if stop:
         print(f"loop: {stop}", file=sys.stderr)
         could_not_run(target, "main's run settings differ from the candidate's; run again")

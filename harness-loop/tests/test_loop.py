@@ -2230,6 +2230,22 @@ class ExamPR(LoopTestCase):
         rows = [json.loads(x) for x in (self.r.home / "spend.jsonl").read_text().splitlines()]
         self.assertEqual([(r["kind"], r["round"]) for r in rows], [("exam-baseline", "pr-5"), ("exam-candidate", "pr-5")])
 
+    def test_exam_screen_still_passes_one_fewer_solved_than_main(self):
+        """
+        A plain PR exam (not the canary) keeps the round's slack: 2/3 vs main's 3/3 passes, and its candidate
+        run gets no --early-stop-slack. Breaks: the canary's slack 0 leaks into rounds and exams.
+        """
+        # GIVEN a PR changing a reviewer skill, main solving 3/3 and the candidate 2/3
+        head = self.pr_head({self.REVIEWER: BASE_FILES[self.REVIEWER] + "Also check names.\n"})
+        spec = {"baseline": {t: [1, 2.0] for t in ("t1", "t2", "t3")},
+                "candidate": {"t1": [1, 2.0], "t2": [1, 2.0], "t3": [0, 2.0]}}
+        # WHEN examined
+        p = self.exam(head, env={"FAKE_EXAM_SPEC": json.dumps(spec)})
+        # THEN the screen passes, and the candidate ran with the default early-stop slack
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertTrue(self.block()[0].endswith("solved 2/3 $6.00 | screen=pass"), self.block())
+        self.assertNotIn("--early-stop-slack", self.r.exam_calls()[1])
+
     def test_early_stopped_candidate_gets_an_early_stop_line(self):
         """A candidate run that stopped early fails the screen, and the block says why it stopped."""
         # GIVEN a PR changing a reviewer skill, and a candidate run that stops early

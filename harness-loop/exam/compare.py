@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Compare two sealed exam runs task by task, with a luck margin.
 
-    compare.py <runA> <runB> [--margin-from <runA2>] [--screen-rule]
+    compare.py <runA> <runB> [--margin-from <runA2>] [--screen-rule [--solved-slack N]]
 
 A is the baseline, B the candidate. Each run dir holds <task>/try-<n>/result.json
 and summary.sha256 (written by run_exam.py). A run whose files no longer match
@@ -20,10 +20,10 @@ Prints  n= diff= se= ci95=± solvedA= solvedB= costA= costB= cutA= cutB= errA= e
         statusA= statusB=   (run.json status: complete|incomplete)
 --margin-from A2 (a second run of A's harness): margin_raw = 1.96 x SE of the
 paired difference A vs A2, margin = max(margin_raw, 1/n), and verdict=win|lose|tie.
---screen-rule: screen=pass iff solvedB >= solvedA - SCREEN_SOLVED_SLACK (1), costB <= SCREEN_COST_RATIO
-(1.25) x costA,
+--screen-rule: screen=pass iff solvedB >= solvedA - --solved-slack (default SCREEN_SOLVED_SLACK, 1; the
+canary passes 0), costB <= SCREEN_COST_RATIO (1.25) x costA,
 cutB <= cutA, errB <= errA and B is not incomplete. screen_fail_decided() is the same rule asked
-mid-run (run_exam.py --early-stop-vs).
+mid-run (run_exam.py --early-stop-vs, with --early-stop-slack as the slack).
 Exit: 0 ok, 2 usage / nothing to pair, 3 seal mismatch.
 """
 import argparse
@@ -106,12 +106,12 @@ def paired(a, b, b_is_candidate=True):
     return rows, {st: (count(ta, st), count(tb, st)) for st in ("budget_cut", "error")}
 
 
-def screen_fail_decided(base, done, remaining, cap=DEFAULT_CAP):
+def screen_fail_decided(base, done, remaining, cap=DEFAULT_CAP, slack=SCREEN_SOLVED_SLACK):
     """Why --screen-rule can no longer pass, whatever the remaining tasks do, or None (keep going).
 
     base: load() of the sealed baseline; done: the candidate's finished try results; remaining: ids of the
-    candidate's tasks with a try not finished yet; cap: the candidate's max_budget_usd. Mirrors main()'s
-    pairing and screen rule as they will stand once every task has run; only a fail can be decided early."""
+    candidate's tasks with a try not finished yet; cap: the candidate's max_budget_usd; slack: --solved-slack.
+    Mirrors main()'s pairing and screen rule as they will stand once every task has run; only a fail can be decided early."""
     ta = base[0]
     common = ({r["task"] for r in done} | set(remaining)) & set(ta)
     ours = [r for r in done if r["task"] in common]
@@ -123,8 +123,8 @@ def screen_fail_decided(base, done, remaining, cap=DEFAULT_CAP):
     solved_a = sum(statistics.fmean(x for x, _ in c) >= 0.5 for c in paired.values())
     finished = [counted([r for r in ours if r["task"] == t], True, cap) for t in paired if t not in remaining]
     best = sum(statistics.fmean(x for x, _ in c) >= 0.5 for c in finished if c) + len(set(paired) & set(remaining))
-    if best < solved_a - SCREEN_SOLVED_SLACK:
-        return f"solved at most {best} < main's {solved_a} - {SCREEN_SOLVED_SLACK}"
+    if best < solved_a - slack:
+        return f"solved at most {best} < main's {solved_a} - {slack}"
     cost_a = sum(c for rows in paired.values() for _, c in rows)
     cost_b = sum(c for _, c in counted([r for r in ours if r["task"] in paired], True, cap))
     if cost_b > SCREEN_COST_RATIO * cost_a + EPS:
@@ -144,6 +144,7 @@ def main(argv=None):
     ap.add_argument("run_b")
     ap.add_argument("--margin-from")
     ap.add_argument("--screen-rule", action="store_true")
+    ap.add_argument("--solved-slack", type=int, default=SCREEN_SOLVED_SLACK)
     args = ap.parse_args(argv)
 
     a, b = load(args.run_a), load(args.run_b)
@@ -170,7 +171,7 @@ def main(argv=None):
         verdict = "win" if diff > margin + EPS else "lose" if diff < -margin - EPS else "tie"
         print(f"margin_raw={margin_raw:.3f} margin={margin:.3f} verdict={verdict}")
     if args.screen_rule:
-        ok = (solved_b >= solved_a - SCREEN_SOLVED_SLACK and cost_b <= SCREEN_COST_RATIO * cost_a + EPS
+        ok = (solved_b >= solved_a - args.solved_slack and cost_b <= SCREEN_COST_RATIO * cost_a + EPS
               and cut_b <= cut_a and err_b <= err_a and b[2] != "incomplete")
         print(f"screen={'pass' if ok else 'fail'}")
 

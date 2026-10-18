@@ -23,6 +23,8 @@ CAND_PASS, CAND_FAIL = tl.SPEC_PASS["candidate"], tl.SPEC_FAIL["candidate"]
 MAIN = tl.SPEC_FAIL["baseline"]  # 4/5 solved
 FAIL_TWICE = {"baseline": MAIN, "candidate": CAND_FAIL}
 FAIL_THEN_PASS = {"baseline": MAIN, "candidate": CAND_FAIL, "candidate-2": MAIN}
+ONE_FEWER = {"baseline": {t: [1, 2.0] for t in ("t1", "t2", "t3")},  # main 3/3, the candidate 2/3
+             "candidate": {"t1": [1, 2.0], "t2": [1, 2.0], "t3": [0, 2.0]}}
 
 
 class Canary(tl.LoopTestCase):
@@ -174,6 +176,37 @@ class Canary(tl.LoopTestCase):
                          [("failure", "harness-canary", "fail (rerun) solved 1/5 vs main 4/5")])
         self.assertEqual(len(self.runs("candidate")), 2)
         self.assertIn("canary: fail (rerun) solved 1/5 vs main 4/5", p.stdout)
+
+    def test_one_fewer_solved_than_main_fails_after_the_rerun(self):
+        """
+        What: the canary passes only when the candidate solves at least as many tasks as main: 2/3 vs 3/3 fails,
+        reruns once, and a second 2/3 exits 1 with "fail (rerun) solved 2/3 vs main 3/3".
+        Why: on three tasks one lost task is a third of the signal; a harmful harness line scored 2/3 vs 3/3 and
+        passed the round's slack-1 rule. Breaks: a regressing harness PR gets a green canary.
+        """
+        # GIVEN a candidate solving 2/3 on both runs against main's 3/3
+        head = self.reviewer_pr()
+        # WHEN the canary runs
+        p = self.canary(head, spec=ONE_FEWER)
+        # THEN exit 1, failure after one rerun
+        self.assertEqual(p.returncode, 1, p.stdout + p.stderr)
+        self.assertEqual([s[1:] for s in self.statuses()],
+                         [("failure", "harness-canary", "fail (rerun) solved 2/3 vs main 3/3")])
+        self.assertEqual(len(self.runs("candidate")), 2)
+
+    def test_candidate_runs_early_stop_with_slack_0(self):
+        """
+        What: both candidate runs (first and rerun) get --early-stop-slack 0 next to --early-stop-vs.
+        Why: the early stop must use the canary's rule; with slack 1 it would keep paying for a candidate the
+        slack-0 screen already fails. Breaks: the fake run_exam cannot early-stop, so only the args show it.
+        """
+        # GIVEN a candidate that fails both runs
+        head = self.reviewer_pr()
+        # WHEN the canary runs
+        self.canary(head, spec=ONE_FEWER)
+        # THEN each candidate call carries slack 0
+        cands = [c for c in self.r.exam_calls() if c[c.index("--kind") + 1] == "candidate"]
+        self.assertEqual([c[c.index("--early-stop-slack") + 1] for c in cands], ["0", "0"])
 
     def test_rerun_whose_tries_all_errored_is_could_not_run(self):
         """

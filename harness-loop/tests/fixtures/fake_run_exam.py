@@ -43,6 +43,7 @@ ap.add_argument("--kind", required=True)
 ap.add_argument("--addon")
 ap.add_argument("--env")
 ap.add_argument("--early-stop-vs")
+ap.add_argument("--early-stop-slack")
 args = ap.parse_args()
 
 # A side check (run with --addon) reads "side-<kind>" from the spec and $FAKE_EXAM_INCOMPLETE.

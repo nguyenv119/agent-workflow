@@ -136,7 +136,11 @@ or the Bedrock keys) only for WorkflowAgent runs
 (`tasks/canary-2026-10.json`) against main on the plan token only, reruns the candidate once on a screen
 fail, and posts commit status `harness-canary` on the PR head: success "not needed (no loaded file)" when
 the path gate finds nothing /work loads, success "pass solved B/n vs main A/n", failure "fail (rerun)
-solved B/n vs main A/n", or error "could not run: <reason>". In agent-workflow it runs
+solved B/n vs main A/n", or error "could not run: <reason>". The canary passes only when the candidate
+solves at least as many tasks as main (`compare.py --solved-slack 0`, and `run_exam.py --early-stop-slack 0`
+for the early stop; a round or plain exam allows one fewer); the cost, cut, error and complete rules are the
+round's. On three tasks one lost task is a third of the signal, so it fails, and the one rerun absorbs a
+flake. In agent-workflow it runs
 `loop.py exam --pr N --tasks tasks/canary-2026-10.json --subscription-only --rerun-on-fail 1
 --post-status`; in a repo that installs the harness it builds the candidate as the PR would land on main
 (`git merge-tree`; a conflict is failure "stale, rebase the PR onto main", exit 1), clones agent-workflow
@@ -192,6 +196,8 @@ per-task cost, runs the first (cheapest) try alone as a paid dry run, and stops 
 once the screen rule can no longer pass (more cut or errored tries than the baseline, too few solves
 left, or cost past 1.25x, `compare.SCREEN_COST_RATIO`). The run is then incomplete, with the
 reason in run.json `early_stop`. `loop.py` passes it for every candidate screen.
+`--early-stop-slack N` is the solved slack it uses, matching `compare.py --solved-slack N` (default
+1, `compare.SCREEN_SOLVED_SLACK`; the canary passes 0).
 
 Scoring: in the baseline, `budget_cut` and `error` tries are left out; in the candidate they count
 as unsolved at the full cap. The screen also fails on more candidate errors or an incomplete

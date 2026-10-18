@@ -490,6 +490,24 @@ class RunExamTest(unittest.TestCase):
         meta = json.loads((run / "run.json").read_text())
         self.assertEqual((meta["status"], meta.get("early_stop")), ("complete", None))
 
+    def test_early_stop_slack_0_stops_once_the_candidate_cannot_match_mains_solved(self):
+        """
+        --early-stop-slack reaches the early stop: with 0, a candidate that misses main's cheapest task can
+        reach at most 2 of main's 3 solved, so nothing more starts (slack 1 would run on: 2 >= 3 - 1).
+        Breaks: the canary (slack 0) pays for tasks of a candidate its screen already fails.
+        """
+        # GIVEN main's sealed screen run (3/3), and a candidate that misses t2 (main's cheapest task)
+        m, base = self.screen_baseline()
+        self.log.unlink()
+        self.spec.write_text(json.dumps({"t2": {"reward": 0}}))
+        # WHEN the candidate screen runs with --early-stop-vs main's run and --early-stop-slack 0
+        self.run_exam("--tasks", m, "--budget-usd", 100, "--screen", "--early-stop-vs", base,
+                      "--early-stop-slack", 0, check=False)
+        # THEN only t2 ran, and the run stopped on the solved rule
+        self.assertEqual([Path(a[a.index("-p") + 1]).name for a in self.argvs()], ["t2"])
+        run = next(d for d in (self.home / "runs").iterdir() if d != base)
+        self.assertIn("solved", json.loads((run / "run.json").read_text())["early_stop"])
+
     def test_early_stop_without_screen_is_refused(self):
         """Early stop mirrors the screen rule only; on a full exam it would cut a run the margin needs."""
         # GIVEN main's screen run, WHEN a non-screen run asks for early stop
@@ -921,7 +939,8 @@ class ScheduleEarlyStop(unittest.TestCase):
             st, reward, cost = outcomes[task["id"]]
             return {"task": task["id"], "try": k, "agent": agent, "status": st, "reward": reward, "cost_usd": cost}
 
-        args = argparse.Namespace(agent="workflow", concurrency=2, budget_usd=100.0, max_budget_usd=12.05)
+        args = argparse.Namespace(agent="workflow", concurrency=2, budget_usd=100.0, max_budget_usd=12.05,
+                                  early_stop_slack=compare.SCREEN_SOLVED_SLACK)
         self.ctx = {"args": args, "early": base}
         jobs = [({"id": t}, 1, "workflow") for t in outcomes]
         with unittest.mock.patch.object(run_exam, "run_try", run_try), \
