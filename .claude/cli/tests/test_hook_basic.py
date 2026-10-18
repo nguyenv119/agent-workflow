@@ -13,7 +13,7 @@ class BasicSteps(unittest.TestCase):
         """basic(step) is true for shell basics and quiet reads (by name or by path), `cut -c`/`-b`
         truncation, placeholder-only commands, a test whose `[` an old row masked (`<arg> -n <str> <arg>`:
         a placeholder command word, then only placeholders and test operators), git housekeeping (after git's global options) and inline
-        interpreter code (after short flags), when every `|` segment is one; one real tool in the
+        interpreter code (after short flags), a closing keyword piped into reads (`done | head <n>`), when every `|` segment is one; one real tool in the
         pipeline makes it false.
 
         The report drops basic steps and the cache never holds them; a basic that slips through tops the
@@ -39,7 +39,8 @@ class BasicSteps(unittest.TestCase):
                            ("<arg> -n <str> <arg>", True), ("<arg> -f <str> <arg>", True), ("<str> -eq <n> ]", True),
                            ("<v> ! -z <str> -a -d <arg> ]]", True), ("<arg> -n --force <arg>", False),
                            ("<path> -f <arg>", False), ("read <path>", True), ("git log --oneline -<n>", True),
-                           ("git log --format=<v> | sort | uniq -c | sort -rn", False), ("cat <path> | jq <str>", False)):
+                           ("git log --format=<v> | sort | uniq -c | sort -rn", False), ("cat <path> | jq <str>", False),
+                           ("done | head <n>", True), ("fi | tail <n>", True), ("done | psql <arg>", False)):
             with self.subTest(step=step):
                 self.assertIs(hook.basic(step), want)
 
