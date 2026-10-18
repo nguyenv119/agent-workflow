@@ -20,7 +20,7 @@ command word, after today's command-prefixes seam words are stripped, is agent-c
 step: a rule that matches any part of a chain counts for every step of that run (a known limit; a later
 change records which step a rule hit).
 
---by effect ranks effect signals instead (record.py's `effects`: hosts, env var names, .env files), so one
+--by effect ranks effect signals instead (record.py's `effects`: hosts, env var names, .env files, db:postgres), so one
 chore's many spellings join on what they touch. Rows from before effects add nothing. Weekly count only:
 never --write-cache, so never the live warning.
 """
@@ -73,8 +73,8 @@ none is known), first and last (UTC). --write-cache also writes <store>/repeats-
 hook reads it; so it takes the store with the live filter and the step unit, never --commands,
 --covered none, --repo or --unit command).
 
---by effect: one row per effect signal the recorder stored (`host:<h>`, `env:<NAME>`, `envfile:<basename>`;
-names, never values) in --min-sessions or more sessions: sessions, count, first, last, effect, and steps,
+--by effect: one row per effect signal the recorder stored (`host:<h>`, `env:<NAME>`, `envfile:<basename>`,
+`db:postgres` for any Postgres access; names, never values) in --min-sessions or more sessions: sessions, count, first, last, effect, and steps,
 the 3 most common listed steps of the runs that carried it (a run with only basic steps, e.g. inline
 `python3 - <heredoc>`, counts its own). Under --covered live an effect is covered when at least half its
 runs are: every listed step of the run passes the step test above, or, with no listed step, a rule matched
@@ -101,7 +101,7 @@ def register(sub):
     p.add_argument("--unit", choices=("step", "command"), default="step",
                    help="step: each step of a command, basics dropped (default); command: whole command shapes")
     p.add_argument("--by", choices=("effect",), help="effect: rank effect signals (hosts, env var names, .env "
-                   "files) instead of steps")
+                   "files, db:postgres) instead of steps")
     p.add_argument("--commands", metavar="FILE", help="JSONL of raw {ts, session, cmd} rows instead of the store")
     p.add_argument("--write-cache", action="store_true", help="also write <store>/repeats-cache.json")
     p.add_argument("--json", action="store_true", help="one JSON object per step")

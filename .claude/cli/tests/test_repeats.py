@@ -796,9 +796,10 @@ class Effects(StoreCase):
                               ("set -a && dbtool sync $DATABASE_URL", 2), (PY_DB, 1)])
         # WHEN the report runs by effect over the commands
         rows = self.effects("--commands", str(cmds), "--covered", "none")
-        # THEN one row, its steps the three most common
+        # THEN the variable's row, its steps the three most common; and db:postgres from the Postgres CLI runs
         self.assertEqual([(x["effect"], x["sessions"], x["count"], x["steps"]) for x in rows],
-                         [("env:DATABASE_URL", 4, 10, ["psql <str> -c <str>", "pg_dump <str>", "dbtool <arg>"])])
+                         [("env:DATABASE_URL", 4, 10, ["psql <str> -c <str>", "pg_dump <str>", "dbtool <arg>"]),
+                          ("db:postgres", 4, 7, ["psql <str> -c <str>", "pg_dump <str>"])])
 
     def test_an_inline_code_carrier_shows_its_own_step(self):
         """An effect carried only by inline interpreter code lists that code's own step (`python3 - <heredoc>`).

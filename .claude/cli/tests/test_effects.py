@@ -63,8 +63,8 @@ class Signals(unittest.TestCase):
         """
         # WHEN a connection URL with user, password and port is read
         got = fx("psql postgres://admin:hunter2pw@DB.Example.Test:5432/app")
-        # THEN the bare lowercase host
-        self.assertEqual(got, ["host:db.example.test"])
+        # THEN the bare lowercase host, beside the db signal
+        self.assertEqual(got, ["db:postgres", "host:db.example.test"])
 
     def test_host_with_4_digit_run_or_odd_chars_is_skipped(self):
         """A host holding a 4+ digit run (an id or a generated name) or chars a host cannot hold is not stored.
@@ -150,19 +150,19 @@ class InlineCode(unittest.TestCase):
         # GIVEN an inline python query
         cmd = "python3 - <<'EOF'\nimport os, psycopg\nc = psycopg.connect(os.environ['DATABASE_URL'])\nEOF"
         # WHEN read
-        # THEN its env read
-        self.assertEqual(fx(cmd), ["env:DATABASE_URL"])
+        # THEN its env read, and the client import
+        self.assertEqual(fx(cmd), ["db:postgres", "env:DATABASE_URL"])
 
     def test_node_e_and_psql_with_flags_count(self):
         """`node -e` code and `psql "$DATABASE_URL" -c ...` give the variable, whatever the flags.
 
         The same query is typed with varying flags; the effect is what makes those runs one chore.
         """
-        for cmd in ("node -e 'const u = process.env.DATABASE_URL; console.log(u)'",
-                    'psql "$DATABASE_URL" -At -c "select count(*) from t"',
+        self.assertEqual(fx("node -e 'const u = process.env.DATABASE_URL; console.log(u)'"), ["env:DATABASE_URL"])
+        for cmd in ('psql "$DATABASE_URL" -At -c "select count(*) from t"',
                     'wrapx raw psql "$DATABASE_URL" -c "select 1"'):
             with self.subTest(cmd=cmd):
-                self.assertEqual(fx(cmd), ["env:DATABASE_URL"])
+                self.assertEqual(fx(cmd), ["db:postgres", "env:DATABASE_URL"])
 
     def test_heredoc_written_to_a_file_is_skipped(self):
         """A heredoc redirected to a file (`cat > f <<EOF`, `cat <<EOF > f`, `tee f <<EOF`) gives nothing.
@@ -239,6 +239,89 @@ class InlineCode(unittest.TestCase):
         """
         cmd = "cat <<'EOF' | python3 -\nimport os; os.environ['DATABASE_URL']\nEOF"
         self.assertEqual(fx(cmd), ["env:DATABASE_URL"])
+
+
+class Postgres(unittest.TestCase):
+    """db:postgres: the command touches a Postgres database, whatever its flags or spelling."""
+
+    def test_postgres_cli_command_word_counts_with_any_flags(self):
+        """A step whose command word is a Postgres CLI gives db:postgres, past wrappers, env and timeout.
+
+        The dev-DB query chore is typed with different flags every time; without a constant signal it only
+        joined when its text happened to name $DATABASE_URL, so it never reached the weekly report.
+        """
+        for cmd in ("psql -At -U u -d x -c 'select 1'", "wrapx raw PGOPTIONS=y timeout 9 pg_dump -Fc x",
+                    "cd /tmp && /usr/bin/pg_restore -d x f.dump", "pgcli x", "pg_dumpall -g",
+                    "n=$(psql -At -c 'select 1')"):
+            with self.subTest(cmd=cmd):
+                # WHEN read  THEN the constant signal
+                self.assertEqual(fx(cmd), ["db:postgres"])
+
+    def test_postgres_cli_host_flag_gives_its_host_and_no_other_flag_value(self):
+        """`-h h`, `--host h` and `--host=h` give host:<h> (lowercased); -U, -d and passwords are never stored.
+
+        The host says which database a chore hits; any other flag value could be a user name or a secret.
+        """
+        for cmd in ("psql -h DB.Example.Test -U admin -d app", "pg_dump --host db.example.test app",
+                    "pg_restore --host='db.example.test' -d app f"):
+            with self.subTest(cmd=cmd):
+                # WHEN read  THEN the signal and the host only
+                self.assertEqual(fx(cmd), ["db:postgres", "host:db.example.test"])
+        # AND a host flag that is a variable, or carries a 4-digit run, gives no host
+        self.assertEqual(fx('psql -h "$PGHOST" -c x'), ["db:postgres", "env:PGHOST"])
+        self.assertEqual(fx("psql -h db20240101.example.test"), ["db:postgres"])
+
+    def test_runner_db_script_counts_in_every_runner_form(self):
+        """A package runner running a `db:` script gives db:postgres, with or without run, a filter or a dir.
+
+        Projects wrap their database chores as db:* scripts; the runner's spelling must not split them.
+        """
+        for cmd in ("yarn db:query", "npm run db:migrate", "yarn --filter web db:seed",
+                    "yarn -C apps/web run db:push", "bun run db:studio", "npm --prefix=apps/web run db:x"):
+            with self.subTest(cmd=cmd):
+                # WHEN read  THEN the constant signal
+                self.assertEqual(fx(cmd), ["db:postgres"])
+
+    def test_inline_code_importing_a_postgres_client_counts(self):
+        """Inline JS or Python that imports a Postgres client library gives db:postgres.
+
+        Dev-DB queries run as `node -e` or `python3 - <<EOF` with a client library; the import is the one
+        stable mark they all share.
+        """
+        for code in ('node -e "const { Client } = require(\\"pg\\")"', "node -e 'import pg from \"pg\"'",
+                     "node --input-type=module -e 'import sql from \"postgres\"'",
+                     "tsx -e 'import { neon } from \"@neondatabase/serverless\"'",
+                     "python3 - <<'EOF'\nimport psycopg2\nEOF", "python3 -c 'import asyncpg'",
+                     "python3 - <<'EOF'\nfrom psycopg.rows import dict_row\nEOF",
+                     "cat > /tmp/q.py <<'EOF'\nimport psycopg\nEOF\npython3 /tmp/q.py"):
+            with self.subTest(code=code):
+                # WHEN read  THEN the constant signal
+                self.assertEqual(fx(code), ["db:postgres"])
+
+    def test_postgres_url_scheme_counts_beside_its_host(self):
+        """A postgres:// or postgresql:// URL gives db:postgres as well as its host.
+
+        A connection string in the command is the database itself, even when no CLI or library is named.
+        """
+        for cmd in ("some-tool 'postgres://u@db.example.test/x'", "x --url postgresql://db.example.test/x"):
+            with self.subTest(cmd=cmd):
+                # WHEN read  THEN the signal and the URL's host
+                self.assertEqual(fx(cmd), ["db:postgres", "host:db.example.test"])
+
+    def test_text_that_names_postgres_without_touching_it_gives_nothing(self):
+        """Grep patterns, echo text, commit messages, unrun file heredocs, non-db scripts and near-miss libraries
+        give no db:postgres.
+
+        These name a database tool without running it; counting them would put review and doc work in the
+        dev-DB row.
+        """
+        for cmd in ("grep -n psql notes.md", 'echo "run psql"', 'git commit -m "fix psql call"',
+                    "cat > doc.md <<'EOF'\npsql -c 'select 1'\nimport psycopg\nEOF", "npm run test:unit",
+                    "yarn dbx:seed", "node -e 'require(\"pg-format\")'", "python3 -c 'import pgvector'",
+                    "# psql -c x\nls", "python3 -c 'import psycopg_pool_x'"):
+            with self.subTest(cmd=cmd):
+                # WHEN read  THEN nothing
+                self.assertEqual(fx(cmd), [])
 
 
 class Guards(unittest.TestCase):

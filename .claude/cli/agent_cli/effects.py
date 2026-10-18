@@ -1,9 +1,13 @@
-"""A Bash command's effect signals: the hosts it calls, the env var names it reads, the .env files it loads.
+"""A Bash command's effect signals: the hosts it calls, the env var names it reads, the .env files it loads,
+and whether it touches a Postgres database.
 
-effects(cmd) -> sorted, de-duplicated, at most MAX_EFFECTS of `host:<h>`, `env:<NAME>`, `envfile:<basename>`.
-Names only, never values: a URL gives its host (userinfo, port, path and query dropped), an env read gives
-the variable's name, an env file its basename. Inline code counts (`python3 - <<'EOF'`, `python3 -c`,
-`node -e`): that is how dev-DB queries run.
+effects(cmd) -> sorted, de-duplicated, at most MAX_EFFECTS of `host:<h>`, `env:<NAME>`, `envfile:<basename>`,
+`db:postgres`. Names only, never values: a URL gives its host (userinfo, port, path and query dropped), an env
+read gives the variable's name, an env file its basename. Inline code counts (`python3 - <<'EOF'`, `python3 -c`,
+`node -e`): that is how dev-DB queries run. `db:postgres` is a constant, so a database chore joins however its
+flags are spelled: a step whose command word is a Postgres CLI (PG_CLI; its -h/--host value also gives
+host:<h>, and no other flag value is read), a package runner running a `db:` script, inline code importing a
+Postgres client library (DB_CODE, matched by exact library name), or a postgres:// or postgresql:// URL.
 
 Text that names things without touching them is ignored (about 37% of raw hits were such false alarms): a
 heredoc written to a file by cat or tee (cat > f, cat >> f, tee [-a] f), unless a later step of the same
@@ -21,7 +25,7 @@ Effects feed the weekly count (`agent-cli repeats --by effect`), never the live 
 import re
 
 from . import core, hook
-from .shape import DIGITS4, ENV_FILE, HOST, URL, prefix_re
+from .shape import COLON_TOOLS, DIGITS4, ENV_FILE, HOST, URL, prefix_re
 
 MAX_EFFECTS = 32
 ENV_NAME = re.compile(r"[A-Z][A-Z0-9_]{2,63}")
@@ -38,6 +42,16 @@ ENV_CODE = frozenset(("process.env", "import.meta.env"))  # code, not a file, th
 ASSIGNED = re.compile(r"(?:^|[\s;&|(])(?:([A-Za-z_]\w*)\+?="
                       r"|(?:for|select)\s+([A-Za-z_]\w*)\s+in\b"
                       r"|(?:readonly|read|local|declare|typeset)((?:[^\S\n]+[^\s;&|()]+)*))")
+DB = "db:postgres"
+PG_CLI = frozenset(("psql", "pg_dump", "pg_dumpall", "pg_restore", "pgcli"))
+DB_RUNNERS = frozenset({"npm", "yarn", "bun"} | {t[0] for t in COLON_TOOLS})
+# a runner's args up to its script: flags (with the value of those that take one) and `run`, then `db:`
+DB_SCRIPT = re.compile(r"(?:(?:--filter|--dir|--prefix|--workspace|-[FCw]) \S+ |-\S+ |run )*[\"']?db:")
+# a Postgres client library imported in inline code (JS, then Python); the library name is matched whole
+DB_CODE = re.compile(r"(?:require\(|\bfrom\s+|\bimport\s*\(?)\s*" + Q_
+                     + r"(?:pg|postgres|@neondatabase/serverless)" + Q_
+                     + r"|\bimport\s+pg\b(?![.-])"
+                     r"|\b(?:import|from)\s+(?:[\w.]+\s*,\s*)*(?:psycopg2?|asyncpg)(?![\w-])")
 NAME_ARG = re.compile(r"([A-Za-z_]\w*)(?:=.*)?")
 RUN = re.compile(r"[^\\'\"`$#<>\n|&;() \t]+")  # a run of plain word chars, skipped in one step
 OUT_REDIR = re.compile(r"&>>?|>>|>\||>(?!&)")
@@ -56,15 +70,16 @@ def effects(text, prefixes=None):
     the command word (None reads the command-prefixes seam)."""
     if prefixes is None:
         prefixes = core.seam_lines("command-prefixes")
-    spans, code, writes, runs = [], [], [], []
-    _ignore(text, prefix_re(tuple(prefixes)), 0, spans, code, (writes, runs))
+    spans, code, writes, runs, found = [], [], [], [], set()
+    _ignore(text, prefix_re(tuple(prefixes)), 0, spans, code, (writes, runs, found))
     _unrun(writes, runs, spans, code)
     view = _cut(_cut(text, code, lambda t: t.replace("$", " ")), spans, lambda t: " ")
-    found = set()
     for m in URL.finditer(view):
-        h = HOST.match(m[1].rsplit("@", 1)[-1].split(":", 1)[0].lower())
-        if h and not DIGITS4.search(h[0]):
-            found.add("host:" + h[0].rstrip(".-"))
+        _host(m[1].rsplit("@", 1)[-1].split(":", 1)[0], found)
+        if m[0].lower().startswith(("postgres:", "postgresql:")):
+            found.add(DB)
+    if DB_CODE.search(view):
+        found.add(DB)
     assigned = _assigned(text)
     for m in ENV_READ.finditer(view):
         name = m[1] or m[2] or m[3]
@@ -75,6 +90,14 @@ def effects(text, prefixes=None):
         if ENV_FILE.fullmatch(base) and base not in ENV_CODE and not DIGITS4.search(base):
             found.add("envfile:" + base)
     return sorted(found)[:MAX_EFFECTS]
+
+
+def _host(raw, found, whole=False):
+    """Add host:<h> to found for raw lowercased: its leading HOST run (all of it when whole), unless that has
+    a 4+ digit run."""
+    h = (HOST.fullmatch if whole else HOST.match)(raw.lower())
+    if h and not DIGITS4.search(h[0]):
+        found.add("host:" + h[0].rstrip(".-"))
 
 
 def _cut(text, spans, fn):
@@ -131,7 +154,7 @@ def _ignore(s, cmd_re, base, out, code, files):
     """Append to out the (start, end) spans of s (offset by base) that name things without touching them,
     and to code the quoted heredoc bodies no shell reads (their `$NAME` is text); recurse into the $( ) and
     backtick bodies outside those spans. files: (writes, runs) for _unrun, the file heredocs and the files
-    the command runs."""
+    the command runs, then found, the effect set, which gets each step's db:postgres and -h host."""
     line, pipe, words, cmd = [], [], [], _Cmd()  # line: the pipelines since the last newline
     pending, start, redir, i = [], None, None, 0
 
@@ -259,7 +282,7 @@ class _Cmd:
 
 def _judge(s, pipe, cmd_re, base, out, code, files):
     """Add a finished pipeline's ignored spans to out and its unexpanded code to code, its file heredocs and
-    run files to files, then recurse into its bodies that stay."""
+    run files and db signals to files, then recurse into its bodies that stay."""
     named = [(c, _command(s, c.words, cmd_re)) for c in pipe]
     git = any(name in ("git", "gh") for _, (name, *_) in named)
     shell = any(name in SHELLS for _, (name, *_) in named)
@@ -278,6 +301,13 @@ def _judge(s, pipe, cmd_re, base, out, code, files):
             code += literal
         if run := word and _ran(s, word, args):
             files[1].append((at, *run))
+        ws = [s[a:b] for a, b in args]
+        # the first 6 args only: the script comes by then, and DB_SCRIPT's alternatives overlap (backtracking)
+        if name in PG_CLI or name in DB_RUNNERS and DB_SCRIPT.match(" ".join(ws[:6]) + " "):
+            files[2].add(DB)
+        for k, t in enumerate(ws if name in PG_CLI else ()):  # -h/--host's value only: never -U, -d or others
+            if t in ("-h", "--host") and k + 1 < len(ws) or t.startswith("--host="):
+                _host((t[7:] if t.startswith("--host=") else ws[k + 1]).strip("\"'"), files[2], True)
         out += [(base + a, base + b) for a, b in spans]
         for a, b in c.subst:
             if not any(x <= a and b <= y for x, y in spans):

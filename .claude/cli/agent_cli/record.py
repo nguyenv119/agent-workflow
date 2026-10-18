@@ -4,7 +4,7 @@ Row: {ts, session, agent, repo, shape, steps, effects, exit, rules, bypassed} ap
 ${AGENT_CLI_SHAPES_DIR:-~/.claude/agent-cli/shapes}/<UTC YYYY-MM-DD>.jsonl with one os.write on an
 O_APPEND fd (atomic for a line this short). `steps` = shape.steps() of the command, at most MAX_STEPS
 (rows from before it have none; readers split `shape` instead). `effects` = effects.effects() of the
-command: names only (`host:<h>`, `env:<NAME>`, `envfile:<basename>`), never values (rows from before it
+command: names only (`host:<h>`, `env:<NAME>`, `envfile:<basename>`, `db:postgres`), never values (rows from before it
 have none, and add nothing to `repeats --by effect`). `rules` = ids of the active hook rules
 that match the raw command, computed in memory, so a report can tell covered shapes from uncovered ones
 without the raw text; `bypassed` = the ids of rules that match but were skipped by `# agent-cli: allow <id>` (a deny

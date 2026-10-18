@@ -306,7 +306,30 @@ class Recorder(TmpCase):
             self.assertEqual(r.returncode, 0, r.stderr)
         # THEN every row holds the host and the name, and no 6+ char piece of the password is under the store
         rows = store_rows(self.store)
-        self.assertEqual([r["effects"] for r in rows], [["env:DATABASE_URL", "host:db.example.test"]] * 3)
+        self.assertEqual([r["effects"] for r in rows],
+                         [["db:postgres", "env:DATABASE_URL", "host:db.example.test"]] * 3)
+        blob = b"".join(f.read_bytes() for f in self.store.rglob("*") if f.is_file())
+        pieces = {plant[i:j] for i in range(len(plant)) for j in range(i + 6, len(plant) + 1)}
+        self.assertEqual([x for x in sorted(pieces) if x.encode() in blob], [])
+
+    def test_planted_postgres_cli_password_leaves_only_the_db_signal_and_host(self):
+        """A Postgres CLI call with PGPASSWORD assigned and -h/-U/-d flags stores db:postgres and the -h host
+        through the hook verb: no env:PGPASSWORD (the command assigns it), no flag value, the password in no byte.
+
+        The db signal is a constant so no flag value can ride along; a password that slipped through would sit
+        in a plain file under the home dir for 45 days.
+        """
+        # GIVEN a project, and a CLI call carrying a planted password
+        p = make_project(self.tmp / "proj", seams=SEAMS)
+        plant = "s3cr3t-plant-8"
+        cmd = f"PGPASSWORD={plant} psql -h db.example.test -U u -d x -c 'select 1'"
+        # WHEN it is recorded through the hook verb
+        r = agent_cli(p, "hook", "posttooluse", stdin=json.dumps(event(cmd, cwd=None)),
+                      env={"AGENT_CLI_SHAPES_DIR": str(self.store)})
+        # THEN exit 0, the row holds the signal and the host only, and no 6+ char piece of the password is stored
+        self.assertEqual(r.returncode, 0, r.stderr)
+        (row,) = store_rows(self.store)
+        self.assertEqual(row["effects"], ["db:postgres", "host:db.example.test"])
         blob = b"".join(f.read_bytes() for f in self.store.rglob("*") if f.is_file())
         pieces = {plant[i:j] for i in range(len(plant)) for j in range(i + 6, len(plant) + 1)}
         self.assertEqual([x for x in sorted(pieces) if x.encode() in blob], [])
