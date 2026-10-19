@@ -21,7 +21,7 @@ Never used in exam mode (`.claude/EXAM_MODE` exists): exam runs always take the 
 model/effort — a small diff still deserves correct code. Only the *review*
 layer is lightened: the single reviewer spawns as the `quick-reviewer`
 custom agent type (`.claude/agents/quick-reviewer.md`), which carries its
-own lower effort level in its own definition file, not something set at
+effort level (medium) in its own definition file, not something set at
 call time.
 
 ## Stay quiet during execution
@@ -193,5 +193,5 @@ PR: https://github.com/acme/app/pull/1526.
   that's a sign this bead needed `coordinator`/`work`, not a reason to add
   a second Quick reviewer.
 - **ALWAYS** use the `quick-reviewer` agent type for the review step, not a
-  generic subagent — its lower effort level is what makes this actually
-  cheaper, not just fewer reviewers.
+  generic subagent — its definition pins the effort level and tool list,
+  so the review does not inherit the main session's settings.

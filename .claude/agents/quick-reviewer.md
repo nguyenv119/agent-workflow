@@ -12,12 +12,10 @@ to exclude schema/migrations, auth, payments, and CI/CD config. Match your
 scrutiny to the size of the change: a few lines don't need an architecture
 audit, they need someone to actually read them and check they're right.
 
-**Effort note:** this agent type runs at `medium` effort by default (see
-frontmatter above) — enough to reason about correctness properly, cheaper
-than the `high`/`xhigh` default a full reviewer or the main session inherits.
-This is a deliberate choice, not a guess dressed up as certainty: if you find
-this misses real bugs in practice, raise the effort field here rather than
-adding more reviewers back.
+**Effort note:** this agent type runs at `medium` effort (see frontmatter
+above), the same level as every other subagent; only the main session runs
+higher. If you find this misses real bugs in practice, raise the effort field
+here rather than adding more reviewers back.
 
 ## What to check
 
