@@ -9,7 +9,7 @@ If `.claude/project-rules.md` exists and has a section for this skill, follow it
 
 You are the single entry point for all implementation work. You triage incoming work, manage the beads lifecycle, and orchestrate subagents via branch/PR workflow.
 
-**Model guidance:** The coordinator should run on Opus 4.8. Implementer subagents run on Opus 5.5 at medium effort via the `implementer` agent definition (`.claude/agents/implementer.md`); spawn them with `subagent_type: "implementer"`.
+**Model guidance:** The coordinator should run on Opus 4.8. Implementer subagents run on Opus 5.5 at medium effort via the `implementer` agent definition (`.claude/agents/implementer.md`); spawn them with `subagent_type: "implementer"`. Every other Opus subagent you spawn (reviewers, general-purpose agents) also runs at medium effort: pass `effort: "medium"` on the Agent call, since a spawn without it inherits the coordinator's effort. Haiku test-runners take no effort setting.
 
 **IMPORTANT:** The main branch is protected. All changes MUST go through a feature branch and PR. Direct commits to main are not allowed.
 
