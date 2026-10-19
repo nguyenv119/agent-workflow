@@ -31,23 +31,25 @@ CAPS = {
 }
 
 
-def svg(layer, aria):
+def svg(layer, aria, changed=()):
+    """The diagram as drawn at this layer. `changed` holds what the latest update changed: box keys
+    from B and arrow positions in AR (0-based). Those get the `chg` class, drawn in clay; nothing else is."""
     mid = f"ahL{layer}"
     out = [f'<svg viewBox="0 0 760 350" role="img" aria-label="{html.escape(aria)}">',
-           f'<defs><marker id="{mid}" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L8,4 L0,8 z" style="fill:var(--ink-faint)"/></marker></defs>']
+           f'<defs><marker id="{mid}" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L8,4 L0,8 z" style="fill:var(--muted)"/></marker></defs>']
     for k, (x, y, w, h, lb, lines, L) in B.items():
         if L > layer:
             continue
-        a = " acc" if L == layer else ""
+        a = (" acc" if L == layer else "") + (" chg" if k in changed else "")
         out.append(f'<rect class="bx{a}" x="{x}" y="{y}" width="{w}" height="{h}" rx="6"/>')
         out.append(f'<text class="lb{a}" x="{x+12}" y="{y+22}">{lb}</text>')
         for i, t in enumerate(lines):
-            red = " acc" if (L == layer or (layer >= 3 and k == "O" and False)) else ""
+            red = (" acc" if L == layer else "") + (" chg" if k in changed else "")
             out.append(f'<text class="it{red}" x="{x+12}" y="{y+42+i*17}">{html.escape(t)}</text>')
-    for x1, y1, x2, y2, L, st, _ in AR:
+    for i, (x1, y1, x2, y2, L, st, _) in enumerate(AR):
         if L > layer:
             continue
-        a = " acc" if L == layer else ""
+        a = (" acc" if L == layer else "") + (" chg" if i in changed else "")
         dash = ' stroke-dasharray="4 3"' if st == "fix" else ""
         out.append(f'<line class="ar{a}" x1="{x1}" y1="{y1}" x2="{x2}" y2="{y2}"{dash} marker-end="url(#{mid})"/>')
     if layer >= 5:
@@ -61,12 +63,15 @@ def svg(layer, aria):
 
 if __name__ == "__main__":
     import sys
-    print(svg(int(sys.argv[1]), "x"))
+    # usage: example-layered-svg.py <layer> [changed box keys or arrow numbers, comma separated]
+    marks = sys.argv[2].split(",") if len(sys.argv) > 2 else []
+    print(svg(int(sys.argv[1]), "x", {int(m) if m.isdigit() else m for m in marks}))
 
 
 # ── PR tags (SKILL.md §4 "Pin every PR to the boxes it changes, on every layer") ──
 # One row per (box, PR). dx = offset of the 50-wide pill from the box's right edge
-# (-56 for one tag, -110 for a second tag on the same box). merged=True draws it grey.
+# (-56 for one tag, -110 for a second tag on the same box). An open PR's pill has an ink outline;
+# merged=True draws it hairline grey. Pills are never clay: clay marks only what this update changed.
 PR = [
     # ("N", -56, "#3184", False),
 ]
@@ -78,19 +83,19 @@ PR_LEGEND = {  # PR number -> one plain line of what it changes
 def pr_tags(layer, boxes=B, tags=PR, legend=PR_LEGEND, legend_y=350):
     """SVG fragments for the PR pills on every box drawn at this layer, plus one
     legend line per PR that has a pill on this layer. Grow the viewBox height by
-    22 px per legend line. Pills use fill:var(--canvas) so they sit on the box edge."""
+    22 px per legend line. Pills use fill:var(--paper) so they sit on the box edge."""
     out, shown = [], []
     for key, dx, num, merged in tags:
         x, y, w, _h, _lb, _lines, L = boxes[key]
         if L > layer:
             continue
-        a = "" if merged else " acc"
-        out.append(f'<rect class="bx{a}" x="{x + w + dx}" y="{y - 9}" width="50" height="18" rx="9" style="fill:var(--canvas)"/>')
-        out.append(f'<text class="lb{a}" x="{x + w + dx + 7}" y="{y + 4}">{html.escape(num)}</text>')
+        ink = "" if merged else ";stroke:var(--ink)"
+        out.append(f'<rect class="bx" x="{x + w + dx}" y="{y - 9}" width="50" height="18" rx="9" style="fill:var(--paper){ink}"/>')
+        ink = "" if merged else ' style="fill:var(--ink)"'
+        out.append(f'<text class="lb" x="{x + w + dx + 7}" y="{y + 4}"{ink}>{html.escape(num)}</text>')
         if num not in [n for n, _ in shown]:
             shown.append((num, merged))
     for i, (num, merged) in enumerate(shown):
-        a = "" if merged else " acc"
         state = " (merged)" if merged else ""
-        out.append(f'<text class="it{a}" x="10" y="{legend_y + 18 + i * 22}">{html.escape(num + state + ": " + legend.get(num, ""))}</text>')
+        out.append(f'<text class="it" x="10" y="{legend_y + 18 + i * 22}">{html.escape(num + state + ": " + legend.get(num, ""))}</text>')
     return out, len(shown)

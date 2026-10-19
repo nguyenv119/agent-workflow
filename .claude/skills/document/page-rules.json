@@ -13,15 +13,11 @@
   "legend": {
     "line": "update \\d+, \\d{1,2} [A-Z][a-z]{2}: \\S"
   },
-  "kicker": {
-    "selector": "p.kicker",
-    "pattern": "^Draft \\d+ · .+ · internal working document"
-  },
   "require_update_mark": true,
   "legacy_classes": "u\\d+",
   "update_css": {
     "needs": "ol\\.steps p\\.new",
-    "css": "    .new{--uc:rgb(0,104,150)}\n    .new { color: var(--uc); }\n    .new :is(p,td,h3,h4,li,i,b,.note,.w) { color: var(--uc); }\n    ol.steps p.new { color: var(--uc); }\n    .new ol.steps :is(p,h4) { color: var(--uc); }\n    .sw { display: inline-block; width: 10px; height: 10px; border-radius: 2px; vertical-align: 0; background: var(--uc); }"
+    "css": "    .new{--uc:#b4532f}\n    .new { color: var(--uc); }\n    .new :is(p,td,h3,h4,li,i,b,.note,.w) { color: var(--uc); }\n    ol.steps p.new { color: var(--uc); }\n    .new ol.steps :is(p,h4) { color: var(--uc); }\n    .sw { display: inline-block; width: 10px; height: 10px; border-radius: 2px; vertical-align: 0; background: var(--uc); }"
   },
   "forbid_headings_outside_hidden": [
     {
@@ -31,6 +27,10 @@
   ],
   "unique_ids": true,
   "require_source": [
+    {
+      "pattern": "Source Serif 4",
+      "why": "page lost the launch-note layout (restyle it with restyle.py)"
+    },
     {
       "pattern": "contenteditable",
       "why": "page lost the template's Edit/Save shell"

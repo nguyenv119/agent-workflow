@@ -38,14 +38,27 @@ If the turn changed how the system works (a new piece, a changed mechanism, a ne
 ## Content
 
 - **Why:** the problem from first principles, two short paragraphs. **Done means:** one bold, script-checkable sentence per goal.
+- **Where it stands** (optional, after Done means): what works now with the date it was checked, what still cannot be done, and what is open.
 - **Layers:** heading stating the point, the original pain point with the real example, a brief first-principles "what it is", the one diagram, a Done line. Nothing else. When a layer hides machinery the user must trust to judge results (how a test runs, what each paid run is for), add zoom layers (4a, 4b) with one real example.
 - **For agents:** build state, decisions D1..Dn (who, when), verified facts with source and date, absolute paths, discover-KB links and the memory file, a Reproduce block, earlier turns newest first.
 - Too long: move detail into For agents or `<page>.notes.md`; never delete diagrams. Freeze an overgrown draft as `<page>.draftN.html`.
 - A short version is a separate page only when the `## document` section names one (e.g. a companion `<page>.exec.html`); this page stays the full one.
 
+## Look
+
+The template uses the launch-note layout. Keep it; do not add style blocks of your own.
+
+- A dark horizon hero holds the title and a contents list of the layers. Below it, one 640px serif column on ivory. Diagrams and tables sit centred and may widen up to 880px.
+- One light theme. No dark-mode block, no legend of status colours, no kicker line.
+- One type scale: the `--t-*` tokens in `template.html`. Add no other font sizes.
+- Clay (the orange-brown `#b4532f` family) means one thing: changed in this update. In text, wrap the changed words in `new`. In a diagram, give the changed boxes and lines the `chg` class. Nothing else on the page is clay or orange.
+- In a diagram, the boxes this layer adds are `acc`, drawn in ink. Boxes from earlier layers are hairline grey.
+
+An older page in another look fails the page check with "page lost the launch-note layout". Run `python3 <skill-dir>/restyle.py <page>`, then diff the page's words before and after; only the contents list, the rail and the dropped kicker line should differ. Rerunning it on a restyled page only rebuilds the contents list, the rail and the links to changed layers. It drops every `<style>` block, so skip a page with its own components (tiles, timelines, custom tables) and restyle that one by hand.
+
 ## Diagrams
 
-One picture that grows, generated from one script (copy `<skill-dir>/example-layered-svg.py`), with real names and one real example running through it. Each layer adds boxes in `acc` (about 23 characters per line); existing boxes never move. Order layers from the data's origin to the problem: the broken path solid red, the fix dashed. Paper terms go in brackets after a plain name; no glossary. PR pills: orange open, grey merged, one legend line per PR saying what it changes. Tables only inside For agents.
+One picture that grows, generated from one script (copy `<skill-dir>/example-layered-svg.py`), with real names and one real example running through it. Each layer adds boxes in `acc` (about 23 characters per line); existing boxes never move. Mark what this update changed with `chg` (the script's `changed` set). Order layers from the data's origin to the problem: the broken path solid, the fix dashed. Paper terms go in brackets after a plain name; no glossary. PR pills: ink outline while open, hairline grey once merged, one legend line per PR saying what it changes. Tables only inside For agents.
 
 If a private add-on ships finished example pages in this skill's folder, use them as references, but never Read one whole: pull just the section you need by its heading:
 
@@ -68,4 +81,4 @@ Render headless and read 900x1600 slices:
   --hide-scrollbars --window-size=900,6000 --screenshot=<scratchpad>/page.png file://<page>
 ```
 
-Check both themes and For agents open; look for SVG text spilling out of boxes. Send with `SendUserFile` (`display: "render"`) and give a short summary of what changed in chat.
+The page has one light theme, so one pass is enough. Also check with For agents open, and look for SVG text spilling out of boxes and for clay on anything this update did not change. Send with `SendUserFile` (`display: "render"`) and give a short summary of what changed in chat.
