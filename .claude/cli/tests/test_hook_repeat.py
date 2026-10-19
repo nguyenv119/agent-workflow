@@ -58,7 +58,7 @@ class RepeatCase(helpers.HookCase):
 
 class RepeatWarning(RepeatCase):
     def test_cached_shape_warns_once_per_session_then_is_silent(self):
-        """A shape on the repeats cache gets the warning (counts, the skill, the bypass) once per session.
+        """A shape on the repeats cache gets the warning (the propose ask first, then counts) once per session.
 
         The recorder saw the command after the wrapper rewrite and PreToolUse sees it as typed; the seam
         strips the wrapper, so both give one shape. Once per session: a warning on every run is noise
@@ -73,10 +73,12 @@ class RepeatWarning(RepeatCase):
         # THEN the first run of each session warns, with no decision; the repeat in a session is silent
         self.assertNotIn("permissionDecision", first)
         text = first["additionalContext"]
+        self.assertTrue(text.startswith("Propose a reusable command for this step (a name, its arguments, "
+                                        "what it does; cli-for-agents skill: .claude/skills/cli-for-agents/SKILL.md"), text)
         self.assertIn(f"`{CHORE_SHAPE}` was hand-written 3 times across 3 sessions", text)
-        self.assertIn("propose a command (cli-for-agents skill", text)
-        self.assertIn(".claude/skills/cli-for-agents/SKILL.md", text)
-        self.assertIn("(bypass: append  # agent-cli: allow repeated-shape)", text)
+        self.assertIn("agent-cli repeats --top 10 lists the others.", text)
+        # the opt-out is not printed: agents pasted it into later commands instead of proposing one
+        self.assertNotIn("agent-cli: allow", text)
         self.assertIsNone(again)
         self.assertEqual(other["additionalContext"], text)
 
@@ -136,11 +138,13 @@ class RepeatWarning(RepeatCase):
         self.write_cache({CHORE_SHAPE: {"sessions": 4, "count": 6}})
         # WHEN the chore is typed there
         ruled = self.ask(CHORE, project=p)
-        # THEN the rule line comes first, then the repeat warning
+        # THEN the rule line comes first with its bypass hint, then the repeat warning without one
         lines = ruled["additionalContext"].splitlines()
         self.assertEqual(len(lines), 2)
         self.assertIn("use ship", lines[0])
+        self.assertTrue(lines[0].endswith("(bypass: append  # agent-cli: allow deploy-hint)"), lines[0])
         self.assertIn("hand-written 6 times across 4 sessions", lines[1])
+        self.assertNotIn("agent-cli: allow", lines[1])
 
     def test_a_deny_in_a_chain_silences_the_warning_for_its_other_steps(self):
         """When a rule denies one step of a chain, the reason is the deny alone, even though another step of
@@ -329,8 +333,8 @@ class StepLookup(RepeatCase):
         alone = self.ask("npm run db:query 'select 2'")
         # THEN one line, naming the query step with the one-step note; the lone repeat is silent
         self.assertEqual(first["additionalContext"].splitlines(), [first["additionalContext"]])
-        self.assertIn("`npm run db:query <str>` was hand-written 22 times across 6 sessions (one step of this command); "
-                      "propose a command", first["additionalContext"])
+        self.assertIn("`npm run db:query <str>` was hand-written 22 times across 6 sessions (one step of this command). "
+                      "agent-cli repeats", first["additionalContext"])
         self.assertNotIn(". .env", first["additionalContext"])
         self.assertIsNone(alone)
 
@@ -342,7 +346,7 @@ class StepLookup(RepeatCase):
         # WHEN it is typed alone
         out = self.ask(CHORE)
         # THEN the warning has no one-step note
-        self.assertIn("across 4 sessions; propose a command", out["additionalContext"])
+        self.assertIn("across 4 sessions. agent-cli repeats", out["additionalContext"])
         self.assertNotIn("one step of this command", out["additionalContext"])
 
     def test_an_already_warned_step_lets_the_next_cached_step_of_a_chain_warn(self):
@@ -511,7 +515,7 @@ class ChoreLookup(RepeatCase):
         first = self.ask("bd show x-2 | head -5")
         grep = self.ask("bd show x-3 | grep open")
         # THEN the first warns naming the chore, and the grep variant is silent
-        self.assertIn("`bd show <arg>` was hand-written 3 times across 3 sessions; propose a command",
+        self.assertIn("`bd show <arg>` was hand-written 3 times across 3 sessions. agent-cli repeats",
                       first["additionalContext"])
         self.assertIsNone(grep)
 

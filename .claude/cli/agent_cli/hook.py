@@ -205,9 +205,10 @@ def match(rule, raw, code):
 
 
 def message(rule):
-    """The rule's message with the bypass hint; bare `agent-cli` becomes the absolute shim path when it is
-    not on PATH (the PATH wiring failed)."""
-    return f"{_shim(rule['message'])}  (bypass: append  # agent-cli: allow {rule['id']})"
+    """The rule's message with the bypass hint (none for the repeat warning: agents pasted it instead of
+    proposing a command); bare `agent-cli` becomes the absolute shim path when it is not on PATH."""
+    hint = "" if rule["id"] == REPEAT_ID else f"  (bypass: append  # agent-cli: allow {rule['id']})"
+    return _shim(rule["message"]) + hint
 
 
 def _shim(text):
@@ -398,9 +399,10 @@ def _repeat_rule(command, data):
         return None
     part = " (one step of this command)" if len(steps) > 1 else ""
     return {"id": REPEAT_ID, "mode": "warn",
-            "message": f"`{s}` was hand-written {count} times across {sessions} sessions{part}; propose a command "
-                       "(cli-for-agents skill: .claude/skills/cli-for-agents/SKILL.md and house-rules.md) "
-                       "instead of typing it again; agent-cli repeats --top 10 lists the others."}
+            "message": "Propose a reusable command for this step (a name, its arguments, what it does; "
+                       "cli-for-agents skill: .claude/skills/cli-for-agents/SKILL.md and house-rules.md) instead "
+                       f"of typing it again: `{s}` was hand-written {count} times across {sessions} sessions{part}. "
+                       "agent-cli repeats --top 10 lists the others."}
 
 
 CLI_PHRASES = (r"\bshould\s+be\s+an?\s+(?:cli|command)\b",
