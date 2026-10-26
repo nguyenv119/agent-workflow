@@ -32,8 +32,22 @@ class Lock(unittest.TestCase):
         proc.wait()
         return proc.pid
 
+    # Tests never see the laptop's real tsc processes: the pattern points at a path only fake_tsc plants.
+    TSC = "agent-cli-test-planted/bin/tsc"
+
     def lock(self, *args):
-        return agent_cli(self.p, "lock", *args, env={"AGENT_CLI_STATE": str(self.state)})
+        return agent_cli(self.p, "lock", *args, env={"AGENT_CLI_STATE": str(self.state),
+                                                     "AGENT_CLI_TSC_PATTERN": self.TSC})
+
+    def fake_tsc(self, n=1):
+        """n live processes whose command line ends in a path matching TSC, killed at cleanup; their pids."""
+        procs = [subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)", f"/x/{self.TSC}"])
+                 for _ in range(n)]
+        for proc in procs:
+            self.addCleanup(proc.wait)
+            self.addCleanup(proc.kill)
+        time.sleep(0.3)  # let each exec so ps shows its command line
+        return [proc.pid for proc in procs]
 
     def owner(self, name):
         return json.loads((self.state / "locks" / name / "owner.json").read_text())
@@ -257,6 +271,48 @@ class Lock(unittest.TestCase):
         self.assertEqual(r.returncode, 2, r.stderr)
         self.assertIn("--slots 0", r.stderr)
         self.assertEqual(self.lock("status").stdout, "no locks\n")
+
+    def test_running_tsc_counts_as_busy_even_when_its_holder_died(self):
+        """gates.1's owner died but its tsc children run on: with --slots 2, two such tsc fill the lock
+        (exit 3, naming the tsc pids), one does not, and when they are gone the dead slot is reaped."""
+        # GIVEN slot 1 held by a dead pid and two tsc processes still running
+        self.lock("acquire", "gates", "--slots", "2", "--pid", str(self.dead()))
+        tsc = self.fake_tsc(2)
+        # WHEN a new pid tries to acquire, with the count at 2 and then at 1
+        new = self.live()
+        full = self.lock("acquire", "gates", "--slots", "2", "--pid", str(new))
+        os.kill(tsc[0], 9)
+        time.sleep(0.3)
+        one = self.lock("acquire", "gates", "--slots", "2", "--pid", str(new))
+        # THEN two tsc block it and name them; one tsc leaves a slot, so the dead slot is reaped and taken
+        self.assertEqual(full.returncode, 3, full.stderr)
+        self.assertIn("all 2 slots of gates held by", full.stderr)
+        self.assertIn(f"tsc pid {tsc[0]}", full.stderr)
+        self.assertIn(f"tsc pid {tsc[1]}", full.stderr)
+        self.assertEqual(one.returncode, 0, one.stderr)
+        self.assertIn(f"acquired: gates.1 (pid {new})", one.stdout)
+
+    def test_tsc_count_does_not_touch_other_lock_names_or_free_gates(self):
+        """Only the gates lock counts tsc: a lock with any other name ignores running type checkers."""
+        # GIVEN three tsc processes running
+        self.fake_tsc(3)
+        # WHEN a plain lock named "other" is acquired
+        other = self.lock("acquire", "other", "--pid", str(self.live()))
+        # THEN the plain lock is taken
+        self.assertEqual(other.returncode, 0, other.stderr)
+
+    def test_tsserver_and_unrelated_commands_are_not_tsc(self):
+        """A command line that only mentions the path in one token ending elsewhere (tsserver, an editor
+        with the path as a substring) does not count."""
+        # GIVEN a process whose argument contains the path but does not end with it
+        proc = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)", f"/x/{self.TSC}/tsserver.js"])
+        self.addCleanup(proc.wait)
+        self.addCleanup(proc.kill)
+        time.sleep(0.3)
+        # WHEN gates --slots 1 is acquired
+        r = self.lock("acquire", "gates", "--pid", str(self.live()))
+        # THEN it is not counted as a type checker
+        self.assertEqual(r.returncode, 0, r.stderr)
 
 
 if __name__ == "__main__":

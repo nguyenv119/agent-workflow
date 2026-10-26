@@ -1,5 +1,7 @@
 """`agent-cli lock`: a named mutex in a state dir that reaps a lock whose holder died or ran past its cap.
 With --slots N it is a semaphore: N lock dirs <name>.1 .. <name>.N, and acquire takes the first free one.
+The gates lock also counts running type checkers (typescript/bin/tsc processes): a holder that died leaves
+its tsc children running, so acquire reports "held" while they number >= --slots.
 
 Every read-modify-write of a lock dir runs under an flock on locks/.guard, so two reapers never both win.
 """
@@ -82,6 +84,10 @@ def read(name):
         return {"pid": 0, "host": "?", "started": d.stat().st_mtime, "cap": 0, "cmdline": ""}
 
 
+TSC_GATED = {"gates"}  # lock names whose slots also count running type checkers (tsc is ~3 GB each)
+TSC_PATTERN = "typescript/bin/tsc"  # AGENT_CLI_TSC_PATTERN overrides it (tests plant a process that matches)
+
+
 def alive(o):
     """False when the owner pid is gone; another host's pid cannot be checked, so it counts as alive."""
     if o["host"] != socket.gethostname():
@@ -101,7 +107,25 @@ def stale(o):
     return not alive(o) or time.time() - o["started"] > o["cap"]
 
 
+def tsc_pids():
+    """Pids of type checkers running on this host: a process with an argument ending in typescript/bin/tsc
+    (tsserver and editors do not match). Unreadable process list: none."""
+    pat = os.environ.get("AGENT_CLI_TSC_PATTERN") or TSC_PATTERN
+    try:
+        out = subprocess.run(["ps", "-axo", "pid=,command="], capture_output=True, text=True, timeout=10).stdout
+    except (OSError, subprocess.SubprocessError):
+        return []
+    pids = []
+    for line in out.splitlines():
+        pid, _, cmd = line.strip().partition(" ")
+        if pid.isdigit() and any(t.endswith(pat) for t in cmd.split()[1:]):
+            pids.append(int(pid))
+    return pids
+
+
 def describe(o):
+    if o.get("tsc"):
+        return f"tsc pid {o['pid']} still running"
     return (f"pid {o['pid']} on {o['host']} since {time.strftime('%H:%M:%S', time.localtime(o['started']))} "
             f"(cap {o['cap'] // 60}m)")
 
@@ -126,13 +150,16 @@ def held_names(name):
 def try_take(name, pid, cap, dry_run=False, slots=1):
     """One acquire attempt under the guard; never exits. Returns (status, slot name, owners):
     ("acquired", slot, [reaped owner]) / ("acquired", slot, []), ("already-held", slot, []) or
-    ("held", None, every live holder)."""
+    ("held", None, every live holder), also when tsc processes (gates only) already number >= slots."""
     with guard():
         here = socket.gethostname()
         held = [(n, read(n)) for n in slot_names(name, slots)]
         for n, o in held:
             if o and o["pid"] == pid and o["host"] == here:
                 return "already-held", n, []
+        busy = tsc_pids() if name in TSC_GATED else []
+        if len(busy) >= slots:  # a dead holder's tsc children outlive it: they still fill the machine
+            return "held", None, [o for _, o in held if o and not stale(o)] + [{"pid": p, "tsc": True} for p in busy]
         for n, o in held:
             if not o or stale(o):
                 if not dry_run:
