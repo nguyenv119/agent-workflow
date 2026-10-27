@@ -66,6 +66,15 @@ If a private add-on ships finished example pages in this skill's folder, use the
 awk '/<h2>Why/,/<\/section>/' <skill-dir>/<example-page>.html | head -60
 ```
 
+## Work on the boxes
+
+When a layer has work behind it (beads, to-dos), the diagram shows it. `template.html` carries the CSS (`/* box work */`) and the script (`/* box work: show the work... */`); a page started from an older template copies those two blocks over. `example-layered-svg.py` emits the markup from its `WORK` (box key to work ids) and `DONE` (ids whose bead is closed) sets.
+
+- Each layer keeps its work items as `<li data-w="<id>" data-d="1|0">` (1 = done) inside `<details class="allwork"><summary>All work as a list</summary>` under the diagram, closed. Format: `<b>Title</b> (bead id)`, then `<br>` lines starting What it is:, Why we have it:, What happened without it:, What success looks like:, Accepted when:. A done item may be a title and one line.
+- A box that a work item builds is wrapped in `<g class="wk" data-work="<ids>" data-name="<BOX LABEL>" tabindex="0" role="button" aria-pressed="false" aria-label="...">`. Its corner tag (`.wkb`) reads "N to do" in ink, or "✓ done" in outline once every item is closed. The tracker decides: a closed bead is done; never mark one by hand.
+- Under the figure put an empty `<aside class="bw" hidden contenteditable="false"></aside>`. The script fills it: hover shows a box's work, click, tap or Enter pins it, Esc or Close lets go. To-do items show in full; done items fold into "N done". The panel sits under the diagram because a popover anchored to the box falls off the scrolling SVG on a phone.
+- The panel is white on ivory, ink and grey only. Clay stays for "changed in this update". Set `KEEP` in the script for proper nouns in box names (the panel writes names in sentence case).
+
 ## Writing
 
 - Invoke `anti-slop-writing` first. First principles, why before how, no jargon; explain each term where its box first appears.

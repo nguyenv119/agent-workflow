@@ -30,6 +30,38 @@ CAPS = {
     5: [(604, 120, "today", True), (698, 140, "fix", True)],
 }
 
+# Box work (SKILL.md "Work on the boxes"): box key -> ids of the work items (<li data-w="id"> in the
+# layer's closed "All work as a list") that build it. DONE holds the ids whose bead is closed.
+WORK = {
+    # "N": ["b12", "b14"],
+}
+DONE = set()
+
+
+def wk_open(key, label):
+    """Opening <g class="wk"> for a box with work, or "" when it has none."""
+    ids = WORK.get(key)
+    if not ids:
+        return ""
+    left = len([i for i in ids if i not in DONE])
+    state = f"{left} to do" if left else "all done"
+    n = f"{len(ids)} work item" + ("" if len(ids) == 1 else "s")
+    return (f'<g class="wk" tabindex="0" role="button" aria-pressed="false" data-name="{html.escape(label)}" '
+            f'data-work="{" ".join(ids)}" aria-label="{html.escape(label)}: {n}, {state}. Show them.">')
+
+
+def wk_tag(key, x, y, w):
+    """The pill on the box's top-right corner: ink "N to do", or outline "✓ done"; closes the group."""
+    ids = WORK.get(key)
+    if not ids:
+        return ""
+    left = len([i for i in ids if i not in DONE])
+    t = f"{left} to do" if left else "✓ done"
+    tw = round(5.9 * len(t) + 9, 1)
+    tx = round(x + w - 3 - tw, 1)
+    return (f'<g class="wkb{"" if left else " ok"}"><rect x="{tx}" y="{y - 7}" width="{tw}" height="14"/>'
+            f'<text x="{round(tx + 4.5, 1)}" y="{y + 3.4}">{t}</text></g></g>')
+
 
 def svg(layer, aria, changed=()):
     """The diagram as drawn at this layer. `changed` holds what the latest update changed: box keys
@@ -41,11 +73,13 @@ def svg(layer, aria, changed=()):
         if L > layer:
             continue
         a = (" acc" if L == layer else "") + (" chg" if k in changed else "")
-        out.append(f'<rect class="bx{a}" x="{x}" y="{y}" width="{w}" height="{h}" rx="6"/>')
+        out.append(wk_open(k, lb) + f'<rect class="bx{a}" x="{x}" y="{y}" width="{w}" height="{h}" rx="6"/>')
         out.append(f'<text class="lb{a}" x="{x+12}" y="{y+22}">{lb}</text>')
         for i, t in enumerate(lines):
             red = (" acc" if L == layer else "") + (" chg" if k in changed else "")
             out.append(f'<text class="it{red}" x="{x+12}" y="{y+42+i*17}">{html.escape(t)}</text>')
+        if k in WORK:
+            out.append(wk_tag(k, x, y, w))
     for i, (x1, y1, x2, y2, L, st, _) in enumerate(AR):
         if L > layer:
             continue
