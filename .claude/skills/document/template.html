@@ -151,6 +151,44 @@ footer { margin-top: 4rem; font: var(--t-small)/1.5 var(--sans); color: var(--mu
 .edit-bar .msg { font: var(--t-small) var(--sans); color: var(--muted); }
 @media print { .edit-bar { display: none !important; } }
 @media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
+/* box work (document skill): a box with work behind it is a button; its tag counts what is left to do. The panel under the diagram shows that box's items.
+   Ink and grey only, so clay keeps its one meaning (changed in this update). */
+.ent .wk { cursor: pointer; outline: none; }
+.ent .wk:hover .bx:not(.chg), .ent .wk:focus-visible .bx:not(.chg), .ent .wk.sel .bx:not(.chg) { stroke: var(--ink); }
+.ent .wk:hover .bx, .ent .wk:focus-visible .bx, .ent .wk.sel .bx { stroke-width: 2.6; }
+.ent .wkb rect { fill: var(--ink); stroke: var(--ink); stroke-width: 1; rx: 7px; ry: 7px; }
+.ent .wkb text { font: 600 9.5px var(--sans); letter-spacing: .01em; fill: var(--paper); }
+.ent .wkb.ok rect { fill: var(--ivory); stroke: var(--hair); }
+.ent .wkb.ok text { fill: var(--muted); }
+.bw { margin: .4rem 0 1.4rem; padding: 1.15rem 1.35rem .9rem; background: var(--paper); border: 1px solid var(--hair); border-radius: 14px; font: var(--t-small)/1.6 var(--sans); }
+.bw-hint { margin: 0; color: var(--muted); font: italic var(--t-small)/1.6 var(--serif); }
+.bw-head { display: flex; align-items: flex-start; gap: 1rem; margin: 0 0 .2rem; }
+.bw-head > div { flex: 1; min-width: 0; }
+.bw-name { display: block; font: 600 var(--t-h3)/1.25 var(--serif); letter-spacing: -.01em; color: var(--ink); }
+.bw-sum { display: block; margin-top: .15rem; color: var(--muted); }
+.bw-x { flex: none; font: 500 var(--t-small)/1 var(--sans); padding: .45rem .8rem; border: 1px solid var(--hair); border-radius: 999px; background: var(--ivory); color: var(--ink); cursor: pointer; }
+.bw-x:hover, .bw-x:focus-visible { border-color: var(--ink); }
+.bw-it { padding: 1rem 0 .3rem; border-top: 1px solid var(--hair); margin-top: .8rem; }
+.bw-it + .bw-it { margin-top: 0; }
+.bw-t { margin: 0 0 .6rem; font: 600 var(--t-body)/1.35 var(--serif); color: var(--ink); }
+.bw-t b { font-weight: 600; }
+.bw-meta { font: 400 var(--t-small)/1.4 var(--sans); color: var(--muted); }
+.bw-dot { display: inline-flex; align-items: center; gap: .4rem; margin: 0 0 .35rem; font: 600 var(--t-label)/1 var(--sans); letter-spacing: .1em; text-transform: uppercase; color: var(--ink); }
+.bw-dot::before { content: ""; width: .5rem; height: .5rem; border-radius: 50%; background: var(--ink); }
+.bw-f { margin: 0 0 .55rem; display: grid; grid-template-columns: 7.5rem minmax(0, 1fr); gap: 0 1rem; overflow-wrap: anywhere; }
+.bw-f > b { font: 600 var(--t-label)/2.1 var(--sans); letter-spacing: .1em; text-transform: uppercase; color: var(--muted); }
+.bw-f > span { color: var(--ink); }
+.bw-p { margin: 0 0 .55rem; }
+.bw-done { margin-top: .8rem; padding-top: .7rem; border-top: 1px solid var(--hair); }
+.bw-done summary { cursor: pointer; color: var(--muted); list-style: none; }
+.bw-done summary::-webkit-details-marker { display: none; }
+.bw-done summary::before { content: "\2713  "; }
+.bw-done ul { margin: .5rem 0 0; padding: 0; list-style: none; }
+.bw-done li { padding: .25rem 0; color: var(--muted); }
+@media (max-width: 560px) { .bw { padding: 1rem 1rem .8rem; } .bw-f { grid-template-columns: 1fr; } .bw-f > b { line-height: 1.6; } }
+details.allwork { margin: .4rem 0 1rem; }
+details.allwork > summary { cursor: pointer; font: 600 var(--t-small)/1.4 var(--sans); color: var(--muted); padding: .35rem 0; }
+details.allwork[open] > summary { color: var(--ink); margin-bottom: .6rem; }
 </style>
 <title>TITLE</title>
 <div class="wrap">
@@ -287,4 +325,50 @@ footer { margin-top: 4rem; font: var(--t-small)/1.5 var(--sans); color: var(--mu
 new IntersectionObserver(function(e){r.classList.toggle('on',!e[0].isIntersecting)}).observe(h);
 var links=[].slice.call(r.querySelectorAll('a')),io=new IntersectionObserver(function(es){es.forEach(function(x){if(x.isIntersecting){links.forEach(function(a){a.classList.toggle('here',a.getAttribute('href')==='#'+x.target.id)})}})},{rootMargin:'0px 0px -70% 0px'});
 links.forEach(function(a){var t=document.getElementById(a.getAttribute('href').slice(1));if(t)io.observe(t)});})();</script>
+<script>/* box work: show the work behind a diagram box in the panel under the diagram */
+(function(){
+var HINT='Hover or tap a tagged box to see its work.';
+var LAB=/^((?:<[^>]+>)*)([A-Z][^:<]{1,45}):\s+/;
+function esc(t){return t.replace(/&/g,'&amp;').replace(/</g,'&lt;')}
+var KEEP=[]; /* proper nouns that keep their capitals in a box name, e.g. ['Jev','MW'] */
+function sentence(n){n=n.toLowerCase();KEEP.forEach(function(k){n=n.replace(new RegExp('\\b'+k+'\\b','gi'),k)});return n.charAt(0).toUpperCase()+n.slice(1)}
+document.querySelectorAll('.layer').forEach(function(layer){
+  var panel=layer.querySelector('.bw'); if(!panel) return;
+  var boxes=[].slice.call(layer.querySelectorAll('.wk')); if(!boxes.length) return;
+  var pinned=null, timer=null, ids={};
+  boxes.forEach(function(b){b.getAttribute('data-work').split(' ').forEach(function(i){ids[i]=1}); b.classList.remove('sel'); b.setAttribute('aria-pressed','false')});
+  var all=Object.keys(ids), doneN=all.filter(function(i){var l=layer.querySelector('li[data-w="'+i+'"]');return l&&l.getAttribute('data-d')==='1'}).length;
+  function hint(){panel.innerHTML='<p class="bw-hint">'+HINT+' '+(all.length-doneN)+' to do in this layer, '+doneN+' done.</p>'}
+  var SHORT={'What it is':'What','Why we have it':'Why','What happened without it':'Without it','What success looks like':'Success','Accepted when':'Accepted when'};
+  function title(h){var m=h.match(/^([\s\S]*?<\/b>)\s*(\([\s\S]*\))?\s*$/);return m?m[1]+(m[2]?' <span class="bw-meta">'+m[2]+'</span>':''):h}
+  function item(li){
+    var ch=li.innerHTML.split(/<br\s*\/?>/i), h='<article class="bw-it"><p class="bw-dot">To do</p><p class="bw-t">'+title(ch[0])+'</p>';
+    ch.slice(1).forEach(function(c){var m=c.match(LAB);
+      h+=m?'<div class="bw-f"><b>'+(SHORT[m[2]]||m[2])+'</b><span>'+c.slice(m[0].length)+'</span></div>':'<p class="bw-p">'+c+'</p>'});
+    return h+'</article>'}
+  function doneList(ls){if(!ls.length)return '';return '<details class="bw-done"><summary>'+ls.length+' done</summary><ul>'+ls.map(function(l){return '<li>'+title(l.innerHTML.split(/<br\s*\/?>/i)[0])+'</li>'}).join('')+'</ul></details>'}
+  function render(b,pin){
+    var lis=b.getAttribute('data-work').split(' ').map(function(i){return layer.querySelector('li[data-w="'+i+'"]')}).filter(Boolean);
+    var dn=lis.filter(function(l){return l.getAttribute('data-d')==='1'}), td=lis.filter(function(l){return l.getAttribute('data-d')!=='1'});
+    var sum=td.length?td.length+' to do'+(dn.length?', '+dn.length+' done':''):'All done';
+    panel.innerHTML='<div class="bw-head"><div><span class="bw-name">'+esc(sentence(b.getAttribute('data-name')))+'</span><span class="bw-sum">'+sum+'</span></div>'+(pin?'<button type="button" class="bw-x" aria-label="Close">Close</button>':'')+'</div>'+td.map(item).join('')+doneList(dn);
+    if(pin) panel.querySelector('.bw-x').onclick=function(){unpin()}}
+  function show(b){clearTimeout(timer); if(!pinned) render(b,false)}
+  function back(){clearTimeout(timer); timer=setTimeout(function(){if(!pinned) hint()},160)}
+  function unpin(){if(pinned){pinned.classList.remove('sel'); pinned.setAttribute('aria-pressed','false'); pinned=null} hint()}
+  function pin(b){
+    if(pinned===b){unpin();return}
+    if(pinned){pinned.classList.remove('sel'); pinned.setAttribute('aria-pressed','false')}
+    pinned=b; b.classList.add('sel'); b.setAttribute('aria-pressed','true'); render(b,true);
+    var r=panel.getBoundingClientRect(); if(r.bottom>innerHeight||r.top<0) panel.scrollIntoView({block:'nearest',behavior:matchMedia('(prefers-reduced-motion: reduce)').matches?'auto':'smooth'})}
+  boxes.forEach(function(b){
+    b.addEventListener('pointerenter',function(e){if(e.pointerType==='mouse') show(b)});
+    b.addEventListener('pointerleave',function(e){if(e.pointerType==='mouse') back()});
+    b.addEventListener('focus',function(){show(b)});
+    b.addEventListener('blur',back);
+    b.addEventListener('click',function(){pin(b)});
+    b.addEventListener('keydown',function(e){if(e.key==='Enter'||e.key===' '){e.preventDefault();pin(b)} else if(e.key==='Escape') unpin()})});
+  panel.hidden=false; hint();
+});
+})();</script>
 </body></html>
