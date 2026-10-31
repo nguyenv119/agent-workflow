@@ -13,7 +13,8 @@ programs it really runs (guards `[ -x X ]` / `test -f X` resolved, `$CLAUDE_PROJ
 command's own NAME=value assignments expanded, the builtins `exec`/`command` looked through to the program they run):
 ok, inert (a guard target is missing, so it silently does nothing) or unresolved. An unparsable settings.json gives an
 `error` field, no hooks, and exit 1. `hooks` (hookreg.py) checks every settings.json hook against a registry of
-reasons and review dates. Stdlib only.
+reasons and review dates; `startsize` (startsize.py) counts what a session loads before its first reply, per piece,
+from its transcript. Stdlib only.
 """
 import fnmatch
 import hashlib
@@ -24,7 +25,7 @@ import shlex
 import shutil
 from pathlib import Path
 
-from . import canary, core, hookreg
+from . import canary, core, hookreg, startsize
 from .core import Exit
 
 FILES = "HARNESS_FILES.tsv"
@@ -67,6 +68,7 @@ def register(sub):
     p.set_defaults(func=inventory_cmd)
     canary.register(hs)
     hookreg.register(hs)
+    startsize.register(hs)
 
 
 def sha256(path):
