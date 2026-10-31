@@ -19,7 +19,7 @@ Read these files before writing any code:
 
 Prevention is better than detection — knowing these patterns avoids creating the bugs reviewers would later catch.
 
-If the project has a discover knowledge base, read the notes the spawn prompt names (or read its INDEX.md) before searching code.
+If the spawn prompt has a NOTES: block, read those notes before searching code; they may already answer part of the task.
 
 **When the prompt names a `PREVIOUS TRY: <folder>`:** read its `note.md` and `gates.txt` first. They say what the last attempt changed, what failed and why; do not repeat it.
 
