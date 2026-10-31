@@ -49,8 +49,10 @@ class CliBeadReviewers(unittest.TestCase):
         # WHEN the hook runs
         r = run_hook(payload)
         # THEN it blocks and names the house-rules signature
-        self.assertEqual(r.returncode, 2, r.stdout)
-        self.assertIn(hook_var("HOUSE_RULES_SIG"), r.stdout)
+        self.assertEqual(r.returncode, 2, r.stderr)
+        self.assertIn(hook_var("HOUSE_RULES_SIG"), r.stderr)
+        # AND stdout stays empty: on exit 2 the agent is shown only stderr
+        self.assertEqual(r.stdout, "")
 
     def test_cli_bead_prompt_without_a_skill_heading_is_blocked(self):
         """House rules alone are not enough: a CLI-bead prompt must also carry a cli-for-agents section.
@@ -62,8 +64,8 @@ class CliBeadReviewers(unittest.TestCase):
         # WHEN the hook runs
         r = run_hook(payload)
         # THEN blocked, naming the skill
-        self.assertEqual(r.returncode, 2, r.stdout)
-        self.assertIn("cli-for-agents", r.stdout)
+        self.assertEqual(r.returncode, 2, r.stderr)
+        self.assertIn("cli-for-agents", r.stderr)
 
     def test_house_rules_heading_quoting_a_skill_section_does_not_count_as_that_section(self):
         """Each house-rules heading quotes a skill heading ("extends ..."), so only a bold `**<heading>**` counts.
@@ -76,8 +78,8 @@ class CliBeadReviewers(unittest.TestCase):
         # WHEN the hook runs
         r = run_hook(spawn(cli=True, extra=heading))
         # THEN blocked, naming the missing skill heading
-        self.assertEqual(r.returncode, 2, r.stdout)
-        self.assertIn("cli-for-agents/SKILL.md", r.stdout)
+        self.assertEqual(r.returncode, 2, r.stderr)
+        self.assertIn("cli-for-agents/SKILL.md", r.stderr)
 
     def test_cli_bead_prompt_with_signature_and_heading_passes(self):
         """A CLI-bead spawn carrying the house-rules phrase and a skill section passes, for either reviewer."""

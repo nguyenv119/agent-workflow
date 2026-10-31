@@ -171,7 +171,7 @@ if printf '%s' "$PROMPT" | grep -qiE '^CLI BEAD:[[:space:]]*yes'; then
 fi
 
 if [[ -n "$MISSING" ]]; then
-  cat <<EOF
+  cat >&2 <<EOF
 BLOCKED: Reviewer subagent spawned without loading canonical standards.
 
 Missing: $MISSING
