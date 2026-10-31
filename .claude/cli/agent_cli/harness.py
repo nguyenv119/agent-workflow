@@ -12,7 +12,8 @@ inventory lists skills, commands, agents, the sha256 of the instruction files an
 programs it really runs (guards `[ -x X ]` / `test -f X` resolved, `$CLAUDE_PROJECT_DIR`, `$HOME`, `~` and the
 command's own NAME=value assignments expanded, the builtins `exec`/`command` looked through to the program they run):
 ok, inert (a guard target is missing, so it silently does nothing) or unresolved. An unparsable settings.json gives an
-`error` field, no hooks, and exit 1. Stdlib only.
+`error` field, no hooks, and exit 1. `hooks` (hookreg.py) checks every settings.json hook against a registry of
+reasons and review dates. Stdlib only.
 """
 import fnmatch
 import hashlib
@@ -23,7 +24,7 @@ import shlex
 import shutil
 from pathlib import Path
 
-from . import canary, core
+from . import canary, core, hookreg
 from .core import Exit
 
 FILES = "HARNESS_FILES.tsv"
@@ -48,7 +49,7 @@ GUARD_TESTS = {"-x": lambda p: os.path.isfile(p) and os.access(p, os.X_OK), "-f"
 
 def register(sub):
     _, hs = core.group(sub, "harness", "an installed harness: drift since install, and what a session loads",
-                       [DRIFT, INVENTORY, canary.EXAMPLE])
+                       [DRIFT, INVENTORY, hookreg.EXAMPLE, canary.EXAMPLE])
     p = core.subcommand(hs, "drift", "compare installed files with HARNESS_FILES.tsv and sort every difference "
                         "(exit 1 on unowned, addon_edited, missing or unexplained)",
                         [DRIFT, "agent-cli harness drift --target ../app/.claude --user-dir ~/.claude",
@@ -65,6 +66,7 @@ def register(sub):
     p.add_argument("--json", action="store_true", help="one JSON object")
     p.set_defaults(func=inventory_cmd)
     canary.register(hs)
+    hookreg.register(hs)
 
 
 def sha256(path):
