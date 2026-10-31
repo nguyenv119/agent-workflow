@@ -1,18 +1,27 @@
 """`agent-cli harness held`: did the mistake a harness fix targets come back after the fix merged?
 
-Reads a ledger, one JSON object per line, one per fix: {"bead", "merged_date" (YYYY-MM-DD), "pattern" (a regex),
-"where" (hook | assistant | tool)}. Scans the transcripts (--projects DIR, files DIR/*/*.jsonl, default
-~/.claude/projects) and counts, per fix, the hits of its pattern in the matching kind of message during the
---days (default 14) after merged_date. A hit is one text block of an assistant reply (assistant), one tool call,
-searched as its name plus every string in its input (tool), or one hook attachment, searched as every string in it,
-a hook's own command included (hook). Output per fix: `held N days` or `came back K times`; exit 1 when any fix came
-back, 0 when none did.
+Reads a ledger, one JSON object per line, one per fix: {"bead", "merged_date" (a local date, YYYY-MM-DD), "pattern"
+(a regex), "where" (hook | assistant | tool)}. Scans the transcripts (--projects DIR, default ~/.claude/projects):
+the session files DIR/*/*.jsonl and every subagent file under DIR/*/*/subagents/ (workflow subagents sit one level
+deeper), since most of a session's tool calls live in the subagent files. Per fix it counts the hits of its pattern in
+the matching kind of message during the --days (default 14) after merged_date. A hit is
+  assistant  one text block of an assistant reply;
+  tool       one tool call: for Bash only input.command, for any other tool its name plus every string in its input;
+  hook       one hook that caught the mistake: a hook_blocking_error or hook_non_blocking_error attachment (every
+             string in it except its `command`), or a PreToolUse block (a user record's tool_result whose text starts
+             `PreToolUse:`, or is_error with "hook error" in it). A hook that merely ran (hook_success) is not a hit.
+Output per fix: `held N days`, `came back K times` or `no transcripts in window`. Exit 1 when any fix came back, else
+5 (partial) when a closed window had no transcript file to read (a mistyped --projects or a pruned store must not
+read as "held"), else 0.
 
-The window opens at the next local midnight after merged_date, not at merged_date itself: the fix landed at an unknown
-hour that day, so that day's earlier hits are not charged to it. A window that has not closed yet reports
-`held N days so far (window open)` with N the full days elapsed. A file whose modified time is before the window opens
-is not read. A record seen under the same uuid in two files (a resumed session copies its history) counts once. A line
-that is not JSON (a live session's cut-off tail) is skipped and counted in `bad_lines`. Stdlib only.
+merged_date is a local date and the window opens at the next local midnight after it (TZ decides), not at merged_date
+itself: the fix landed at an unknown hour that day, so that day's earlier hits are not charged to it; it closes --days
+local days later. A window that has not closed yet reports `held N days so far (window open)` with N the full days
+elapsed. A file whose modified time is before the window opens is not read. A record seen under the same uuid in two
+files (a resumed session copies its history) counts once. A line that is not JSON (a live session's cut-off tail) is
+skipped and counted in `bad_lines`. A pattern must not match its own ledger line: a session that reads or edits the
+ledger puts the pattern in a tool call and would charge the fix for it (a `where: tool` pattern most of all). Stdlib
+only.
 
 Reader reuse: repeats.py reads the shape recorder's store and startsize.py's reader stops at the first reply and
 refuses a bad line; neither scans whole transcripts, so this module has its own small reader on core's helpers.
@@ -29,20 +38,24 @@ from .core import Exit
 
 EXAMPLE = "agent-cli harness held --ledger fix-ledger.jsonl --days 14"
 KINDS = ("hook", "assistant", "tool")
+CAUGHT = ("hook_blocking_error", "hook_non_blocking_error")
 KEYS = ("bead", "merged_date", "pattern", "where")
 DAY = 86400
 
 
 def register(hs):
     p = core.subcommand(hs, "held", "per fix in a ledger: did its mistake come back in the N days after the merge, "
-                        "counted in saved transcripts (exit 1 when any came back)",
+                        "counted in saved transcripts, subagents included (exit 1 when any came back, "
+                        "5 when a closed window had no transcript to read)",
                         [EXAMPLE, "agent-cli harness held --ledger fix-ledger.jsonl --json",
                          "agent-cli harness held --ledger fix-ledger.jsonl --days 7 --projects ~/.claude/projects"])
     p.add_argument("--ledger", required=True, metavar="FILE", help="JSONL, one fix per line: bead, merged_date "
-                   "(YYYY-MM-DD), pattern (regex), where (hook|assistant|tool)")
+                   "(a LOCAL date, YYYY-MM-DD; the window opens at the next local midnight), pattern (regex; must not "
+                   "match its own ledger line), where (hook|assistant|tool)")
     p.add_argument("--days", type=int, default=14, help="window length in days after merged_date (default 14)")
     p.add_argument("--projects", default="~/.claude/projects", metavar="DIR",
-                   help="transcript root, files DIR/*/*.jsonl (default ~/.claude/projects)")
+                   help="transcript root: DIR/*/*.jsonl and DIR/*/*/subagents/**/*.jsonl "
+                   "(default ~/.claude/projects)")
     p.add_argument("--json", action="store_true", help="one JSON object per fix")
     p.set_defaults(func=held_cmd)
 
@@ -95,13 +108,20 @@ def set_window(fix, days):
     fix.update(hits=0, files=0, bad_lines=0, first=None, last=None)
 
 
-def leaves(v):
-    """Every string in a JSON value, joined by newlines (dict keys left out)."""
+def leaves(v, skip=()):
+    """Every string in a JSON value, joined by newlines (dict keys left out, and the values under keys in skip)."""
     if isinstance(v, str):
         return v
     if isinstance(v, dict):
-        v = list(v.values())
-    return "\n".join(x for x in map(leaves, v) if x) if isinstance(v, list) else ""
+        v = [x for k, x in v.items() if k not in skip]
+    return "\n".join(x for x in (leaves(y, skip) for y in v) if x) if isinstance(v, list) else ""
+
+
+def result_text(c):
+    """The text of a tool_result's content: a string as is, a list's text blocks joined."""
+    if isinstance(c, list):
+        c = "\n".join(b["text"] for b in c if isinstance(b, dict) and isinstance(b.get("text"), str))
+    return c if isinstance(c, str) else ""
 
 
 def parts(rec):
@@ -116,12 +136,25 @@ def parts(rec):
             if isinstance(c, dict) and c.get("type") == "text" and isinstance(c.get("text"), str):
                 out.append(("assistant", c["text"]))
             elif isinstance(c, dict) and c.get("type") == "tool_use":
-                out.append(("tool", f"{c.get('name', '')}\n{leaves(c.get('input'))}"))
+                inp = c.get("input")
+                if c.get("name") == "Bash":  # only the command: a heredoc's or description's text is not a call
+                    cmd = inp.get("command") if isinstance(inp, dict) else None
+                    out.append(("tool", cmd if isinstance(cmd, str) else ""))
+                else:
+                    out.append(("tool", f"{c.get('name', '')}\n{leaves(inp)}"))
         return out
     att = rec.get("attachment")
-    if rec.get("type") == "attachment" and isinstance(att, dict) and str(att.get("type", "")).startswith("hook_"):
-        return [("hook", leaves(att))]
-    return []
+    if rec.get("type") == "attachment" and isinstance(att, dict) and att.get("type") in CAUGHT:
+        return [("hook", leaves(att, skip=("command",)))]
+    msg = rec.get("message") if rec.get("type") == "user" else None
+    content = msg.get("content") if isinstance(msg, dict) else None
+    out = []
+    for c in content if isinstance(content, list) else []:
+        if isinstance(c, dict) and c.get("type") == "tool_result":
+            t = result_text(c.get("content"))
+            if t.startswith("PreToolUse:") or (c.get("is_error") is True and "hook error" in t):
+                out.append(("hook", t))
+    return out
 
 
 def epoch(ts):
@@ -134,13 +167,13 @@ def epoch(ts):
 
 def scan_file(f, active, seen):
     """Count one transcript's hits into the fixes in `active`; `seen` holds the uuids already counted."""
-    for fix in active:
-        fix["files"] += 1
     lo, hi = min(x["lo"] for x in active), max(x["hi"] for x in active)
     try:
         fh = f.open(encoding="utf-8", errors="replace", newline="\n")
     except OSError:
         return
+    for fix in active:
+        fix["files"] += 1
     with fh:
         for line in fh:
             if not line.rstrip().endswith("}"):
@@ -173,19 +206,21 @@ def scan_file(f, active, seen):
 
 
 def row_of(fix, days, now):
-    """The result dict for one fix: status held or came_back, plus the counters."""
+    """The result dict for one fix: status held, came_back or no_transcripts, plus the counters."""
     closed = fix["hi"] <= now
     held = days if closed else max(0, min(days, int((now - fix["lo"]) // DAY)))
+    status = "came_back" if fix["hits"] else "held" if fix["files"] or not closed else "no_transcripts"
     return {"bead": fix["bead"], "merged_date": fix["merged_date"], "where": fix["where"], "days": days,
-            "status": "came_back" if fix["hits"] else "held", "hits": fix["hits"], "held_days": held,
-            "window_open": not closed, "first": fix["first"], "last": fix["last"], "files": fix["files"],
-            "bad_lines": fix["bad_lines"]}
+            "status": status, "hits": fix["hits"], "held_days": held, "window_open": not closed,
+            "first": fix["first"], "last": fix["last"], "files": fix["files"], "bad_lines": fix["bad_lines"]}
 
 
 def text_of(r):
     if r["hits"]:
         return (f"{r['bead']}: came back {r['hits']} time{'' if r['hits'] == 1 else 's'} "
                 f"(first {r['first']}, last {r['last']})")
+    if r["status"] == "no_transcripts":
+        return f"{r['bead']}: no transcripts in window"
     return f"{r['bead']}: held {r['held_days']} days" + (" so far (window open)" if r["window_open"] else "")
 
 
@@ -199,7 +234,7 @@ def held_cmd(a):
     for fix in fixes:
         set_window(fix, a.days)
     seen = set()
-    for f in sorted(root.glob("*/*.jsonl")):
+    for f in sorted([*root.glob("*/*.jsonl"), *root.glob("*/*/subagents/**/*.jsonl")]):
         try:
             mtime = f.stat().st_mtime
         except OSError:
@@ -214,4 +249,6 @@ def held_cmd(a):
     if not a.json:
         print(f"scanned {max(r['files'] for r in rows)} transcript files, skipped "
               f"{max(r['bad_lines'] for r in rows)} unreadable lines")
-    return Exit.FAIL if any(r["hits"] for r in rows) else Exit.OK
+    if any(r["hits"] for r in rows):
+        return Exit.FAIL
+    return Exit.PARTIAL if any(r["status"] == "no_transcripts" for r in rows) else Exit.OK
