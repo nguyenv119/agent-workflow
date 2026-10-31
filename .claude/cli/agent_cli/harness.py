@@ -23,7 +23,7 @@ import shlex
 import shutil
 from pathlib import Path
 
-from . import canary, core
+from . import canary, core, hookreg
 from .core import Exit
 
 FILES = "HARNESS_FILES.tsv"
@@ -65,6 +65,7 @@ def register(sub):
     p.add_argument("--json", action="store_true", help="one JSON object")
     p.set_defaults(func=inventory_cmd)
     canary.register(hs)
+    hookreg.register(hs)
 
 
 def sha256(path):
