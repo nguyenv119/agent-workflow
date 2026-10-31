@@ -199,6 +199,43 @@ class Hooks(TmpCase):
             self.assertEqual(p.returncode, 2, p.stderr)
             self.assertIn("agent-cli harness hooks --registry", p.stderr)
 
+    def test_blank_owner_and_non_object_registry_are_refused(self):
+        """
+        Verifies a blank owner marks the entry invalid (exit 1) and a registry that is not a JSON object exits 2.
+
+        This matters because an entry nobody owns cannot be reviewed, and a list registry is a wrong file, not a clean one.
+
+        If it breaks, ownerless guards pass the check or the checker crashes on a wrong file.
+        """
+        # GIVEN one hook whose entry has a blank owner, then a registry that is a JSON list
+        blank = self.go([("Stop", NOTE)], {NOTE: entry(owner=" ")})
+        as_list = self.go([("Stop", NOTE)], [])
+        # THEN the blank owner is invalid with exit 1, and the list is refused with exit 2
+        self.assertEqual(blank.returncode, 1, blank.stderr)
+        self.assertIn("1 invalid", blank.stdout)
+        self.assertEqual(as_list.returncode, 2, as_list.stderr)
+        self.assertNotIn("Traceback", as_list.stderr)
+
+    def test_several_settings_files_are_all_listed(self):
+        """
+        Verifies every --settings file is read, one row per file and hook.
+
+        This matters because user and project hooks live in different files and both need a reason.
+
+        If it breaks, hooks in the second file go unchecked.
+        """
+        # GIVEN two settings files with one hook each and a registry covering only the first
+        other = self.tmp / "other.json"
+        other.write_text(json.dumps(settings(("Stop", NOTE))))
+        self.settings.write_text(json.dumps(settings(("Stop", GUARD))))
+        self.registry.write_text(json.dumps({GUARD: entry()}))
+        # WHEN the checker reads both
+        p = agent_cli(self.p, "harness", "hooks", "--registry", str(self.registry),
+                      "--settings", str(self.settings), "--settings", str(other))
+        # THEN both hooks are listed and the one in the second file is missing
+        self.assertEqual(p.returncode, 1, p.stderr)
+        self.assertIn("hooks: 2 listed, 1 ok, 1 missing", p.stdout)
+
     def test_non_string_hook_command_exits_2_not_a_traceback(self):
         """
         Verifies a hook whose command is not a string is refused with exit 2 and an example.
