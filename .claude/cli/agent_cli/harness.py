@@ -50,7 +50,7 @@ GUARD_TESTS = {"-x": lambda p: os.path.isfile(p) and os.access(p, os.X_OK), "-f"
 
 def register(sub):
     _, hs = core.group(sub, "harness", "an installed harness: drift since install, and what a session loads",
-                       [DRIFT, INVENTORY, hookreg.EXAMPLE, canary.EXAMPLE])
+                       [DRIFT, INVENTORY, hookreg.EXAMPLE, canary.EXAMPLE, startsize.EXAMPLE])
     p = core.subcommand(hs, "drift", "compare installed files with HARNESS_FILES.tsv and sort every difference "
                         "(exit 1 on unowned, addon_edited, missing or unexplained)",
                         [DRIFT, "agent-cli harness drift --target ../app/.claude --user-dir ~/.claude",

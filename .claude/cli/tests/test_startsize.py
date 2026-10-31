@@ -76,7 +76,7 @@ class Startsize(TmpCase):
         out = json.loads(p.stdout)
         got = {k: v["bytes"] for k, v in out["pieces"].items()}
         self.assertEqual(got, {"instructions": 100, "memory": 200, "skills": 100, "hooks": 40,
-                               "other": len("t1t2agent-ablockPPPPPPP")})
+                               "listings": len("t1t2agent-ablock"), "other": 7})
         self.assertEqual(out["total"], sum(got.values()))
 
     def test_counts_utf8_bytes_not_characters(self):
@@ -222,22 +222,174 @@ class Startsize(TmpCase):
         self.assertIn("memroy_kb", p.stderr)
         self.assertIn("example:", p.stderr)
 
-    def test_missing_file_and_empty_transcript_are_refused(self):
+    def test_missing_file_is_refused(self):
         """
-        Verifies a path that does not exist, and a file with no start attachments, exit 2 with an example.
+        Verifies a path that does not exist exits 2 with an example.
 
         This matters because a wrong path reading as `0 bytes` would look like a perfect session.
 
         If it breaks, a typo reports a clean start.
         """
-        # GIVEN a missing path and a transcript with only a user turn
+        # GIVEN a path that does not exist
+        # WHEN startsize runs on it
+        p = self.run_cli(self.tmp / "nope.jsonl")
+        # THEN exit 2 with an example
+        self.assertEqual(p.returncode, 2)
+        self.assertIn("is not a file", p.stderr)
+        self.assertIn("example:", p.stderr)
+
+    def test_transcript_without_start_attachments_is_refused(self):
+        """
+        Verifies a file with no start attachments exits 2 with an example.
+
+        This matters because a file that is not a session transcript must not read as a clean start.
+
+        If it breaks, any jsonl file reports 0 bytes and passes.
+        """
+        # GIVEN a transcript with only a user turn
         empty = self.transcript(USER, ASSISTANT)
+        # WHEN startsize runs on it
+        p = self.run_cli(empty)
+        # THEN exit 2 with an example
+        self.assertEqual(p.returncode, 2)
+        self.assertIn("no start attachments", p.stderr)
+        self.assertIn("example:", p.stderr)
+
+    def test_exclude_listings_drops_them_from_the_total_only(self):
+        """
+        Verifies --exclude leaves the named piece out of the total and out of the cap check, but still reports it.
+
+        This matters because whether the tool, agent and MCP listings count against the budget is a decision that
+        may go either way; one flag must settle it without a code change.
+
+        If it breaks, the total cannot be made to ignore listings the project does not control.
+        """
+        # GIVEN 100 bytes of skills and 1,000 bytes of listings against a 1 KB total cap
+        f = self.transcript(att("skill_listing", content="S" * 100, skillCount=1),
+                            att("deferred_tools_delta", addedLines=["t" * 1000]), ASSISTANT)
+        b = self.tmp / "budget.json"
+        b.write_text(json.dumps({"total_kb": 1}))
+        # WHEN startsize runs with and without --exclude listings
+        counted = self.run_cli(f, "--json", "--budget", str(b))
+        excluded = self.run_cli(f, "--json", "--budget", str(b), "--exclude", "listings")
+        # THEN the listings count by default (1,100 > 1,024) and are left out with the flag, still reported
+        c, e = json.loads(counted.stdout), json.loads(excluded.stdout)
+        self.assertEqual((counted.returncode, c["total"], c["over"]), (1, 1100, ["total"]))
+        self.assertEqual((excluded.returncode, e["total"], e["over"]), (0, 100, []))
+        self.assertEqual(e["pieces"]["listings"]["bytes"], 1000)
+        self.assertEqual(e["total_excludes"], ["listings"])
+
+    def test_unknown_exclude_piece_is_refused(self):
+        """
+        Verifies a misspelt --exclude piece exits 2 naming the real pieces.
+
+        This matters because a typo would silently leave the total unchanged.
+
+        If it breaks, the caller believes the listings are excluded when they are not.
+        """
+        # GIVEN a valid transcript
+        # WHEN --exclude names a piece that does not exist
+        p = self.run_cli(self.basic(), "--exclude", "tools")
+        # THEN exit 2 and the error lists the pieces
+        self.assertEqual(p.returncode, 2)
+        self.assertIn("listings", p.stderr)
+
+    def test_exact_cap_is_ok_and_one_byte_over_fails(self):
+        """
+        Verifies a piece of exactly cap bytes passes and cap + 1 fails.
+
+        This matters because the budget is an upper bound; off by one either way misjudges a session at the line.
+
+        If it breaks, a session exactly at the cap is flagged, or one just over it passes.
+        """
+        # GIVEN a 1 KB skills cap
+        b = self.tmp / "budget.json"
+        b.write_text(json.dumps({"skills_kb": 1}))
+        at = self.transcript(att("skill_listing", content="s" * 1024, skillCount=1), ASSISTANT, name="at.jsonl")
+        over = self.transcript(att("skill_listing", content="s" * 1025, skillCount=1), ASSISTANT, name="over.jsonl")
         # WHEN startsize runs on each
-        a, b = self.run_cli(self.tmp / "nope.jsonl"), self.run_cli(empty)
-        # THEN both exit 2 with an example
-        for p in (a, b):
-            self.assertEqual(p.returncode, 2)
-            self.assertIn("example:", p.stderr)
+        # THEN exactly 1,024 bytes passes and 1,025 fails
+        self.assertEqual(self.run_cli(at, "--budget", str(b)).returncode, 0)
+        self.assertEqual(self.run_cli(over, "--budget", str(b)).returncode, 1)
+
+    def test_json_reports_total_overage_and_unbudgeted_shape(self):
+        """
+        Verifies --json carries budget_total and total_over_by, and nulls them without a budget.
+
+        This matters because the SessionStart check reads these fields to word its card.
+
+        If it breaks, the card cannot say by how much the total is over.
+        """
+        # GIVEN 2,000 bytes of skills and a 1 KB total cap
+        f = self.transcript(att("skill_listing", content="s" * 2000, skillCount=1), ASSISTANT)
+        b = self.tmp / "budget.json"
+        b.write_text(json.dumps({"total_kb": 1}))
+        # WHEN startsize runs with and without the budget
+        with_b = json.loads(self.run_cli(f, "--json", "--budget", str(b)).stdout)
+        without = json.loads(self.run_cli(f, "--json").stdout)
+        # THEN the overage is 976 with it, and null with an empty over list without it
+        self.assertEqual((with_b["budget_total"], with_b["total_over_by"]), (1024, 976))
+        self.assertEqual((without["budget_total"], without["total_over_by"], without["over"]), (None, None, []))
+
+    def test_unicode_line_separators_inside_a_record_do_not_split_it(self):
+        """
+        Verifies raw U+2028 and U+0085 inside a JSON string do not break a record across lines.
+
+        This matters because transcripts written with raw UTF-8 can hold them, and a record is one `\\n` line.
+
+        If it breaks, a valid transcript is refused as "not JSON".
+        """
+        # GIVEN a skill listing that holds raw U+2028 and U+0085 (written without ASCII escaping)
+        text = "a\u2028b\u0085c"
+        f = self.tmp / "u.jsonl"
+        f.write_text(json.dumps(att("skill_listing", content=text, skillCount=1), ensure_ascii=False) + "\n"
+                     + json.dumps(ASSISTANT) + "\n", encoding="utf-8")
+        # WHEN startsize runs
+        p = self.run_cli(f, "--json")
+        # THEN it counts the UTF-8 bytes of the text
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertEqual(json.loads(p.stdout)["pieces"]["skills"]["bytes"], len(text.encode("utf-8")))
+
+    def test_bad_line_after_the_first_reply_is_never_read(self):
+        """
+        Verifies a half-written or corrupt tail after the first reply does not fail the count.
+
+        This matters because a live session's transcript is still being appended to.
+
+        If it breaks, measuring a running session exits 2 on its last partial line.
+        """
+        # GIVEN a good prefix, the first reply, then a truncated line
+        f = self.tmp / "tail.jsonl"
+        f.write_text(json.dumps(att("skill_listing", content="s" * 10, skillCount=1)) + "\n"
+                     + json.dumps(ASSISTANT) + "\n{bad", encoding="utf-8")
+        # WHEN startsize runs
+        p = self.run_cli(f, "--json")
+        # THEN the prefix is counted and the tail ignored
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertEqual(json.loads(p.stdout)["total"], 10)
+
+    def test_wrong_typed_fields_count_zero_instead_of_crashing(self):
+        """
+        Verifies fields of an unexpected type (list for a string, string for a dict, null file) add no bytes and no crash.
+
+        This matters because the transcript format is not ours; a changed shape must not turn "checked" into a traceback.
+
+        If it breaks, exit 1 from a Python traceback is read as "over budget".
+        """
+        # GIVEN attachments with wrong-typed fields next to one good one
+        f = self.transcript(att("hook_success", hookName="h", command="c", content=["x"]),
+                            att("instructions", files=[None, "str", {"path": "p", "type": "User", "content": ["z"]}]),
+                            att("session_context", context=["not", "a", "dict"]),
+                            att("output_style_instructions", style="plain string"),
+                            att("deferred_tools_delta", addedLines=["ok", 7]),
+                            att("hook_additional_context", hookName="h", content="hello"), ASSISTANT)
+        # WHEN startsize runs
+        p = self.run_cli(f, "--json")
+        # THEN it exits 0; the string context is counted once as 5 bytes, not joined per character
+        self.assertEqual(p.returncode, 0, p.stderr)
+        out = json.loads(p.stdout)
+        self.assertEqual(out["pieces"]["hooks"]["bytes"], 5 + 1)
+        self.assertEqual(out["pieces"]["listings"]["bytes"], 2)
 
     def test_unparsable_line_is_refused_with_its_number(self):
         """
