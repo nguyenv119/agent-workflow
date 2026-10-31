@@ -340,6 +340,80 @@ class RunExamTest(unittest.TestCase):
         self.assertEqual(f.stat().st_mode & 0o077, 0)
         self.assertEqual(res["status"], "error")
 
+    def crashed_ctx(self):
+        return {"run": self.root / "run", "controls": False, "sha": "a" * 40, "harness_version": None,
+                "args": argparse.Namespace(max_budget_usd=12.05)}
+
+    def test_crashed_try_note_is_redacted_in_memory(self):
+        """The note must never be written raw and cleaned afterwards: the raw text is not on disk at write time."""
+        # GIVEN an exception quoting a fake key, and a spy on every text write
+        _, akia = self.planted()
+        ctx = self.crashed_ctx()
+        written = []
+        real = Path.write_text
+
+        def spy(path, data, *a, **k):
+            written.append(data)
+            return real(path, data, *a, **k)
+        # WHEN the crashed try is filed
+        with unittest.mock.patch.object(Path, "write_text", spy):
+            run_exam.crashed_try(ctx, ({"id": "t1"}, 1, "workflow"), RuntimeError(f"boom {akia}"))
+        # THEN no write carried the key, and note.md and result.json hold none
+        self.assertTrue(written)
+        self.assertFalse(any(akia in w for w in written))
+        for name in ("note.md", "result.json"):
+            self.assertNotIn(akia, (ctx["run"] / "t1/try-1" / name).read_text())
+
+    def test_crashed_try_redactor_failure_leaves_no_files_and_does_not_raise(self):
+        """If redaction fails, nothing unredacted stays on disk and the failure does not mask the original error."""
+        # GIVEN a redactor that raises
+        _, akia = self.planted()
+        ctx = self.crashed_ctx()
+        with unittest.mock.patch.object(run_exam, "redact", side_effect=OSError("disk full")):
+            # WHEN the crashed try is filed THEN no exception escapes
+            res = run_exam.crashed_try(ctx, ({"id": "t1"}, 1, "workflow"), RuntimeError(f"boom {akia}"))
+        # AND neither file exists, and the returned dict holds no key
+        folder = ctx["run"] / "t1/try-1"
+        self.assertFalse((folder / "note.md").exists())
+        self.assertFalse((folder / "result.json").exists())
+        self.assertNotIn(akia, json.dumps(res))
+        self.assertEqual(res["status"], "error")
+
+    def test_failed_copytree_leaves_no_inner(self):
+        """A partial copy of the trial's tries folder is removed, not left unredacted."""
+        # GIVEN a copytree that writes one file with a key and then fails
+        _, akia = self.planted()
+        inner = self.root / "folder/inner"
+
+        def half_copy(src, dst, *a, **k):
+            Path(dst).mkdir(parents=True)
+            (Path(dst) / "f.txt").write_text(f"id {akia}\n")
+            raise OSError("copy stopped")
+        with unittest.mock.patch.object(run_exam.shutil, "copytree", half_copy):
+            # WHEN the guarded copy runs THEN it raises
+            with self.assertRaises(OSError):
+                run_exam.copy_inner(self.root / "src", inner)
+        # AND the partial tree is gone
+        self.assertFalse(inner.exists())
+
+    def test_redact_inner_walk_error_fails_closed(self):
+        """A directory os.walk cannot list must raise (and remove the tree), not be skipped with its files unredacted."""
+        # GIVEN an inner tree whose directory listing fails
+        inner = self.root / "inner"
+        (inner / "sub").mkdir(parents=True)
+        (inner / "sub/f.txt").write_text("x\n")
+        real = os.scandir
+
+        def broken(path="."):
+            if str(path).endswith("sub"):
+                raise PermissionError("no listing")
+            return real(path)
+        with unittest.mock.patch.object(os, "scandir", broken):
+            # WHEN redact_inner runs THEN it raises and the tree is gone
+            with self.assertRaises(OSError):
+                run_exam.redact_inner(inner)
+        self.assertFalse(inner.exists())
+
     def test_budget_stops_before_a_run_that_would_cross_it(self):
         """--budget-usd must never be crossed: stop, and mark the run incomplete."""
         # GIVEN three tasks at $8 each and a $20 budget

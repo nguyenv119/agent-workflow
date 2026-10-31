@@ -112,6 +112,7 @@ import trial_export  # noqa: E402
 sys.dont_write_bytecode = True  # agent_cli lives in the repo being committed to
 sys.path.insert(0, str(AW_ROOT / ".claude/cli"))  # where save_try.py finds agent_cli too
 from agent_cli.redact import redact_file  # noqa: E402
+from agent_cli.textrules import redact  # noqa: E402
 
 SAVE_TRY = AW_ROOT / ".claude/skills/coordinator/save_try.py"
 INSTALLER = LOOP_DIR / "install_harness.py"
@@ -287,13 +288,26 @@ def redact_inner(inner):
     Fails closed like save_try: if any file cannot be cleaned, the whole tree is removed and the
     OSError raised, so a copy that may still hold a credential never stays on disk."""
     inner = Path(inner)
+
+    def fail(err):  # os.walk skips a directory it cannot list unless told to raise
+        raise err
     try:
         total = 0
-        for dirpath, dirs, names in os.walk(inner):
+        for dirpath, dirs, names in os.walk(inner, onerror=fail):
             os.chmod(dirpath, 0o700)
             total += sum(redact_file(Path(dirpath) / n) for n in names)  # copytree left no symlinks
         return total
     except OSError:
+        shutil.rmtree(inner, ignore_errors=True)
+        raise
+
+
+def copy_inner(src, inner):
+    """Copy src to inner and redact it; fails closed, so a partial or unredacted copy never stays on disk."""
+    try:
+        shutil.copytree(src, inner)
+        return redact_inner(inner)
+    except BaseException:
         shutil.rmtree(inner, ignore_errors=True)
         raise
 
@@ -386,8 +400,7 @@ def run_try(ctx, task, n, agent):
         folder = Path(subprocess.run(save, env={**os.environ, "HARNESS_TRIES_DIR": str(tries_root)},
                                      check=True, capture_output=True, text=True).stdout.strip())
     if trial and (trial / "agent/tries").is_dir():
-        shutil.copytree(trial / "agent/tries", folder / "inner")
-        redact_inner(folder / "inner")  # save_try's redact pass ran before this copy existed
+        copy_inner(trial / "agent/tries", folder / "inner")  # save_try's redact pass ran before this copy existed
     result = {
         "task": task["id"], "try": int(folder.name.split("-")[1]), "agent": agent, "status": status,
         "reward": reward, "cost_usd": cost, "cost_unknown": cost_unknown, "wall_s": wall,
@@ -468,14 +481,20 @@ def crashed_try(ctx, job, exc):
     folder = base / f"try-{k}"
     folder.mkdir()
     note = folder / "note.md"
-    note.write_text(f"run_exam raised while filing this try: {exc!r}\n")
     cost = ctx["args"].max_budget_usd if agent == "workflow" else 0.0
     result = {"task": task["id"], "try": k, "agent": agent, "status": "error", "reward": None,
               "cost_usd": cost, "cost_unknown": agent == "workflow", "wall_s": None,
-              "harness_commit": ctx["sha"], "error": repr(exc),
+              "harness_commit": ctx["sha"], "error": "withheld: redaction failed",
               "harness_version": ctx["harness_version"] if agent == "workflow" else None}
-    redact_file(note)  # the exception text can quote a credential
-    write_result(folder, result)
+    try:
+        # the exception text can quote a credential: clean it in memory, so the raw text never reaches disk
+        safe = redact(repr(exc))[0]
+        result["error"] = safe
+        note.write_text(f"run_exam raised while filing this try: {safe}\n")
+        write_result(folder, result)
+    except Exception:  # fail closed, and never mask the exception being filed
+        note.unlink(missing_ok=True)
+        (folder / "result.json").unlink(missing_ok=True)
     return result
 
 
