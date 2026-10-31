@@ -27,6 +27,8 @@ BODY = "QUJDREVG" * 6 + "R0hJSktM"  # fake base64 filler, 56 chars
 PEM = f"-----BEGIN PRIVATE KEY-----\n{BODY}\n{BODY}\n-----END PRIVATE KEY-----"
 AWS_ID = "AKIA" + "ABCDEFGH12345678"
 AWS_SECRET = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYzEXAMPLEKE"  # 40 chars, mixed case
+# three base64url segments, built at run time; the segment bodies are filler, not a real token
+JWT = ".".join(["eyJ" + "hbGciOiJIUzI1NiJ9" * 1, "eyJ" + "zdWIiOiJ4eXoifQ" * 1, "c2lnbmF0dXJl" + "QUJD" * 3])
 SAMPLES = {  # one per alternative of SECRET
     "sk-ant": "key sk-ant-" + "api03-abcDEF123_456" * 2,
     "ghp": "token ghp_" + "A1b2C3d4E5" * 3,
@@ -42,6 +44,10 @@ SAMPLES = {  # one per alternative of SECRET
     "postgres": "postgres://app_user:" + "hunter2pw" + "@db.example.com:5432/app",
     "postgresql": "postgresql://app_user:" + "hunter2pw" + "@db.example.com/app?sslmode=require",
 }
+EXTRA = {  # shapes the desk's check does not have yet: redacted here, so a mirrored handoff cannot carry them
+    "jwt": "token " + JWT,
+    "NAME_KEY": "ACME_IO_KEY=" + "q7w8e9" * 4,
+}
 KEPT = [  # names and ids that look secret-ish but are not: must come back unchanged
     "commit " + "0123456789abcdef" * 2 + "01234567",
     "path/to/file.py@" + "9fceb02d0ae598e95dc970b74767f19372d61af8",
@@ -53,6 +59,16 @@ KEPT = [  # names and ids that look secret-ish but are not: must come back uncha
     "Bearer abc",
     "the disk-usage-report-for-the-quarter file and task-assessment-for-the-whole-team",
     "export DB_PROJECT_ID and DB_API_KEY by name only",
+    "export ACME_IO_KEY and ACME_IO_KEY_ID=" + "AB12" * 2 + " by name",  # a bare name; _KEY_ID is an id
+    "ACME_IO_KEY=${ACME_IO_KEY} and ACME_IO_KEY=$(cat key.txt) and ACME_IO_KEY=<your key>",  # placeholders
+    "PRIMARY_KEY=id SORT_KEY=created_at DB_FOREIGN_KEY=owner_id PARTITION_KEY=p SHARD_KEY=s INDEX_KEY=i",  # lookups
+    "LOOKUP_KEY=l PUBLIC_KEY=pk OBJECT_KEY=a/b ACME_PUBLIC_KEY=pk ACME_IO_KEY_ID=ab12",  # more lookups, one prefixed
+    "fooBAR_KEY=1 and x_KEY=1",  # a lowercase run before the name: not an uppercase variable
+    "KEY=value and key=value and monkey_key=value",  # no credential-style name
+    "file eyJhbGciOi.payload_part and v1.2.3 and www.example.com.au and a.b.c",  # dotted text, not a JWT
+    "eyJ" + "abc" + ".short.parts",  # a JWT-looking start with segments too short to be one
+    "ey" + "hbGciOiJIUzI1" + ".abcdefghijkl.abcdefghijkl",  # dotted, long enough, but not an eyJ header
+    "x" + JWT,  # glued to a preceding word character: not a token start
 ]
 
 
@@ -94,6 +110,85 @@ class Redact(unittest.TestCase):
             with self.subTest(text):
                 self.assertEqual(redact(text), (text, 0))
 
+    def test_jwt_goes_and_the_text_around_it_stays(self):
+        """
+        A three-segment token starting eyJ is replaced alone, in a header, a URL parameter and a JSON string.
+
+        A JWT is a live credential with no NAME= or prefix to key on, and a pushed handoff would publish it.
+        """
+        for text in (f"Authorization: {JWT}", f"https://h.example/cb?t={JWT}&x=1", json.dumps({"t": JWT, "n": 1})):
+            with self.subTest(text[:20]):
+                out, n = redact(text)
+                self.assertEqual(n, 1)
+                self.assertNotIn(JWT, out)
+                self.assertEqual(out, text.replace(JWT, "[REDACTED]"))
+        self.assertEqual(json.loads(redact(json.dumps({"t": JWT, "n": 1}))[0])["n"], 1)
+
+    def test_jwt_segment_minimums_each_hold_alone(self):
+        """
+        Each JWT segment has its own minimum (7 after eyJ, 10, 10): one segment a char short is not a token, exact is.
+
+        Lowering any one bound would start blanking dotted identifiers that merely begin eyJ.
+        """
+        def jwt(a, b, c):
+            return "eyJ" + "a" * a + "." + "b" * b + "." + "c" * c
+        for args, n in (((7, 10, 10), 1), ((6, 10, 10), 0), ((7, 9, 10), 0), ((7, 10, 9), 0)):
+            with self.subTest(args):
+                self.assertEqual(redact(jwt(*args))[1], n)
+        self.assertEqual(redact("t eyJ" + "a-_" * 3 + "." + "b-_" * 4 + "." + "c_-" * 4), ("t [REDACTED]", 1))
+
+    def test_key_suffixed_variable_value_goes_whole(self):
+        """
+        A NAME_KEY= assignment is replaced whole, for any uppercase name ending _KEY. A quoted value goes to its
+        closing quote, spaces included, also as the escaped quotes of a JSON string.
+
+        Only names ending API_KEY, SECRET, TOKEN or PASSWORD were covered, so FOO_KEY= lines leaked.
+        """
+        v = "q7w8e9" * 4
+        for text, want in ((f"ACME_IO_KEY={v}", "[REDACTED]"), (f"export ACME_KEY={v} && run", "export [REDACTED] && run"),
+                           (f'ACME_IO_KEY="{v}" ok', "[REDACTED] ok"), (f"x A1_B2_KEY='{v}'", "x [REDACTED]"),
+                           ('ACME_KEY="two words here" ok', "[REDACTED] ok"), ("ACME_KEY='a b' ok", "[REDACTED] ok"),
+                           (f"A_KEY={v} B_KEY={v}", "[REDACTED] [REDACTED]")):
+            with self.subTest(text):
+                out, n = redact(text)
+                self.assertEqual(out, want)
+                self.assertEqual(n, want.count("[REDACTED]"))
+        text = json.dumps({"cmd": f'ACME_IO_KEY="{v} w" run', "n": 1})
+        self.assertEqual(json.loads(redact(text)[0]), {"cmd": "[REDACTED] run", "n": 1})
+
+    def test_key_rule_exempts_whole_lookup_words_only(self):
+        """
+        PRIMARY_KEY-style names stay, but a name that merely ends in a lookup word, or a word that can hold a salt
+        or an encryption key (HASH, CACHE, GROUP), is blanked.
+
+        An exemption written as a suffix check let SUBSORT_KEY and ENCRYPTION_HASH_KEY leak their values.
+        """
+        v = "q7w8e9" * 4
+        for name in ("SUBSORT_KEY", "XINDEX_KEY", "SECRETHASH_KEY", "ENCRYPTION_HASH_KEY", "HASH_KEY", "CACHE_KEY",
+                     "GROUP_KEY", "UNIQUE_KEY", "ORDER_KEY", "IDEMPOTENCY_KEY", "MASTER_CACHE_KEY"):
+            with self.subTest(name):
+                self.assertEqual(redact(f"{name}={v}"), ("[REDACTED]", 1))
+
+    def test_credential_named_key_line_is_counted_once_and_a_jwt_value_once(self):
+        """
+        ACME_API_KEY=<v> is taken by the credential-name rule and not blanked again by the _KEY rule, and a JWT that is
+        the value of a _KEY= line is one substitution: callers print the count.
+        """
+        self.assertEqual(redact("ACME_API_KEY=" + "q7w8e9" * 4), ("[REDACTED]", 1))
+        self.assertEqual(redact("ACME_KEY=" + JWT), ("[REDACTED]", 1))
+        self.assertEqual(redact("Authorization: Bearer " + JWT), ("Authorization: Bearer [REDACTED]", 1))
+
+    def test_json_and_spaced_key_forms_are_a_known_gap(self):
+        """
+        NAME_KEY: value, NAME_KEY = value and "NAME_KEY": "value" are not blanked, as for the API_KEY rule.
+
+        Pinned so widening the rule later is a decision with a test change, not an accident.
+        """
+        v = "q7w8e9" * 4
+        for text in (f"ACME_IO_KEY: {v}", f"ACME_IO_KEY = {v}", json.dumps({"ACME_IO_KEY": v})):
+            with self.subTest(text):
+                self.assertEqual(redact(text), (text, 0))
+
     def test_pem_block_spanning_lines_goes_whole(self):
         """
         A multi-line private key is replaced from BEGIN to END, whatever surrounds it stays.
@@ -130,7 +225,7 @@ class Redact(unittest.TestCase):
 
         A tool that redacts on every save would otherwise grow the count and the file each time.
         """
-        once, _ = redact("\n".join(SAMPLES.values()))
+        once, _ = redact("\n".join([*SAMPLES.values(), *EXTRA.values()]))
         self.assertEqual(redact(once), (once, 0))
 
 

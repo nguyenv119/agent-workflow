@@ -24,6 +24,9 @@ TOKENS = (re.compile(r"\bsk-[A-Za-z0-9_-]{16,}"), re.compile(r"\bghp_[A-Za-z0-9]
 
 REDACTED = "[REDACTED]"
 _B64 = "A-Za-z0-9/+"  # AWS secret keys: no =, so KEY=secret splits
+# Names of lookups, not secrets, as a whole word before _KEY. A word that can hold a salt or an encryption key
+# (HASH, CACHE, GROUP, UNIQUE, ORDER, IDEMPOTENCY) is not listed: a missed lookup costs a word, a missed secret leaks.
+_LOOKUP_KEYS = ("PRIMARY", "FOREIGN", "SORT", "PARTITION", "SHARD", "INDEX", "LOOKUP", "PUBLIC", "OBJECT")
 # Named secret shapes only: never a bare hex or base64 run (TOKENS' patterns are not used), so git shas and
 # path@sha lines survive. Each is (regex, replacement), applied in order; every bound stops at a quote or
 # backslash so a replaced span never eats the escape of a JSON string.
@@ -42,6 +45,16 @@ REDACT = (
     # the whole assignment of a credential-named variable goes (DB_API_KEY=..., GH_TOKEN="..."): a value left
     # behind as NAME=<anything> would still read as a secret
     (re.compile(r"\b[A-Z][A-Z0-9_]*(?:API_KEY|SECRET|TOKEN|PASSWORD)[A-Z0-9_]*=(?:\\?[\"'])?[^\s\"'\\]+"), REDACTED),
+    # NAME_KEY=value for any other uppercase name ending _KEY (ACME_IO_KEY=...). A quoted value goes whole, spaces
+    # included. Left alone: whole-word lookup names (PRIMARY_KEY, DB_SORT_KEY; a SUBSORT_KEY is not one) and
+    # placeholders ($VAR, ${VAR}, $(cmd), <value>). Not covered, like the rule above: NAME_KEY: value, NAME_KEY = value
+    # and "NAME_KEY": "value" (JSON or YAML)
+    (re.compile(r"\b[A-Z][A-Z0-9_]*" + "".join(rf"(?<!\b{w})(?<!_{w})" for w in _LOOKUP_KEYS) + r"_KEY="
+                r"(?:\\\"(?![${<*])[^\"\\\n]*\\\"|\"(?![${<*])[^\"\n]*\"|'(?![${<*])[^'\n]*'|(?:\\?[\"'])?(?![${<*])[^\s\"'\\]+)"),
+     REDACTED),
+    # a JWT: three base64url segments, the first the encoded header (eyJ...), each long enough that a dotted
+    # name or version string never matches
+    (re.compile(r"(?<![A-Za-z0-9_-])eyJ[A-Za-z0-9_-]{7,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}"), REDACTED),
     # keep scheme, user and host; a ${PASS}-style placeholder has no secret. <REDACTED>, not [REDACTED]:
     # a password starting with [ still reads as one to the desk's secret check
     (re.compile(r"(postgres(?:ql)?://[^:\s\"'\\/@]+:)(?![${<*])[^@\s\"'\\]+(?=@)"), r"\1<REDACTED>"),
@@ -52,8 +65,10 @@ def redact(text):
     """(text with named credentials replaced by [REDACTED], how many substitutions were made).
 
     The count is substitutions, so an AKIA id and its secret count 2. Matching follows the desk's check: a lowercase
-    "bearer" or an all-caps token after Bearer is left alone, and a credential-named NAME= value ends at whitespace. Bare hex and
-    base64 runs survive on purpose, so token() can still flag a redacted file."""
+    "bearer" or an all-caps token after Bearer is left alone, and a credential-named NAME= value ends at whitespace
+    (a quoted NAME_KEY= value, at its closing quote). JWTs go too. Bare hex and base64 runs survive on purpose, so
+    token() can still flag a redacted file. The desk's secret check is a subset of these shapes, kept as a copy
+    in test_redact.py, so add a shape here first."""
     total = 0
     for rx, repl in REDACT:
         text, n = rx.subn(repl, text)
