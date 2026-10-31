@@ -199,6 +199,24 @@ class Hooks(TmpCase):
             self.assertEqual(p.returncode, 2, p.stderr)
             self.assertIn("agent-cli harness hooks --registry", p.stderr)
 
+    def test_non_string_hook_command_exits_2_not_a_traceback(self):
+        """
+        Verifies a hook whose command is not a string is refused with exit 2 and an example.
+
+        This matters because a hand-edited settings file can hold any JSON, and a crash looks like a bug in the tool.
+
+        If it breaks, the checker dies with a traceback instead of naming the bad settings file.
+        """
+        # GIVEN a settings file whose only hook has a list as its command
+        self.settings.write_text(json.dumps({"hooks": {"Stop": [{"hooks": [{"type": "command", "command": ["a"]}]}]}}))
+        self.registry.write_text("{}")
+        # WHEN the checker runs
+        p = agent_cli(self.p, "harness", "hooks", "--registry", str(self.registry), "--settings", str(self.settings))
+        # THEN exit 2 with the example and no traceback
+        self.assertEqual(p.returncode, 2, p.stderr)
+        self.assertIn("agent-cli harness hooks --registry", p.stderr)
+        self.assertNotIn("Traceback", p.stderr)
+
 
 if __name__ == "__main__":
     unittest.main()

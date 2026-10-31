@@ -43,9 +43,12 @@ def settings_hooks(path):
     """[(settings path, event, matcher, command)] for every command hook in a settings.json."""
     data = load_json(path, "--settings")
     try:
-        return [(str(path), event, g.get("matcher"), h["command"])
+        rows = [(str(path), event, g.get("matcher"), h["command"])
                 for event, gs in (data.get("hooks") or {}).items() for g in gs
                 for h in g.get("hooks", []) if "command" in h]
+        if not all(isinstance(r[3], str) for r in rows):
+            raise TypeError("a hook command is not a string")
+        return rows
     except (AttributeError, TypeError) as e:
         core.die(Exit.REFUSED, f"--settings {path} has a hooks block of an unexpected shape: {e}", EXAMPLE)
 
