@@ -42,6 +42,14 @@ REDACT = (
     # the whole assignment of a credential-named variable goes (DB_API_KEY=..., GH_TOKEN="..."): a value left
     # behind as NAME=<anything> would still read as a secret
     (re.compile(r"\b[A-Z][A-Z0-9_]*(?:API_KEY|SECRET|TOKEN|PASSWORD)[A-Z0-9_]*=(?:\\?[\"'])?[^\s\"'\\]+"), REDACTED),
+    # NAME_KEY=value for any other name ending _KEY (ACME_IO_KEY=...). Names that are lookups, not secrets
+    # (PRIMARY_KEY, SORT_KEY, a PUBLIC_KEY) and placeholders ($VAR, ${VAR}, $(cmd), <value>) are left alone
+    (re.compile(r"\b[A-Z][A-Z0-9_]*(?<!PRIMARY)(?<!FOREIGN)(?<!SORT)(?<!PARTITION)(?<!CACHE)(?<!HASH)(?<!SHARD)"
+                r"(?<!ORDER)(?<!GROUP)(?<!INDEX)(?<!LOOKUP)(?<!PUBLIC)(?<!OBJECT)(?<!IDEMPOTENCY)(?<!UNIQUE)_KEY="
+                r"(?:\\?[\"'])?(?![${<*])[^\s\"'\\]+"), REDACTED),
+    # a JWT: three base64url segments, the first the encoded header (eyJ...), each long enough that a dotted
+    # name or version string never matches
+    (re.compile(r"(?<![A-Za-z0-9_-])eyJ[A-Za-z0-9_-]{7,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}"), REDACTED),
     # keep scheme, user and host; a ${PASS}-style placeholder has no secret. <REDACTED>, not [REDACTED]:
     # a password starting with [ still reads as one to the desk's secret check
     (re.compile(r"(postgres(?:ql)?://[^:\s\"'\\/@]+:)(?![${<*])[^@\s\"'\\]+(?=@)"), r"\1<REDACTED>"),
