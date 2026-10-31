@@ -8,6 +8,7 @@ floor, and the document skill's `.claude/skills/document/page-rules.json` tighte
 """
 import datetime
 import html as htmllib
+import math
 import os
 import re
 from collections import Counter
@@ -50,6 +51,15 @@ DEFAULTS = {
     "forbid_text": [{"pattern": EM_DASH, "why": "em dash in visible text"},
                     {"pattern": re.escape(FILL), "why": "unfilled skeleton text"}],
     "unique_ids": False,
+    "diagram_wiring": {                # off by default; three checks, see _Page.svg_done. Arrows must be <line>; transforms, <path> arrows, tspans unsupported
+        "on": False,                   # inline <svg>: every box needs an arrow ending at its edge, its text must fit
+        "box": "rect.bx",              # a box (rects shorter than min_height are pills and badges, not boxes)
+        "min_height": 30.0,
+        "label": "text.lb",            # box text in this selector is measured at label_px, other text at char_px
+        "tolerance": 4.0,              # px between a <line> end and the box edge that still counts as touching
+        "char_px": 6.2,
+        "label_px": 7.2,
+    },                                 # also: a legend swatch (legend.swatch) may not hold text, it makes the legend wrap
     "require_source": [],              # [{"pattern", "why"}] the raw HTML must match
     "template": None,                  # page new: default template path
 }
@@ -153,6 +163,7 @@ class _Page(HTMLParser):
         self.caps = []            # open text captures: [tag, depth, purpose, buffer]
         self.kicker = None
         self.ids, self.legacy = Counter(), set()
+        self.svg = None           # the inline <svg> being read when diagram_wiring is on
 
     def abs_pos(self):
         line, col = self.getpos()
@@ -175,6 +186,8 @@ class _Page(HTMLParser):
                 cap[1] += 1
         if tag in ("style", "script"):
             self.hidden += 1
+        if self.r["diagram_wiring"]["on"]:
+            self.svg_start(tag, a, cls)
         if self.hidden_tag and tag == self.hidden_tag:
             if self.agents:
                 self.agents += 1
@@ -203,6 +216,8 @@ class _Page(HTMLParser):
             self.caps.append([tag, 1, "legend", []])
         if self.legend_depth and lg["swatch"] in cls:
             self.swatches += 1
+            if self.r["diagram_wiring"]["on"]:
+                self.caps.append([tag, 1, "swatch", []])
         elif not self.legend_depth and self.r["update_class"] in cls:
             self.marks_outside_legend += 1
         if tag in ("h1", "h2", "h3", "h4"):
@@ -232,6 +247,10 @@ class _Page(HTMLParser):
                     self.finish(cap[2], " ".join("".join(cap[3]).split()))
         if tag in ("style", "script") and self.hidden:
             self.hidden -= 1
+        if self.svg and tag in ("svg", "defs"):
+            self.svg[tag] -= 1
+            if tag == "svg" and not self.svg["svg"]:
+                self.svg_done()
         if self.hidden_tag and tag == self.hidden_tag and self.agents:
             self.agents -= 1
         if tag == self.wrap_tag and self.layer_depth:
@@ -268,9 +287,68 @@ class _Page(HTMLParser):
             self.legend_text = text
         elif purpose == "kicker":
             self.kicker = text
+        elif purpose == "swatch":
+            if text:
+                self.out.append(f"'{self.heading}': legend swatch holds text '{text[:40]}'; the swatch is an empty "
+                                "square, put the words beside it (a swatch with text makes the legend wrap)")
+        elif purpose[0] == "text":
+            purpose[1]["text"] = text
         else:
             _, lay, sel = purpose
             lay["lead"][sel] = text
+
+    def svg_start(self, tag, a, cls):
+        """Collect the boxes, arrows and text of one inline <svg> (arrow = <line>; <defs> are skipped)."""
+        dw = self.r["diagram_wiring"]
+        if tag == "svg":
+            if self.svg:
+                self.svg["svg"] += 1
+            else:
+                self.svg = {"svg": 1, "defs": 0, "boxes": [], "ends": [], "texts": []}
+            return
+        s = self.svg
+        if not s:
+            return
+        if tag == "defs":
+            s["defs"] += 1
+        if s["defs"]:
+            return
+        try:
+            n = lambda k: float(a[k])  # noqa: E731
+            if tag == "rect" and matches(dw["box"], tag, cls) and n("height") >= dw["min_height"]:
+                s["boxes"].append((n("x"), n("y"), n("width"), n("height")))
+            elif tag == "line":
+                s["ends"] += [(n("x1"), n("y1")), (n("x2"), n("y2"))]
+            elif tag == "text":
+                rec = {"x": n("x"), "y": n("y"), "anchor": a.get("text-anchor", "start"),
+                       "label": matches(dw["label"], tag, cls), "text": ""}
+                s["texts"].append(rec)
+                self.caps.append([tag, 1, ("text", rec), []])
+        except (KeyError, ValueError):
+            pass  # a shape without plain numeric coordinates cannot be checked; leave it alone
+
+    def svg_done(self):
+        """Report, for the finished <svg>, each box no arrow touches and each text wider than its box."""
+        s, dw, self.svg = self.svg, self.r["diagram_wiring"], None
+        where = self.layers[-1]["name"] if self.layer_depth else self.heading
+        boxes = sorted(s["boxes"], key=lambda b: b[2] * b[3])  # smallest first: a text belongs to the tightest box
+        names = {b: [] for b in boxes}
+        for t in s["texts"]:
+            home = next((b for b in boxes if b[0] <= t["x"] <= b[0] + b[2] and b[1] <= t["y"] <= b[1] + b[3]), None)
+            if home:
+                names[home].append(t)
+        for b in boxes:
+            x, y, w, _ = b
+            name = (names[b][0]["text"] if names[b] else "") or f"at x={x:g}, y={y:g}"
+            if not any(_gap(px, py, b) <= dw["tolerance"] for px, py in s["ends"]):
+                self.out.append(f"'{where}': loose box '{name}': no <line> arrow ends within {dw['tolerance']:g} px of it; "
+                                "connect it to the box it depends on, or delete it")
+            for t in names[b]:
+                wide = len(t["text"]) * (dw["label_px"] if t["label"] else dw["char_px"])
+                left = t["x"] - {"middle": wide / 2, "end": wide}.get(t["anchor"], 0)
+                if left < x or left + wide > x + w:
+                    self.out.append(f"'{where}': text '{t['text']}' is about {wide:g} px wide, the box '{name}' "
+                                    f"{w:g}; shorten it or split the line")
 
     def handle_data(self, data):
         if self.hidden:
@@ -282,6 +360,13 @@ class _Page(HTMLParser):
         for why, _ in forbidden(data, self.r["forbid_text"]):
             snippet = " ".join(data.split())[:60]
             self.out.append(f"'{self.heading}': {why}: {snippet}")
+
+
+def _gap(px, py, box):
+    """Distance from a point to a box's outline (to the box when outside it)."""
+    x, y, w, h = box
+    dx, dy = max(x - px, 0, px - x - w), max(y - py, 0, py - y - h)
+    return math.hypot(dx, dy) if dx or dy else min(px - x, x + w - px, py - y, y + h - py)
 
 
 def parse(src, rules):
