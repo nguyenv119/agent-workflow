@@ -13,13 +13,13 @@ This skill covers development only — no issue tracking, no pushes. The coordin
 
 ## Before You Start
 
+**If the spawn prompt has a NOTES: block, your first tool calls are a Read of each note path, before any search, any Grep or Glob, and any other file Read, including files the prompt names.** The notes may already answer part of the task. Lived miss: an implementer handed 3 notes opened the file the prompt named, grepped the code, and only then grepped one note.
+
 Read these files before writing any code:
 - `.claude/skills/standards/quality.md` — test structure, mock discipline, refactor audit
 - `.claude/skills/standards/correctness-patterns.md` — known bug patterns to avoid while coding
 
 Prevention is better than detection — knowing these patterns avoids creating the bugs reviewers would later catch.
-
-If the spawn prompt has a NOTES: block, read those notes before searching code; they may already answer part of the task.
 
 **When the prompt names a `PREVIOUS TRY: <folder>`:** read its `note.md` and `gates.txt` first. They say what the last attempt changed, what failed and why; do not repeat it.
 
