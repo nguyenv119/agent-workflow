@@ -337,11 +337,16 @@ class SaveTryTest(unittest.TestCase):
         tx.write_text(json.dumps({"type": "user", "message": {"content": f"first {BEAD} {url}"}}) + "\n"
                       + json.dumps({"type": "assistant", "message": {"content": pem}}) + "\n")
         # WHEN the try is saved
-        folder = Path(self.save_worktree(self.start, "fail", "--transcript", str(tx)).stdout.strip())
-        # THEN no secret is in any file, the harmless sha is, and each file is mode 600
+        res = self.save_worktree(self.start, "fail", "--transcript", str(tx))
+        folder = Path(res.stdout.strip())
+        # THEN stderr reports a count and no value
+        self.assertIn("redacted", res.stderr)
+        for secret in (pw, akia):
+            self.assertNotIn(secret, res.stderr + res.stdout)
+        # AND no secret is in any file, the harmless sha is, and each file is mode 600
         for f in sorted(folder.iterdir()):
             data = f.read_text(errors="replace")
-            for secret in (pw, akia, "PRIVATE KEY-----\n", "QUJDREVG"):
+            for secret in (pw, akia, "BEGIN RSA PRIVATE KEY", "QUJDREVG"):
                 self.assertNotIn(secret, data, f.name)
             self.assertEqual(f.stat().st_mode & 0o777, 0o600, f.name)
         self.assertIn("REDACTED", (folder / "gates.txt").read_text())
@@ -372,11 +377,40 @@ class SaveTryTest(unittest.TestCase):
         for f in ("start.sha", "end.sha", "diff.patch", "gates.txt"):
             shutil.copyfile(folder / f, src / f)
         (src / "note.md").write_text(f"token {akia}\n")
+        (src / "gates.txt").write_text(f"db {pw} id {akia}\n")
+        (src / "transcript.jsonl").write_text(json.dumps({"type": "user", "message": {"content": f"{BEAD} {akia}"}}) + "\n")
         out = Path(self.save("--from-files", str(src), "--repo-name", "examrepo",
                              "--result", "pass").stdout.strip())
-        # THEN the note is clean and mode 600
-        self.assertNotIn(akia, (out / "note.md").read_text())
-        self.assertEqual((out / "note.md").stat().st_mode & 0o777, 0o600)
+        # THEN note, gates and transcript are clean and mode 600
+        for name in ("note.md", "gates.txt", "transcript.jsonl"):
+            self.assertNotIn(akia, (out / name).read_text(), name)
+            self.assertEqual((out / name).stat().st_mode & 0o777, 0o600, name)
+
+    def test_failed_redaction_saves_nothing(self):
+        """
+        If the redactor cannot read a file the save must stop and leave no
+        folder: a half-redacted try would keep a password in a file the
+        gardener later reads.
+        """
+        # GIVEN a harness copy whose redactor always raises OSError
+        src = SCRIPT.read_text()
+        stub = self.tmp / "stub"
+        (stub / "cli/agent_cli").mkdir(parents=True)
+        (stub / "cli/agent_cli/__init__.py").write_text("")
+        (stub / "cli/agent_cli/redact.py").write_text(
+            "def redact_file(p):\n    raise OSError('disk full')\n")
+        (stub / "skills/coordinator").mkdir(parents=True)
+        copy = stub / "skills/coordinator/save_try.py"
+        copy.write_text(src)
+        # WHEN a try is saved with it
+        cmd = [sys.executable, str(copy), "--bead", BEAD, "--worktree", str(self.repo), "--start", self.start,
+               "--gates", str(self.tmp / "gates1.txt"), "--result", "fail", "--note", str(self.tmp / "note1.md")]
+        res = subprocess.run(cmd, cwd=self.tmp, env=self.env, text=True, capture_output=True)
+        # THEN it exits non-zero, saves no folder and writes no index row
+        self.assertNotEqual(res.returncode, 0)
+        self.assertIn("nothing was saved", res.stderr)
+        self.assertEqual(list((self.tries / "myrepo" / BEAD).iterdir()), [])
+        self.assertFalse((self.tries / "myrepo/index.tsv").exists())
 
 
 if __name__ == "__main__":
