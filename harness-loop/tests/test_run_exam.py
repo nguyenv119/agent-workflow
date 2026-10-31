@@ -102,12 +102,15 @@ FAKE_HARBOR = textwrap.dedent('''\
     status = {"success": "ok", "error_max_budget_usd": "budget_cut"}.get(subtype, "error")
     (exam / "result.json").write_text(json.dumps({
         "harness_commit": spec.get("harness_commit", ak["harness_commit"]), "branch": branch or None,
-        "origin_url": "file:///tmp/origin.git", "rate_limited": spec.get("rate_limited"),
+        "origin_url": spec.get("origin_url", "file:///tmp/origin.git"), "rate_limited": spec.get("rate_limited"),
         "status": "rate_limited" if spec.get("rate_limited") else status,
         "total_cost_usd": cost, "exam_no_pr_line": True, "harness_version": version, **installed}))
     inner = agent_dir / "tries/app/exam-1/try-1"
     inner.mkdir(parents=True)
     (inner / "note.md").write_text("inner try\\n")
+    for rel, text in spec.get("inner_files", {}).items():  # extra files an agent left in its own try folders
+        (inner / rel).parent.mkdir(parents=True, exist_ok=True)
+        (inner / rel).write_text(text)
 ''')
 
 FAKE_DOCKER = textwrap.dedent('''\
@@ -245,6 +248,97 @@ class RunExamTest(unittest.TestCase):
         self.assertEqual((run / "summary.sha256").read_text(), compare.listing(run))
         self.assertFalse(os.access(t1 / "result.json", os.W_OK))
         self.assertTrue(run.name.endswith(f"-{self.sha[:7]}-demo"))
+
+    def planted(self):
+        """Fake credentials built at run time: (db password, aws key id)."""
+        return "hunter" + "2" * 6 + "xyz", "AKIA" + "ABCDEFGH12345678"
+
+    def test_inner_tries_and_result_json_are_redacted_and_not_group_readable(self):
+        """
+        The try folder's inner/ is a copy of the agent's own tries and result.json
+        is written after save_try's redact pass, so neither was cleaned. A secret
+        an agent saw would sit in them for the year the tries are kept.
+        """
+        # GIVEN an agent that left a fake password and key in nested inner files, and an origin url holding a password
+        pw, akia = self.planted()
+        url = f"postgres://app_user:{pw}@db.example.com:5432/main"
+        m = self.manifest({"t1": 2})
+        self.spec.write_text(json.dumps({"t1": {"origin_url": url, "inner_files": {
+            "gates.txt": f"FAIL connecting to {url}\n", "deep/er/note.md": f"key {akia}\n"}}}))
+        # WHEN run_exam runs it
+        self.run_exam("--tasks", m, "--budget-usd", 100)
+        # THEN no file under the try folder holds either secret, and the clean text is kept
+        t1 = self.only_run() / "t1/try-1"
+        files = [f for f in t1.rglob("*") if f.is_file()]
+        self.assertIn(t1 / "inner/app/exam-1/try-1/deep/er/note.md", files)
+        for f in files:
+            data = f.read_text(errors="replace")
+            for secret in (pw, akia):
+                self.assertNotIn(secret, data, str(f))
+        self.assertIn("REDACTED", (t1 / "inner/app/exam-1/try-1/gates.txt").read_text())
+        self.assertEqual(json.loads((t1 / "result.json").read_text())["task"], "t1")
+        # AND nothing in inner or result.json is readable by group or others (the run is sealed read-only after)
+        for f in [t1 / "result.json", *(t1 / "inner").rglob("*")]:
+            self.assertEqual(f.stat().st_mode & 0o077, 0, str(f))
+
+    def test_redact_inner_and_write_result_leave_mode_600(self):
+        """The helpers run_try uses: every file is cleaned in place and left 0600, and the count is returned."""
+        # GIVEN an inner tree with a secret in a nested file and a result dict with one in a field
+        pw, akia = self.planted()
+        inner = self.root / "inner"
+        (inner / "a/b").mkdir(parents=True)
+        (inner / "a/b/f.txt").write_text(f"id {akia}\n")
+        (inner / "a/b/f.txt").chmod(0o644)
+        folder = self.root / "folder"
+        folder.mkdir()
+        # WHEN both helpers run
+        n = run_exam.redact_inner(inner)
+        run_exam.write_result(folder, {"origin_url": f"postgres://u:{pw}@h:5432/d", "task": "t"})
+        # THEN the secrets are gone, the files are exactly 0600 and the dirs 0700
+        self.assertEqual(n, 1)
+        self.assertNotIn(akia, (inner / "a/b/f.txt").read_text())
+        self.assertNotIn(pw, (folder / "result.json").read_text())
+        self.assertEqual(json.loads((folder / "result.json").read_text())["task"], "t")
+        for f in (inner / "a/b/f.txt", folder / "result.json"):
+            self.assertEqual(f.stat().st_mode & 0o777, 0o600, str(f))
+        self.assertEqual((inner / "a/b").stat().st_mode & 0o777, 0o700)
+
+    def test_failed_redaction_leaves_no_unredacted_copy(self):
+        """
+        Fail closed, as save_try does: if the redactor cannot clean a file, the
+        file must not stay behind with its secret, and the error must surface so
+        the try is filed as an error instead of looking clean.
+        """
+        # GIVEN an inner tree and a result dict, and a redactor that always raises OSError
+        pw, akia = self.planted()
+        inner = self.root / "inner"
+        inner.mkdir()
+        (inner / "f.txt").write_text(f"id {akia}\n")
+        folder = self.root / "folder"
+        folder.mkdir()
+        with unittest.mock.patch.object(run_exam, "redact_file", side_effect=OSError("disk full")):
+            # WHEN each helper runs THEN it raises
+            with self.assertRaises(OSError):
+                run_exam.redact_inner(inner)
+            with self.assertRaises(OSError):
+                run_exam.write_result(folder, {"origin_url": f"postgres://u:{pw}@h:5432/d"})
+        # AND the unredacted inner tree and result.json are gone
+        self.assertFalse(inner.exists())
+        self.assertFalse((folder / "result.json").exists())
+
+    def test_crashed_try_result_is_redacted(self):
+        """A crash message can quote a credential from the trial dir; the error try's result.json must not keep it."""
+        # GIVEN a run context and an exception whose text holds a fake key
+        _, akia = self.planted()
+        ctx = {"run": self.root / "run", "controls": False, "sha": "a" * 40, "harness_version": None,
+               "args": argparse.Namespace(max_budget_usd=12.05)}
+        # WHEN the crashed try is filed
+        res = run_exam.crashed_try(ctx, ({"id": "t1"}, 1, "workflow"), RuntimeError(f"boom {akia}"))
+        # THEN the file on disk has no key, is not group readable, and the returned dict is unchanged
+        f = ctx["run"] / "t1/try-1/result.json"
+        self.assertNotIn(akia, f.read_text())
+        self.assertEqual(f.stat().st_mode & 0o077, 0)
+        self.assertEqual(res["status"], "error")
 
     def test_budget_stops_before_a_run_that_would_cross_it(self):
         """--budget-usd must never be crossed: stop, and mark the run incomplete."""
