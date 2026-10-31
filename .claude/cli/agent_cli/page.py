@@ -51,7 +51,7 @@ DEFAULTS = {
     "forbid_text": [{"pattern": EM_DASH, "why": "em dash in visible text"},
                     {"pattern": re.escape(FILL), "why": "unfilled skeleton text"}],
     "unique_ids": False,
-    "diagram_wiring": {                # off by default; turns on three checks, see _Page.svg_done
+    "diagram_wiring": {                # off by default; three checks, see _Page.svg_done. Arrows must be <line>; transforms, <path> arrows, tspans unsupported
         "on": False,                   # inline <svg>: every box needs an arrow ending at its edge, its text must fit
         "box": "rect.bx",              # a box (rects shorter than min_height are pills and badges, not boxes)
         "min_height": 30.0,
@@ -338,10 +338,10 @@ class _Page(HTMLParser):
             if home:
                 names[home].append(t)
         for b in boxes:
-            x, y, w, h = b
+            x, y, w, _ = b
             name = (names[b][0]["text"] if names[b] else "") or f"at x={x:g}, y={y:g}"
             if not any(_gap(px, py, b) <= dw["tolerance"] for px, py in s["ends"]):
-                self.out.append(f"'{where}': loose box '{name}': no arrow ends within {dw['tolerance']:g} px of it; "
+                self.out.append(f"'{where}': loose box '{name}': no <line> arrow ends within {dw['tolerance']:g} px of it; "
                                 "connect it to the box it depends on, or delete it")
             for t in names[b]:
                 wide = len(t["text"]) * (dw["label_px"] if t["label"] else dw["char_px"])

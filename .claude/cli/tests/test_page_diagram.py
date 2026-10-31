@@ -54,6 +54,16 @@ class DiagramWiring(unittest.TestCase):
         # GIVEN the loose fixture; WHEN checked with the defaults; THEN it passes
         self.assertEqual(page.check_page(LOOSE, page.load_rules()[0]), [])
 
+    def test_swatch_text_is_silent_by_default(self):
+        """The legend-swatch check is part of diagram_wiring, so the built-in defaults leave it silent."""
+        # GIVEN the legend-text fixture; WHEN checked with the defaults; THEN it passes
+        self.assertEqual(page.check_page(LEGEND_TEXT, page.load_rules()[0]), [])
+
+    def test_page_without_svg_passes_with_the_rule_on(self):
+        """A page with no inline svg has nothing to wire: the rule on reports nothing."""
+        # GIVEN a plain page; WHEN checked with the rule on; THEN no diagram finding appears
+        self.assertEqual([v for v in check("<html><body><h1>x</h1><p>hi</p></body></html>") if "box" in v], [])
+
     def test_arrow_end_must_be_within_tolerance_of_the_edge(self):
         """An arrow that stops short of its box does not connect it; 4 px passes, 5 px fails (tolerance 4)."""
         # GIVEN a single box and one arrow ending `gap` px above it
