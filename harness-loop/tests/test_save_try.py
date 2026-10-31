@@ -312,5 +312,72 @@ class SaveTryTest(unittest.TestCase):
         self.assertEqual(folder, self.tries / "myrepo" / BEAD / "try-1")
 
 
+    def planted(self):
+        """Fake credentials built at run time: (db password, aws key id, pem text)."""
+        pw = "hunter" + "2" * 6 + "xyz"
+        akia = "AKIA" + "ABCDEFGH12345678"
+        body = "QUJDREVG" * 8
+        pem = "-----BEGIN " + "RSA PRIVATE KEY-----\n" + body + "\n-----END " + "RSA PRIVATE KEY-----"
+        return pw, akia, pem
+
+    def test_saved_files_never_keep_a_credential_and_are_mode_600(self):
+        """
+        Saved tries sit on disk for a year and the gardener and improver read them,
+        so no credential an agent saw may survive the save. Redacting only the
+        transcript would leave the same password in gates.txt, note.md or a diff.
+        Every file of the folder (and index.tsv) is cleaned and set to mode 600,
+        and a transcript stays valid JSON line by line.
+        """
+        # GIVEN a gates file, note and transcript that each carry a fake secret
+        pw, akia, pem = self.planted()
+        url = f"postgres://app_user:{pw}@db.example.com:5432/main"
+        (self.tmp / "gates1.txt").write_text(f"FAIL connecting to {url}\n")
+        (self.tmp / "note1.md").write_text(f"key was {akia}; see sha 0123456789abcdef0123456789abcdef01234567\n")
+        tx = self.tmp / "t.jsonl"
+        tx.write_text(json.dumps({"type": "user", "message": {"content": f"first {BEAD} {url}"}}) + "\n"
+                      + json.dumps({"type": "assistant", "message": {"content": pem}}) + "\n")
+        # WHEN the try is saved
+        folder = Path(self.save_worktree(self.start, "fail", "--transcript", str(tx)).stdout.strip())
+        # THEN no secret is in any file, the harmless sha is, and each file is mode 600
+        for f in sorted(folder.iterdir()):
+            data = f.read_text(errors="replace")
+            for secret in (pw, akia, "PRIVATE KEY-----\n", "QUJDREVG"):
+                self.assertNotIn(secret, data, f.name)
+            self.assertEqual(f.stat().st_mode & 0o777, 0o600, f.name)
+        self.assertIn("REDACTED", (folder / "gates.txt").read_text())
+        self.assertIn("0123456789abcdef0123456789abcdef01234567", (folder / "note.md").read_text())
+        # AND every transcript line still parses, with the first message's text kept
+        rows = [json.loads(l) for l in (folder / "transcript.jsonl").read_text().splitlines()]
+        self.assertIn(BEAD, rows[0]["message"]["content"])
+        self.assertEqual((self.tries / "myrepo/index.tsv").stat().st_mode & 0o777, 0o600)
+
+    def test_diff_patch_and_from_files_mode_are_redacted_too(self):
+        """
+        An agent can commit a secret into a file, and --from-files (the exam path)
+        copies files made elsewhere. Both must be cleaned, or the two save modes
+        would differ in what they leak.
+        """
+        # GIVEN a commit that adds a fake token to a file, saved from a worktree
+        pw, akia, _ = self.planted()
+        make_repo(self.repo, {"env.txt": f"DB_PASSWORD={pw}\nid {akia}\n"})
+        folder = Path(self.save_worktree(self.start).stdout.strip())
+        # THEN the diff has neither secret and is mode 600
+        patch = (folder / "diff.patch").read_text()
+        self.assertNotIn(pw, patch)
+        self.assertNotIn(akia, patch)
+        self.assertEqual((folder / "diff.patch").stat().st_mode & 0o777, 0o600)
+        # WHEN the same files, with a secret planted in the note, go through --from-files
+        src = self.tmp / "exam"
+        src.mkdir()
+        for f in ("start.sha", "end.sha", "diff.patch", "gates.txt"):
+            shutil.copyfile(folder / f, src / f)
+        (src / "note.md").write_text(f"token {akia}\n")
+        out = Path(self.save("--from-files", str(src), "--repo-name", "examrepo",
+                             "--result", "pass").stdout.strip())
+        # THEN the note is clean and mode 600
+        self.assertNotIn(akia, (out / "note.md").read_text())
+        self.assertEqual((out / "note.md").stat().st_mode & 0o777, 0o600)
+
+
 if __name__ == "__main__":
     unittest.main()

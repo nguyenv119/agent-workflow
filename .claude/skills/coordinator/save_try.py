@@ -25,6 +25,10 @@ tool result). With neither, it searches those subagent files made after the star
 commit whose first user message names the bead, preferring implementers (per the
 agent-<id>.meta.json beside each), then the earliest mention, then the newest; if
 none, it writes transcript.missing describing the search. Prints the new folder path.
+
+Every file written is passed through agent-cli's redactor (credentials become [REDACTED], a
+password in a postgres URL becomes <REDACTED>) and set to mode 600, index.tsv included. The
+count goes to stderr, never a value. A redacted diff.patch no longer applies cleanly.
 """
 import argparse
 import datetime
@@ -36,6 +40,10 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
+
+# .claude/skills/coordinator/save_try.py -> .claude/cli, where agent_cli lives (same layout when installed)
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "cli"))
+from agent_cli.redact import redact_file  # noqa: E402
 
 
 def git(wt, *args):
@@ -208,11 +216,16 @@ def main():
     else:
         (folder / "transcript.missing").write_text(f"bead {a.bead}: {missing_note}\n")
 
+    redactions = sum(redact_file(f) for f in folder.iterdir())  # also chmod 600
+    if redactions:
+        print(f"save_try: redacted {redactions} credential(s) in {folder}", file=sys.stderr)
+
     files, lines = patch_stats(patch.decode("utf-8", errors="replace"))
     date = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     row = [date, a.bead, str(n), a.result, str(files), str(lines), f"{a.bead}/try-{n}"]
     with open(repo_dir / "index.tsv", "a") as fh:
         fh.write("\t".join(row) + "\n")
+    os.chmod(repo_dir / "index.tsv", 0o600)
     print(folder)
 
 
