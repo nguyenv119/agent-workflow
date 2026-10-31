@@ -39,8 +39,9 @@ REDACT = (
                 r"|xox[abp]-[A-Za-z0-9-]{10,}|ntn_[A-Za-z0-9]{20,}"), REDACTED),
     # "Bearer <ENV_VAR_NAME>" is a name, not a token
     (re.compile(r"(Bearer )(?![A-Z0-9_]+(?![A-Za-z0-9._-]))[A-Za-z0-9._-]{20,}"), rf"\1{REDACTED}"),
-    # the whole assignment goes: a value left behind as NEON_X=<anything> would still read as a secret
-    (re.compile(r"NEON_[A-Z_]*=(?:\\?[\"'])?[^\s\"'\\]+"), REDACTED),
+    # the whole assignment of a credential-named variable goes (DB_API_KEY=..., GH_TOKEN="..."): a value left
+    # behind as NAME=<anything> would still read as a secret
+    (re.compile(r"\b[A-Z][A-Z0-9_]*(?:API_KEY|SECRET|TOKEN|PASSWORD)[A-Z0-9_]*=(?:\\?[\"'])?[^\s\"'\\]+"), REDACTED),
     # keep scheme, user and host; a ${PASS}-style placeholder has no secret. <REDACTED>, not [REDACTED]:
     # a password starting with [ still reads as one to the desk's secret check
     (re.compile(r"(postgres(?:ql)?://[^:\s\"'\\/@]+:)(?![${<*])[^@\s\"'\\]+(?=@)"), r"\1<REDACTED>"),
@@ -51,7 +52,7 @@ def redact(text):
     """(text with named credentials replaced by [REDACTED], how many substitutions were made).
 
     The count is substitutions, so an AKIA id and its secret count 2. Matching follows the desk's check: a lowercase
-    "bearer" or an all-caps token after Bearer is left alone, and a NEON_ value ends at whitespace. Bare hex and
+    "bearer" or an all-caps token after Bearer is left alone, and a credential-named NAME= value ends at whitespace. Bare hex and
     base64 runs survive on purpose, so token() can still flag a redacted file."""
     total = 0
     for rx, repl in REDACT:

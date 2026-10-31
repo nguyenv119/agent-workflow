@@ -17,11 +17,11 @@ sys.path.insert(0, str(CLAUDE / "cli"))
 from agent_cli.redact import redact_file  # noqa: E402
 from agent_cli.textrules import redact  # noqa: E402
 
-# Copy of the SECRET regex a desk sync script uses to withhold files (copied, not imported, so this repo stands alone). Redacted
-# output must not match it, or a pushed handoff would still be withheld.
+# Copy of the SECRET regex a desk sync script uses to withhold files (copied, not imported, so this repo stands alone;
+# a vendor-prefixed NAME= alternative is generalised to credential-named variables). Redacted output must not match it.
 SECRET = re.compile(r"sk-ant-[A-Za-z0-9_-]{20,}|ghp_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|xox[bap]-[A-Za-z0-9-]{10,}"
                     r"|AKIA[A-Z0-9]{16}|PRIVATE KEY|Bearer (?![A-Z0-9_]+(?![A-Za-z0-9._-]))[A-Za-z0-9._-]{20,}|ntn_[A-Za-z0-9]{20,}"
-                    r"|NEON_[A-Z_]*=\S+|postgres(ql)?://[^:\s]+:(?![${<*])[^@\s]+@")
+                    r"|[A-Z][A-Z0-9_]*(?:API_KEY|SECRET|TOKEN|PASSWORD)[A-Z0-9_]*=\S+|postgres(ql)?://[^:\s]+:(?![${<*])[^@\s]+@")
 
 BODY = "QUJDREVG" * 6 + "R0hJSktM"  # fake base64 filler, 56 chars
 PEM = f"-----BEGIN PRIVATE KEY-----\n{BODY}\n{BODY}\n-----END PRIVATE KEY-----"
@@ -38,7 +38,7 @@ SAMPLES = {  # one per alternative of SECRET
     "PRIVATE KEY": PEM,
     "Bearer": "Authorization: Bearer " + "eyJhbGciOi.payload_part-1234567",
     "ntn": "notion ntn_" + "a1B2c3D4e5" * 3,
-    "NEON": "NEON_API_KEY=" + "napi_" + "x9y8z7" * 4,
+    "API_KEY": "DB_API_KEY=" + "napi_" + "x9y8z7" * 4,
     "postgres": "postgres://app_user:" + "hunter2pw" + "@db.example.com:5432/app",
     "postgresql": "postgresql://app_user:" + "hunter2pw" + "@db.example.com/app?sslmode=require",
 }
@@ -52,7 +52,7 @@ KEPT = [  # names and ids that look secret-ish but are not: must come back uncha
     "Authorization: Bearer BLOB_READ_WRITE_TOKEN",
     "Bearer abc",
     "the disk-usage-report-for-the-quarter file and task-assessment-for-the-whole-team",
-    "export NEON_PROJECT_ID and NEON_API_KEY by name only",
+    "export DB_PROJECT_ID and DB_API_KEY by name only",
 ]
 
 
@@ -217,14 +217,14 @@ class RedactFile(TmpCase):
 
 
 class Hardening(TmpCase):
-    def test_bare_sk_key_and_escaped_neon_value_go(self):
+    def test_bare_sk_key_and_escaped_api_key_value_go(self):
         """
-        A bare sk- key goes, and a NEON_ value inside a JSON-escaped string leaves the line valid JSON.
+        A bare sk- key goes, and an API_KEY value inside a JSON-escaped string leaves the line valid JSON.
 
         The desk check has no bare sk- alternative, so only these tests guard those two paths.
         """
         self.assertEqual(redact("k sk-proj" + "abcDEF123456" * 3), ("k [REDACTED]", 1))
-        line = json.dumps({"e": 'NEON_API_KEY="' + "x9y8z7" * 4 + '" ok'})
+        line = json.dumps({"e": 'DB_API_KEY="' + "x9y8z7" * 4 + '" ok'})
         out, n = redact(line)
         self.assertEqual((json.loads(out)["e"], n), ('[REDACTED]" ok', 1))
 
