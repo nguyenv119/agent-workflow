@@ -24,7 +24,7 @@ def redact_file(path, write=True):
 
     A .jsonl is split on newlines so no pattern spans two records. Bytes that are not UTF-8 round-trip, and a
     file with nothing to replace is left as it was (apart from chmod 600)."""
-    path = Path(path)
+    path = Path(os.path.realpath(path))  # a symlink is followed: replacing the link would leave the secret in its target
     text = path.read_bytes().decode("utf-8", "surrogateescape")
     parts = text.split("\n") if path.suffix == ".jsonl" else [text]
     done = [redact(p) for p in parts]
@@ -32,9 +32,14 @@ def redact_file(path, write=True):
     if write:
         if total:
             fd, tmp = tempfile.mkstemp(dir=str(path.parent), prefix=f".{path.name}.")  # mkstemp makes it 0600
-            with os.fdopen(fd, "wb") as f:
-                f.write("\n".join(t for t, _ in done).encode("utf-8", "surrogateescape"))
-            os.replace(tmp, str(path))
+            try:
+                with os.fdopen(fd, "wb") as f:
+                    f.write("\n".join(t for t, _ in done).encode("utf-8", "surrogateescape"))
+                os.replace(tmp, str(path))
+            except BaseException:
+                if os.path.exists(tmp):
+                    os.unlink(tmp)
+                raise
         os.chmod(path, 0o600)
     return total
 
@@ -42,5 +47,8 @@ def redact_file(path, write=True):
 def run(a):
     if not os.path.isfile(a.file):
         core.die(Exit.REFUSED, f"{a.file} is not a file", EXAMPLES[0])
-    n = redact_file(a.file, write=not a.dry_run)
+    try:
+        n = redact_file(a.file, write=not a.dry_run)
+    except OSError as e:
+        core.die(Exit.REFUSED, f"cannot redact {a.file}: {e.strerror or e}", EXAMPLES[0])
     core.out(a, {"file": a.file, "redactions": n, "dry_run": a.dry_run}, f"redactions: {n}")

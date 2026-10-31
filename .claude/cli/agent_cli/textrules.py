@@ -29,8 +29,8 @@ _B64 = "A-Za-z0-9/+"  # AWS secret keys: no =, so KEY=secret splits
 # backslash so a replaced span never eats the escape of a JSON string.
 REDACT = (
     # a whole PEM private key; a truncated one (no END) loses its body up to the first space or other non-base64 char
-    (re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----(?:(?:[^\"\\]|\\.)*?-----END [A-Z ]*PRIVATE KEY-----"
-                r"|(?:[A-Za-z0-9+/=]|\r?\n|\\+[nrt])*)", re.S), REDACTED),
+    (re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----(?:(?:(?!-----BEGIN)(?:[^\"\\]|\\.)){0,8192}?-----END [A-Z ]*PRIVATE KEY-----"
+                r"|(?:[A-Za-z0-9+/=]|\r?\n|\\+[nrt]){0,8192})", re.S), REDACTED),
     # an AWS secret key (40 base64 chars with upper and lower case) within 80 chars after a key id, same line
     (re.compile(rf"(AKIA[A-Z0-9]{{16}}\b.{{0,80}}?)(?<![{_B64}])(?=[{_B64}]*[A-Z])(?=[{_B64}]*[a-z])"
                 rf"[{_B64}]{{40}}(?![{_B64}])"), rf"\1{REDACTED}"),
@@ -48,7 +48,11 @@ REDACT = (
 
 
 def redact(text):
-    """(text with named credentials replaced by [REDACTED], how many were replaced)."""
+    """(text with named credentials replaced by [REDACTED], how many substitutions were made).
+
+    The count is substitutions, so an AKIA id and its secret count 2. Matching follows the desk's check: a lowercase
+    "bearer" or an all-caps token after Bearer is left alone, and a NEON_ value ends at whitespace. Bare hex and
+    base64 runs survive on purpose, so token() can still flag a redacted file."""
     total = 0
     for rx, repl in REDACT:
         text, n = rx.subn(repl, text)

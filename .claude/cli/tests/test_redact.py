@@ -17,13 +17,13 @@ sys.path.insert(0, str(CLAUDE / "cli"))
 from agent_cli.redact import redact_file  # noqa: E402
 from agent_cli.textrules import redact  # noqa: E402
 
-# Copy of the SECRET regex the desk's sync.py uses to withhold files (the private desk is not imported). Redacted
+# Copy of the SECRET regex a desk sync script uses to withhold files (copied, not imported, so this repo stands alone). Redacted
 # output must not match it, or a pushed handoff would still be withheld.
 SECRET = re.compile(r"sk-ant-[A-Za-z0-9_-]{20,}|ghp_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|xox[bap]-[A-Za-z0-9-]{10,}"
                     r"|AKIA[A-Z0-9]{16}|PRIVATE KEY|Bearer (?![A-Z0-9_]+(?![A-Za-z0-9._-]))[A-Za-z0-9._-]{20,}|ntn_[A-Za-z0-9]{20,}"
                     r"|NEON_[A-Z_]*=\S+|postgres(ql)?://[^:\s]+:(?![${<*])[^@\s]+@")
 
-BODY = "MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQC7"
+BODY = "QUJDREVG" * 6 + "R0hJSktM"  # fake base64 filler, 56 chars
 PEM = f"-----BEGIN PRIVATE KEY-----\n{BODY}\n{BODY}\n-----END PRIVATE KEY-----"
 AWS_ID = "AKIA" + "ABCDEFGH12345678"
 AWS_SECRET = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYzEXAMPLEKE"  # 40 chars, mixed case
@@ -216,6 +216,58 @@ class RedactFile(TmpCase):
         self.assertEqual((path.read_text(), stat.S_IMODE(path.stat().st_mode)), (SAMPLES["ghp"], 0o644))
 
 
+class Hardening(TmpCase):
+    def test_bare_sk_key_and_escaped_neon_value_go(self):
+        """
+        A bare sk- key goes, and a NEON_ value inside a JSON-escaped string leaves the line valid JSON.
+
+        The desk check has no bare sk- alternative, so only these tests guard those two paths.
+        """
+        self.assertEqual(redact("k sk-proj" + "abcDEF123456" * 3), ("k [REDACTED]", 1))
+        line = json.dumps({"e": 'NEON_API_KEY="' + "x9y8z7" * 4 + '" ok'})
+        out, n = redact(line)
+        self.assertEqual((json.loads(out)["e"], n), ('[REDACTED]" ok', 1))
+
+    def test_many_unterminated_pem_headers_finish_fast(self):
+        """
+        Thousands of BEGIN headers with no END must not make redact quadratic.
+
+        A transcript quoting key headers over and over would otherwise hang the saver.
+        """
+        import time
+        text = "-----BEGIN PRIVATE KEY----- x\n" * 4000
+        t = time.time()
+        redact(text)
+        self.assertLess(time.time() - t, 3)
+
+    def test_symlink_target_is_cleaned_and_the_link_kept(self):
+        """
+        Redacting a symlink cleans the file it points to and leaves the link in place.
+
+        Replacing the link would report success while the secret stayed in the target.
+        """
+        real, link = self.tmp / "real.txt", self.tmp / "link.txt"
+        real.write_text(SAMPLES["ghp"])
+        link.symlink_to(real)
+        self.assertEqual(redact_file(link), 1)
+        self.assertTrue(link.is_symlink())
+        self.assertFalse(SECRET.search(real.read_text()))
+
+    def test_empty_file_and_second_run(self):
+        """
+        An empty file returns 0, and a second run over a cleaned file returns 0 and leaves no temp file.
+
+        Idempotency lets writers call it on every save.
+        """
+        e = self.tmp / "e.jsonl"
+        e.write_text("")
+        self.assertEqual(redact_file(e), 0)
+        f = self.tmp / "f.jsonl"
+        f.write_text(SAMPLES["ghp"] + "\n")
+        self.assertEqual((redact_file(f), redact_file(f)), (1, 0))
+        self.assertEqual(sorted(os.listdir(self.tmp)), ["e.jsonl", "f.jsonl"])
+
+
 class Command(TmpCase):
     def setUp(self):
         super().setUp()
@@ -257,6 +309,21 @@ class Command(TmpCase):
         r = agent_cli(self.p, "redact", str(self.tmp / "nope.jsonl"))
         self.assertEqual(r.returncode, 2)
         self.assertIn("example: agent-cli redact", r.stderr)
+
+    def test_an_unreadable_file_exits_2_without_a_traceback(self):
+        """
+        A file the user cannot read is refused with exit 2 and an example.
+
+        House rule: errors are one line plus a correct invocation, never a traceback.
+        """
+        bad = self.tmp / "locked.txt"
+        bad.write_text("x")
+        bad.chmod(0)
+        r = agent_cli(self.p, "redact", str(bad))
+        bad.chmod(0o600)
+        if os.geteuid() != 0:
+            self.assertEqual(r.returncode, 2)
+            self.assertNotIn("Traceback", r.stderr)
 
 
 if __name__ == "__main__":
