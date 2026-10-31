@@ -19,6 +19,8 @@ Read these files before writing any code:
 
 Prevention is better than detection — knowing these patterns avoids creating the bugs reviewers would later catch.
 
+If the project has a discover knowledge base, read the notes the spawn prompt names (or read its INDEX.md) before searching code.
+
 **When the prompt names a `PREVIOUS TRY: <folder>`:** read its `note.md` and `gates.txt` first. They say what the last attempt changed, what failed and why; do not repeat it.
 
 **When invoked with a `WORKTREE` path:** All commands run in that directory. The branch is already checked out — do not create a new one. Verify with `git -C <WORKTREE> branch --show-current` before starting.

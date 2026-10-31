@@ -30,6 +30,7 @@ Any epic that may be run autonomously (`/work` in Autonomous Loop Mode) needs a 
 Before proposing anything, understand the landscape.
 
 1. Read the epic/description to understand the goal.
+   If the project has a discover knowledge base, read the notes the spawn prompt names (or read its INDEX.md) before searching code.
 2. **If `discover` already ran this session** for this epic/topic, skip
    exploring — use its confidence list and verdicts directly, and only chase
    whatever it left open. Say so explicitly ("using discover's findings from
