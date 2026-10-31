@@ -25,6 +25,10 @@ tool result). With neither, it searches those subagent files made after the star
 commit whose first user message names the bead, preferring implementers (per the
 agent-<id>.meta.json beside each), then the earliest mention, then the newest; if
 none, it writes transcript.missing describing the search. Prints the new folder path.
+
+Every file written is passed through agent-cli's redactor (credentials become [REDACTED], a
+password in a postgres URL becomes <REDACTED>) and set to mode 600, index.tsv included. The
+count goes to stderr, never a value. A diff.patch that held a credential no longer applies cleanly. If redaction fails nothing is saved.
 """
 import argparse
 import datetime
@@ -36,6 +40,11 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
+
+sys.dont_write_bytecode = True  # agent_cli lives in the repo being committed to
+# .claude/skills/coordinator/save_try.py -> .claude/cli, where agent_cli lives (same layout when installed)
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "cli"))
+from agent_cli.redact import redact_file  # noqa: E402
 
 
 def git(wt, *args):
@@ -182,6 +191,7 @@ def main():
         transcript, missing_note = pick_transcript(
             a, since=float(git(wt, "show", "-s", "--format=%ct", start).strip()))
 
+    os.umask(0o077)  # nothing is ever group/world readable, not even before the redactor runs
     repo_dir = Path(os.environ.get("HARNESS_TRIES_DIR", Path.home() / ".claude/tries")) / repo_name
     bead_dir = repo_dir / a.bead
     bead_dir.mkdir(parents=True, exist_ok=True)
@@ -208,11 +218,20 @@ def main():
     else:
         (folder / "transcript.missing").write_text(f"bead {a.bead}: {missing_note}\n")
 
+    try:
+        redactions = sum(redact_file(f) for f in folder.iterdir())  # also chmod 600
+    except OSError as e:  # fail closed: never leave a half-redacted try behind
+        shutil.rmtree(folder, ignore_errors=True)
+        sys.exit(f"save_try: redaction failed ({type(e).__name__}); nothing was saved")
+    if redactions:
+        print(f"save_try: redacted {redactions} credential(s) in {folder}", file=sys.stderr)
+
     files, lines = patch_stats(patch.decode("utf-8", errors="replace"))
     date = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     row = [date, a.bead, str(n), a.result, str(files), str(lines), f"{a.bead}/try-{n}"]
     with open(repo_dir / "index.tsv", "a") as fh:
         fh.write("\t".join(row) + "\n")
+    os.chmod(repo_dir / "index.tsv", 0o600)
     print(folder)
 
 
