@@ -109,6 +109,11 @@ import install_harness  # noqa: E402
 import manifest  # noqa: E402
 import trial_export  # noqa: E402
 
+sys.dont_write_bytecode = True  # agent_cli lives in the repo being committed to
+sys.path.insert(0, str(AW_ROOT / ".claude/cli"))  # where save_try.py finds agent_cli too
+from agent_cli.redact import redact_file  # noqa: E402
+from agent_cli.textrules import redact  # noqa: E402
+
 SAVE_TRY = AW_ROOT / ".claude/skills/coordinator/save_try.py"
 INSTALLER = LOOP_DIR / "install_harness.py"
 DEFAULT_HARBOR = f"{LOOP_DIR / '.venv/bin/harbor'} run"
@@ -277,6 +282,49 @@ def read_json(path):
         return {}
 
 
+def redact_inner(inner):
+    """Redact every file under inner in place (each ends mode 600, each directory 700); returns the count.
+
+    Fails closed like save_try: if any file cannot be cleaned, the whole tree is removed and the
+    OSError raised, so a copy that may still hold a credential never stays on disk."""
+    inner = Path(inner)
+
+    def fail(err):  # os.walk skips a directory it cannot list unless told to raise
+        raise err
+    try:
+        total = 0
+        for dirpath, dirs, names in os.walk(inner, onerror=fail):
+            os.chmod(dirpath, 0o700)
+            total += sum(redact_file(Path(dirpath) / n) for n in names)  # copytree left no symlinks
+        return total
+    except OSError:
+        shutil.rmtree(inner, ignore_errors=True)
+        raise
+
+
+def copy_inner(src, inner):
+    """Copy src to inner and redact it; fails closed, so a partial or unredacted copy never stays on disk."""
+    try:
+        shutil.copytree(src, inner)
+        return redact_inner(inner)
+    except BaseException:
+        shutil.rmtree(inner, ignore_errors=True)
+        raise
+
+
+def write_result(folder, result):
+    """Write folder/result.json as mode 600 with credentials redacted; fails closed (no file, error raised)."""
+    path = Path(folder) / "result.json"
+    try:
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w") as fh:
+            fh.write(json.dumps(result, indent=2) + "\n")
+        redact_file(path)
+    except OSError:
+        path.unlink(missing_ok=True)
+        raise
+
+
 def run_try(ctx, task, n, agent):
     """Run one task x try in Harbor and file it as a try folder. Returns result.json's dict."""
     tries_root, repo_name = (ctx["run"], agent) if ctx["controls"] else (ctx["run"].parent, ctx["run"].name)
@@ -352,7 +400,7 @@ def run_try(ctx, task, n, agent):
         folder = Path(subprocess.run(save, env={**os.environ, "HARNESS_TRIES_DIR": str(tries_root)},
                                      check=True, capture_output=True, text=True).stdout.strip())
     if trial and (trial / "agent/tries").is_dir():
-        shutil.copytree(trial / "agent/tries", folder / "inner")
+        copy_inner(trial / "agent/tries", folder / "inner")  # save_try's redact pass ran before this copy existed
     result = {
         "task": task["id"], "try": int(folder.name.split("-")[1]), "agent": agent, "status": status,
         "reward": reward, "cost_usd": cost, "cost_unknown": cost_unknown, "wall_s": wall,
@@ -365,7 +413,7 @@ def run_try(ctx, task, n, agent):
         "harbor_trial_dir": str(trial) if trial else None,
         **({"rate_limited": exam.get("rate_limited") or "usage limit"} if status == "rate_limited" else {}),
     }
-    (folder / "result.json").write_text(json.dumps(result, indent=2) + "\n")
+    write_result(folder, result)
     return result
 
 
@@ -432,13 +480,21 @@ def crashed_try(ctx, job, exc):
         k += 1
     folder = base / f"try-{k}"
     folder.mkdir()
-    (folder / "note.md").write_text(f"run_exam raised while filing this try: {exc!r}\n")
+    note = folder / "note.md"
     cost = ctx["args"].max_budget_usd if agent == "workflow" else 0.0
     result = {"task": task["id"], "try": k, "agent": agent, "status": "error", "reward": None,
               "cost_usd": cost, "cost_unknown": agent == "workflow", "wall_s": None,
-              "harness_commit": ctx["sha"], "error": repr(exc),
+              "harness_commit": ctx["sha"], "error": "withheld: redaction failed",
               "harness_version": ctx["harness_version"] if agent == "workflow" else None}
-    (folder / "result.json").write_text(json.dumps(result, indent=2) + "\n")
+    try:
+        # the exception text can quote a credential: clean it in memory, so the raw text never reaches disk
+        safe = redact(repr(exc))[0]
+        result["error"] = safe
+        note.write_text(f"run_exam raised while filing this try: {safe}\n")
+        write_result(folder, result)
+    except Exception:  # fail closed, and never mask the exception being filed
+        note.unlink(missing_ok=True)
+        (folder / "result.json").unlink(missing_ok=True)
     return result
 
 
