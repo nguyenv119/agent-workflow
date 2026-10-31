@@ -25,7 +25,7 @@ import shlex
 import shutil
 from pathlib import Path
 
-from . import canary, core, hookreg, startsize
+from . import canary, core, held, hookreg, startsize
 from .core import Exit
 
 FILES = "HARNESS_FILES.tsv"
@@ -69,6 +69,7 @@ def register(sub):
     canary.register(hs)
     hookreg.register(hs)
     startsize.register(hs)
+    held.register(hs)
 
 
 def sha256(path):
