@@ -697,6 +697,24 @@ class WaitCli(GhCase):
         self.assertIn("verdict: READY\n", r.stdout)
         self.assertTrue(r.stdout.startswith("pr: 42\n"), r.stdout)
 
+    def test_wait_on_several_prs_watches_them_all_and_sums_up(self):
+        """`pr wait 41 42` polls both at once: a line per PR, then one `done` line; 0 only when all are green."""
+        # GIVEN READY PRs
+        self.set_pr(view(), [check("lint", "pass")])
+        # WHEN two are waited on together
+        r = self.cli("wait", "41", "42", "--cap", "2m", "--json")
+        # THEN 0, a status line for each, and a summary naming both
+        self.assertEqual(r.returncode, 0, r.stderr)
+        lines = [json.loads(x) for x in r.stdout.splitlines()]
+        self.assertEqual(sorted(x["pr"] for x in lines if "verdict" in x), [41, 42])
+        self.assertEqual(lines[-1]["done"], "41=OK 42=OK")
+
+    def test_worst_of_several_waits(self):
+        """Several waits exit 0 only when all are green; red beats blocked beats the cap."""
+        self.assertEqual(pr.worst([Exit.OK, Exit.OK]), Exit.OK)
+        self.assertEqual(pr.worst([Exit.OK, Exit.TIMEOUT, Exit.FAIL]), Exit.FAIL)
+        self.assertEqual(pr.worst([Exit.TIMEOUT, Exit.BLOCKED]), Exit.BLOCKED)
+
     def test_wait_with_zero_cap_on_a_waiting_pr_exits_4(self):
         """`--cap 0s` on a pending PR exits 4 after printing one line."""
         # GIVEN a pending PR

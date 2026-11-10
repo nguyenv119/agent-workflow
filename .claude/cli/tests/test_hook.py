@@ -102,7 +102,7 @@ class Deny(HookCase):
             with self.subTest(cmd=c):
                 self.assertEqual(r.returncode, 2)
                 self.assertEqual([x["id"] for x in got["rules"]], ["hand-pr-poll"])
-                self.assertIn("agent-cli pr wait <n> --cap 40m", got["rules"][0]["message"])
+                self.assertIn("agent-cli pr wait <n> [<n2> ...] --cap 40m", got["rules"][0]["message"])
 
     def test_pr_poll_loop_in_quoted_text_is_allowed(self):
         """A commit message that quotes a poll loop is text, not a loop: allowed."""
