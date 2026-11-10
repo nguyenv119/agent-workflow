@@ -17,7 +17,7 @@ CORPUS = Path(__file__).resolve().parent / "hook_allow_corpus.txt"
 GIT = ["git", "-c", "user.name=test", "-c", "user.email=test@example.com",
        "-c", "commit.gpgsign=false", "-c", "init.defaultBranch=main"]
 # Env vars that change agent-cli behaviour; tests start from none of them.
-CLEAN = ("CLAUDE_PROJECT_DIR", "AGENT_CLI_HOOKS", "AGENT_CLI_PATH_OFF")
+CLEAN = ("CLAUDE_PROJECT_DIR", "AGENT_CLI_HOOKS", "AGENT_CLI_PATH_OFF", "CLAUDE_CODE_REMOTE")
 
 
 class TmpCase(unittest.TestCase):
@@ -180,6 +180,11 @@ def set_env(case, **values):
 # `repo` file, no file = a failing call), appends every argv to calls.log and each `gh pr merge` argv to merge.log.
 # `gh api` (an api.err file makes every one fail): .../pulls/N/files applies pr.py's --jq to files.json (REST
 # objects, none = []); .../contents/<path>?ref= prints a sha when <path> is a line of contents.txt, else HTTP 404.
+# REST pull path (agent-cli pr --rest, or CLAUDE_CODE_REMOTE): .../pulls/N prints rest_pull.json (its mergeable_state
+# is null for the first `null_reads` reads, counted in rest_reads), null_reads.json; .../commits/SHA/check-runs and .../status print
+# the rows of check_runs.json / statuses.json as pr.py's --jq would shape them; .../required_status_checks prints the
+# contexts of protection.json (none = HTTP 404, protection.err = that error); .../rules/branches/B prints the
+# required_status_checks contexts of rules.json; `-X PUT .../merge` appends its argv to merge.log (merge.err fails it).
 FAKE_GH = r'''#!/usr/bin/env python3
 import json, os, sys, time
 d, a = os.environ["FAKE_GH"], sys.argv[1:]
@@ -208,6 +213,37 @@ elif a[:1] == ["api"]:
     if path.split("?")[0].endswith("/files") and jq == ".[] | .filename, (.previous_filename // empty)":
         for f in json.loads(read("files.json", "[]")):
             print(f["filename"]); f.get("previous_filename") and print(f["previous_filename"])
+    elif a[:3] == ["api", "-X", "PUT"] and path.endswith("/merge"):
+        if os.path.exists(f"{d}/merge.err"):
+            sys.stderr.write(open(f"{d}/merge.err").read()); sys.exit(1)
+        open(f"{d}/merge.log", "a").write(json.dumps(a) + "\n")
+        print(json.dumps({"merged": True}))
+    elif path.endswith(("/pulls/42", "/pulls/7")):
+        pull, reads = json.loads(read("rest_pull.json", "{}")), int(read("rest_reads", "0"))
+        open(f"{d}/rest_reads", "w").write(str(reads + 1))
+        if reads < int(read("null_reads.json", "0")):
+            pull["mergeable_state"] = None
+        print(json.dumps(pull))
+    elif path.split("?")[0].endswith("/check-runs"):
+        for r in json.loads(read("check_runs.json", "[]")):
+            print(json.dumps({"name": r["name"], "status": r["status"], "conclusion": r["conclusion"],
+                              "description": (r.get("output") or {}).get("title") or "", "link": r["html_url"]}))
+    elif path.split("?")[0].endswith("/status"):
+        for r in json.loads(read("statuses.json", "[]")):
+            print(json.dumps({"context": r["context"], "state": r["state"], "description": r.get("description") or "",
+                              "link": r.get("target_url") or ""}))
+    elif path.endswith("/protection/required_status_checks"):
+        if os.path.exists(f"{d}/protection.err"):
+            sys.stderr.write(open(f"{d}/protection.err").read()); sys.exit(1)
+        if not os.path.exists(f"{d}/protection.json"):
+            sys.stderr.write("gh: Branch not protected (HTTP 404)\n"); sys.exit(1)
+        p = json.loads(read("protection.json", "{}"))
+        for c in dict.fromkeys(p.get("contexts", []) + [x["context"] for x in p.get("checks", [])]):
+            print(c)
+    elif "/rules/branches/" in path:
+        for rule in json.loads(read("rules.json", "[]")):
+            for c in rule.get("parameters", {}).get("required_status_checks", []) if rule["type"] == "required_status_checks" else []:
+                print(c["context"])
     elif "/contents/" in path:
         if path.split("/contents/", 1)[1].split("?")[0] not in read("contents.txt", "").split():
             sys.stderr.write("gh: Not Found (HTTP 404)\n"); sys.exit(1)
@@ -223,6 +259,20 @@ def view(state="OPEN", merge="CLEAN", head="a" * 40, fork=False):
     """A `gh pr view --json` object for PR 42 of o/r (fork: opened from another repo)."""
     return {"baseRefName": "main", "headRefOid": head, "isCrossRepository": fork, "mergeStateStatus": merge,
             "state": state, "url": "https://github.com/o/r/pull/42"}
+
+
+def rest_pull(state="open", merged=False, mergeable_state="clean", head="a" * 40, fork=False):
+    """A REST `pulls/42` object for o/r (fork: its head lives in another repo)."""
+    return {"state": state, "merged": merged, "merged_at": "2026-11-10T00:00:00Z" if merged else None,
+            "mergeable_state": mergeable_state, "html_url": "https://github.com/o/r/pull/42",
+            "base": {"ref": "main", "repo": {"full_name": "o/r"}},
+            "head": {"sha": head, "repo": {"full_name": "fork/r" if fork else "o/r"}}}
+
+
+def run_row(name, conclusion="success", status="completed", title=""):
+    """A REST check-runs row."""
+    return {"name": name, "status": status, "conclusion": conclusion, "output": {"title": title or None},
+            "html_url": f"https://ci.example/{name}"}
 
 
 def check(name, bucket, link="", state=None, description=""):
@@ -249,6 +299,12 @@ class GhCase(TmpCase):
         (self.gh / "view.json").write_text(json.dumps(view_obj))
         if checks is not None:
             (self.gh / "checks.json").write_text(json.dumps(checks))
+
+    def set_rest(self, pull, runs=(), statuses=(), **files):
+        """What gh api reports for PR 42 of o/r: the pull, check runs, commit statuses, and any extra file
+        (protection=, rules=, null_reads=) the fake reads."""
+        for name, obj in {"rest_pull": pull, "check_runs": list(runs), "statuses": list(statuses), **files}.items():
+            (self.gh / f"{name}.json").write_text(json.dumps(obj))
 
     def rules(self, text):
         (self.p / ".claude/project-rules.md").write_text(text)

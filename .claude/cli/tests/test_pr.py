@@ -899,3 +899,4 @@ class PatchId(GhCase):
 
 if __name__ == "__main__":
     unittest.main()
+

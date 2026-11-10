@@ -9,6 +9,12 @@ Check names come from optional lines under `## coordinator` in .claude/project-r
 A line keyed by repo, e.g. `required-checks[<owner>/<repo>]: x, y`, replaces the plain line of the same key
 for PRs in that repo (--repo, else the repo gh targets from the cwd; slug case ignored); when gh cannot name
 the cwd's repo, a stderr warning says so and the plain lines apply.
+Required checks belong to the PR's repo. The plain lines are the cwd repo's: for a PR in another repo (--repo that
+is not the cwd's origin) only a keyed line applies, else every reported check must pass (REST: the target's branch
+protection or rulesets name the required set first, and an unreadable one falls back to every reported check).
+REST: with CLAUDE_CODE_REMOTE set (a cloud session, where `gh pr` GraphQL answers 403) or --rest, the PR, its
+check runs and commit statuses are read, and a land is merged, through `gh api repos/<owner>/<repo>/...`; the
+repo is --repo, else the cwd's origin. Output and exit codes are the same as on the GraphQL path.
 Harness canary: a PR whose changed files (a rename by both names) match the `harness-paths:` globs under
 `## harness` (the harness-edit hook's list) also needs commit status `harness-canary`, which `agent-cli harness
 canary --pr N` posts; it is read from its `gh pr checks` row. Success passes, failure or error is FAILED; missing
@@ -19,6 +25,7 @@ the line it is needed only when the PR's repo has .claude/HARNESS_VERSION or har
 """
 import concurrent.futures
 import json
+import os
 import re
 import subprocess
 import sys
@@ -58,19 +65,33 @@ def cwd_repo():
     return None if r.returncode else r.stdout.strip() or None
 
 
-def config(text=None, repo=None):
+def slug_of(text):
+    """OWNER/REPO from an owner/repo, HOST/OWNER/REPO or git remote URL (.git and trailing slashes dropped), else None."""
+    m = re.search(r"([^/:@\s]+)/([^/\s]+?)(?:\.git)?/*$", (text or "").strip())
+    return f"{m[1]}/{m[2]}" if m else None
+
+
+def origin_repo():
+    """owner/name of the cwd's git `origin` (no network, no gh), None when there is none."""
+    return slug_of(core.git("remote", "get-url", "origin", check=False))
+
+
+def config(text=None, repo=None, here=None):
     """{required: [names] or None (= every non-skipped check), advisory: [names], preview: name or None,
     canary: status name or None, canary_auto: True when no canary-check line (needed only on harness repos)}.
 
     For a PR in repo (None: the cwd's, asked of gh only when ## coordinator has a keyed line), `key[repo]:` beats
-    `key:`; when gh cannot name the cwd's repo, a stderr warning says so and the plain lines apply."""
+    `key:`; when gh cannot name the cwd's repo, a stderr warning says so and the plain lines apply. With here (the
+    cwd repo's slug) different from repo, the plain lines are the cwd repo's, not repo's, so only keyed lines apply."""
     if not repo and any(core.rules_scopes("coordinator", k, text) for k in KEYS):
         repo = cwd_repo()
         if not repo:
             sys.stderr.write("warning: gh repo view could not name the cwd's repo, so keyed check lines are "
                              f"ignored; pass --repo, e.g. {EX_STATUS}\n")
     repo = "/".join((repo or "").strip().strip("/").split("/")[-2:]) or None  # HOST/OWNER/REPO -> OWNER/REPO
-    line = lambda key: core.rules_line("coordinator", key, text, scope=repo)  # noqa: E731
+    foreign = bool(repo and here and here.lower() != repo.lower())
+    line = lambda key: (None if foreign and repo.lower() not in core.rules_scopes("coordinator", key, text)  # noqa: E731
+                        else core.rules_line("coordinator", key, text, scope=repo))
     req, adv, can = line("required-checks"), line("advisory-checks"), line("canary-check")
     return {"required": core.names(req) if req is not None else None, "advisory": core.names(adv or ""),
             "preview": line("preview-check") or None,
@@ -115,6 +136,74 @@ def api(args, timeout, missing=False):
     if missing and "HTTP 404" in r.stderr:
         return None
     raise GhError(f"gh api {next(x for x in args if x.startswith('repos/'))}: {r.stderr.strip()}")
+
+
+REST_TRIES, REST_NAP = 5, 3  # mergeable_state is computed lazily: null on the first read, so re-read
+MERGE_STATES = {"clean", "dirty", "unstable", "blocked", "behind", "has_hooks", "draft"}
+RUN_BUCKETS = {"success": "pass", "skipped": "skipping", "neutral": "skipping", "cancelled": "cancel",
+               "failure": "fail", "timed_out": "fail", "action_required": "fail", "startup_failure": "fail"}
+STATUS_BUCKETS = {"success": "pass", "failure": "fail", "error": "fail"}  # else pending
+RUNS_JQ = ('.check_runs[] | {name, status, conclusion, description: (.output.title // ""), '
+           'link: (.html_url // .details_url // "")}')
+STATUSES_JQ = ".statuses[] | {context, state, description: (.description // \"\"), link: (.target_url // \"\")}"
+PROTECTION_JQ = "[.contexts[]?, (.checks[]?.context)] | unique | .[]"
+RULES_JQ = '.[] | select(.type == "required_status_checks") | .parameters.required_status_checks[].context'
+_protected = {}  # (slug, base) -> [required check names] or None, so `pr wait` asks once
+
+
+def jsonl(text, what):
+    try:
+        return [json.loads(x) for x in text.splitlines() if x.strip()]
+    except ValueError:
+        raise GhError(f"gh api {what}: not JSON: {text[:200]!r}")
+
+
+def fetch_rest(n, slug, timeout=120, sleep=time.sleep):
+    """(view, checks) of PR n in slug through REST, shaped as fetch() returns them from gh pr view / gh pr checks:
+    the pull (re-read while an open PR's mergeable_state is null or unknown), then its head's check runs and
+    commit statuses (the preview deployment, harness-canary) as one list of rows with gh's buckets."""
+    path = f"repos/{slug}/pulls/{n}"
+    for i in range(REST_TRIES):
+        pull = jsonl(api([path], timeout), path)[0]
+        if pull["state"] != "open" or pull.get("mergeable_state") not in (None, "unknown"):
+            break
+        if i < REST_TRIES - 1:
+            sleep(REST_NAP)
+    base, head = pull["base"], pull["head"]
+    state = "MERGED" if pull.get("merged") or pull.get("merged_at") else pull["state"].upper()
+    ms = pull.get("mergeable_state")
+    view = {"baseRefName": base["ref"], "headRefOid": head["sha"], "state": state, "url": pull["html_url"],
+            "isCrossRepository": (head.get("repo") or {}).get("full_name", "").lower() != base["repo"]["full_name"].lower(),
+            "mergeStateStatus": ms.upper() if ms in MERGE_STATES else "UNKNOWN"}
+    sha = head["sha"]
+    runs = jsonl(api(["--paginate", f"repos/{slug}/commits/{sha}/check-runs?per_page=100", "--jq", RUNS_JQ], timeout),
+                 "check-runs")
+    statuses = jsonl(api(["--paginate", f"repos/{slug}/commits/{sha}/status?per_page=100", "--jq", STATUSES_JQ],
+                         timeout), "status")
+    checks = [{"name": r["name"], "state": (r["conclusion"] or r["status"]).upper(), "description": r["description"],
+               "link": r["link"], "bucket": "pending" if r["status"] != "completed"
+               else RUN_BUCKETS.get(r["conclusion"], "pending")} for r in runs]
+    checks += [{"name": c["context"], "state": c["state"].upper(), "description": c["description"], "link": c["link"],
+                "bucket": STATUS_BUCKETS.get(c["state"], "pending")} for c in statuses]
+    return view, checks
+
+
+def protected_checks(slug, base, timeout=120):
+    """The check names the repo requires on branch base: its classic branch protection plus its rulesets, read
+    through REST (once per (slug, base)); None when neither names any or neither can be read (a token without
+    admin gets 403), so the caller falls back to every reported check."""
+    key = (slug.lower(), base)
+    if key not in _protected:
+        found = []
+        for path, jq in ((f"repos/{slug}/branches/{quote(base)}/protection/required_status_checks", PROTECTION_JQ),
+                         (f"repos/{slug}/rules/branches/{quote(base)}", RULES_JQ)):
+            try:
+                out = api([path, "--jq", jq], timeout, missing=True)
+            except GhError:
+                continue  # unreadable: the other source, else the fallback
+            found += (out or "").split("\n")
+        _protected[key] = list(dict.fromkeys(x for x in found if x)) or None
+    return _protected[key]
 
 
 def harness_repo(slug, base, timeout):
@@ -246,17 +335,31 @@ def wait_loop(n, poll, cap, every, grace, clock=time.monotonic, sleep=time.sleep
     return Exit.TIMEOUT if got is None else got
 
 
-def judge(n, repo, cfg, timeout=120):
-    """(view, status) of PR n: one fetch, its canary (open PRs only), the verdict."""
-    view, checks = fetch(n, repo, timeout)
+def judge(n, repo, cfg, timeout=120, rest=False):
+    """(view, status) of PR n: one fetch, its canary (open PRs only), the verdict. With rest, repo is the
+    OWNER/REPO slug the REST paths need, and with no required-checks line the target's own protection names them."""
+    view, checks = fetch_rest(n, repo, timeout) if rest else fetch(n, repo, timeout)
+    if rest and cfg["required"] is None:
+        cfg = {**cfg, "required": protected_checks(repo, view["baseRefName"], timeout)}
     canary = canary_of(view, cfg, timeout) if view["state"] == "OPEN" else None
     return view, verdict(n, view, checks, cfg, canary, repo)
 
 
+def target(a, example):
+    """(repo, rest, cfg) for the command: rest is --rest or CLAUDE_CODE_REMOTE; REST names the repo as
+    OWNER/REPO (--repo, else the cwd's origin; none = exit 2); cfg is its rules (plain lines only for the cwd's repo)."""
+    rest = bool(a.rest or os.environ.get("CLAUDE_CODE_REMOTE"))
+    here = origin_repo() if a.repo or rest else None
+    repo = (slug_of(a.repo) or a.repo) if a.repo else here if rest else None
+    if rest and not repo:
+        core.die(Exit.REFUSED, "REST needs the PR's repo: no --repo and the cwd has no git origin", example)
+    return (repo if rest else a.repo), rest, config(repo=repo, here=here)
+
+
 def status_or_die(a, example):
-    cfg = config(repo=a.repo)
+    repo, rest, cfg = target(a, example)
     try:
-        return judge(a.pr, a.repo, cfg)
+        return judge(a.pr, repo, cfg, rest=rest)
     except GhError as e:
         core.die(Exit.BLOCKED, str(e), example)
 
@@ -280,7 +383,7 @@ def pr_wait(a):
     if every < MIN_EVERY:
         core.die(Exit.REFUSED, f"--every {a.every}: poll at most every {MIN_EVERY}s (GitHub API budget)",
                  EX_WAIT + " --every 60")
-    cfg = config(repo=a.repo)
+    repo, rest, cfg = target(a, EX_WAIT + " --repo <owner>/<repo>")
     prs = list(dict.fromkeys(a.pr))
     lock = threading.Lock()
 
@@ -290,7 +393,7 @@ def pr_wait(a):
 
     def one(n):
         try:
-            code = wait_loop(n, lambda left: judge(n, a.repo, cfg, max(1, left))[1], cap, every, grace, out=out)
+            code = wait_loop(n, lambda left: judge(n, repo, cfg, max(1, left), rest)[1], cap, every, grace, out=out)
         except GhError as e:
             if len(prs) == 1:
                 core.die(Exit.BLOCKED, str(e), EX_WAIT)
@@ -371,9 +474,17 @@ def pr_land(a):
                  f"git diff {a.verified_head[:12]} {head[:12]}")
     dry = a.dry_run or not a.yes
     if not dry:  # pinned to the head judged above; never --auto
-        r = gh(["pr", "merge", str(a.pr), f"--{a.method}", "--match-head-commit", head], a.repo)
-        if r.returncode:
-            core.die(Exit.FAIL, f"gh pr merge {a.pr}: {r.stderr.strip()}", EX_LAND)
+        repo, rest, _ = target(a, EX_LAND)
+        if rest:  # sha makes GitHub refuse (409) a head that moved, as --match-head-commit does
+            try:
+                api(["-X", "PUT", f"repos/{repo}/pulls/{a.pr}/merge", "-f", f"sha={head}", "-f",
+                     f"merge_method={a.method}"], 120)
+            except GhError as e:
+                core.die(Exit.FAIL, f"merge {a.pr}: {e}", EX_LAND)
+        else:
+            r = gh(["pr", "merge", str(a.pr), f"--{a.method}", "--match-head-commit", head], a.repo)
+            if r.returncode:
+                core.die(Exit.FAIL, f"gh pr merge {a.pr}: {r.stderr.strip()}", EX_LAND)
     emit_line({"pr": a.pr, "url": s["url"], "head": head, "method": a.method,
                "landed": "would merge" if dry else "merged"})
     return Exit.OK
@@ -421,6 +532,10 @@ def register(sub):
     for q in (p, pw, pl):
         if q is not pw:
             q.add_argument("pr", type=int, metavar="<n>", help="the PR number")
+        q.add_argument("--rest", action="store_true", help="read (and land) through GitHub REST (gh api) instead of "
+                       "gh pr GraphQL; on by itself when CLAUDE_CODE_REMOTE is set, where GraphQL answers 403. "
+                       "The repo is --repo, else the cwd's git origin; with no required-checks line the repo's "
+                       "branch protection and rulesets name the required checks")
         q.add_argument("--repo", metavar="OWNER/NAME", help="the GitHub repo, when not the cwd's; a "
                        "`required-checks[OWNER/NAME]:` line under ## coordinator in project-rules.md (likewise "
                        "advisory-checks, preview-check, canary-check) replaces the plain line for PRs in that repo "
