@@ -249,7 +249,7 @@ class RestCli(GhCase):
 class TargetChecksCli(GhCase):
     """Required checks come from the PR's own repo: a PR in another repo is never judged by the cwd repo's list."""
 
-    PRODUCT = "## coordinator\nrequired-checks: test, quality, Vercel\nadvisory-checks: CodeRabbit\n"
+    PRODUCT = "## coordinator\nrequired-checks: test, quality, deploy-preview\nadvisory-checks: CodeRabbit\n"
     DESK = [run_row("check"), run_row("GitGuardian Security Checks")]
 
     def setUp(self):
@@ -264,7 +264,7 @@ class TargetChecksCli(GhCase):
         return r, json.loads(r.stdout)
 
     def test_another_repos_pr_is_not_judged_by_the_product_list_over_rest(self):
-        """The bug: `status --repo acme/desk` listed the product's test/quality/Vercel as missing_required.
+        """The bug: `status --repo acme/desk` listed the product's test/quality/deploy-preview as missing_required.
 
         A desk PR with its own `check` green stayed WAITING forever, so chains could never land it.
         """
@@ -325,7 +325,7 @@ class TargetChecksCli(GhCase):
     def test_the_product_repo_keeps_its_own_lines_and_reads_no_protection(self):
         """A PR in the cwd repo is judged by the plain lines as before, and REST never reads its protection."""
         # GIVEN a product PR (acme/product) with the plain required list green
-        self.set_rest(rest_pull(), [run_row("test"), run_row("quality"), run_row("Vercel")],
+        self.set_rest(rest_pull(), [run_row("test"), run_row("quality"), run_row("deploy-preview")],
                       protection={"contexts": ["unrelated"]})
         # WHEN status runs for acme/product over REST
         r = self.cli("status", "7", "--json", "--repo", "acme/product", "--rest")
@@ -371,7 +371,7 @@ class TargetChecksCli(GhCase):
         self.assertEqual(src("--repo", "acme/desk", "--rest"), "rules")
         self.rules(self.PRODUCT + "required-checks[acme/desk]: check\n")
         self.assertEqual(src("--repo", "acme/desk", "--rest"), "keyed")
-        self.set_rest(rest_pull(), [run_row("test"), run_row("quality"), run_row("Vercel")])
+        self.set_rest(rest_pull(), [run_row("test"), run_row("quality"), run_row("deploy-preview")])
         self.assertEqual(src("--repo", "acme/product", "--rest"), "plain")
 
     def test_a_refused_protection_and_a_readable_ruleset_are_unioned_with_the_ruleset_winning_alone(self):
