@@ -130,7 +130,7 @@ A PR that changes harness paths cannot land until commit status `harness-canary`
 
 start `agent-cli harness canary --pr <number> --repo $REPO` with Bash `run_in_background` (about 30 min; it posts `pending` "running since <UTC time>" at once, then the verdict) and say that it started. Otherwise start nothing: it passed, failed (a real verdict; never re-run it by hand), or is running on this head.
 
-**In a cloud session (`CLAUDE_CODE_REMOTE` set):** do not call `agent-cli pr status` (its `gh pr` GraphQL call returns 403 there) and do not start the canary (it refuses there). Print the line below when both hold:
+**In a cloud session (`CLAUDE_CODE_REMOTE` set):** `agent-cli pr status|wait|land` work there (they read and merge through GitHub REST, `gh api repos/<owner>/<repo>/...`, because `gh pr` GraphQL returns 403; pass `--repo` unless the cwd's `origin` is the PR's repo), but do not start the canary (it refuses there). Print the line below when both hold:
 
 - `git diff --name-only origin/main...$BRANCH` touches a harness path: the `harness-paths:` globs under `## harness` in `.claude/project-rules.md`, else the harness-edit hook's built-in list (`DEFAULT_PATHS` in agent-cli's `harness_edit.py`).
 - The canary applies to this repo: `canary-check:` under `## coordinator` in `.claude/project-rules.md` (or its `canary-check[<owner>/<repo>]:` form for this repo) is not `none` or `off`; with no canary-check line, the repo has `.claude/HARNESS_VERSION` or `harness-loop/loop.py`.
