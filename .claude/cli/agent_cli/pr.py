@@ -17,10 +17,12 @@ that the canary cannot run there). `canary-check: <status>` names that status (`
 the line it is needed only when the PR's repo has .claude/HARNESS_VERSION or harness-loop/loop.py at the base ref
 (asked of GitHub once per process). Other PRs, and merged or closed ones, never wait for it.
 """
+import concurrent.futures
 import json
 import re
 import subprocess
 import sys
+import threading
 import time
 from urllib.parse import quote
 
@@ -279,15 +281,43 @@ def pr_wait(a):
         core.die(Exit.REFUSED, f"--every {a.every}: poll at most every {MIN_EVERY}s (GitHub API budget)",
                  EX_WAIT + " --every 60")
     cfg = config(repo=a.repo)
-    try:
-        code = wait_loop(a.pr, lambda left: judge(a.pr, a.repo, cfg, max(1, left))[1],
-                         cap, every, grace, out=lambda o: emit_line(o, a.json))
-    except GhError as e:
-        core.die(Exit.BLOCKED, str(e), EX_WAIT)
-    if code == Exit.BLOCKED:
-        core.die(Exit.BLOCKED, f"no checks appeared within {a.appear_grace}; re-read the PR "
-                 "(\"no checks\" is never green)", f"agent-cli pr status {a.pr}")
-    return code
+    prs = list(dict.fromkeys(a.pr))
+    lock = threading.Lock()
+
+    def out(o):
+        with lock:
+            emit_line(o, a.json)
+
+    def one(n):
+        try:
+            code = wait_loop(n, lambda left: judge(n, a.repo, cfg, max(1, left))[1], cap, every, grace, out=out)
+        except GhError as e:
+            if len(prs) == 1:
+                core.die(Exit.BLOCKED, str(e), EX_WAIT)
+            out({"pr": n, "error": str(e)})
+            return Exit.BLOCKED
+        if code == Exit.BLOCKED:
+            if len(prs) == 1:
+                core.die(Exit.BLOCKED, f"no checks appeared within {a.appear_grace}; re-read the PR "
+                         "(\"no checks\" is never green)", f"agent-cli pr status {n}")
+            out({"pr": n, "error": f"no checks appeared within {a.appear_grace}"})
+        return code
+
+    if len(prs) == 1:
+        return one(prs[0])
+    # Several PRs: each waits in its own thread, so a slow one never holds up the others' verdicts.
+    with concurrent.futures.ThreadPoolExecutor(len(prs)) as pool:
+        codes = dict(zip(prs, pool.map(one, prs)))
+    out({"prs": " ".join(map(str, prs)), "done": " ".join(f"{n}={Exit(c).name}" for n, c in codes.items())})
+    return worst(codes.values())
+
+
+def worst(codes):
+    """One exit for several waits: 0 only when every PR is green; else red (1) beats blocked (3) beats cap (4)."""
+    for c in (Exit.FAIL, Exit.BLOCKED, Exit.TIMEOUT):
+        if c in codes:
+            return c
+    return max(codes)
 
 
 def patch_id(base, sha):
@@ -364,11 +394,14 @@ def register(sub):
     p.set_defaults(func=pr_status)
     pw = core.subcommand(ps, "wait", "poll status until green (0: READY or MERGED), red (1: FAILED, CONFLICT "
                          "or CLOSED), no checks past the grace (3) or the cap (4); one status per poll (--json: one JSON "
-                         "line); a new head restarts the cap. Run it with Bash run_in_background",
-                         [EX_WAIT, "agent-cli pr wait 42 --cap 40m --every 60 --repo <owner>/<repo>",
+                         "line); a new head restarts the cap. Several PRs are watched in parallel, never one after "
+                         "another. Run it with Bash run_in_background",
+                         [EX_WAIT, "agent-cli pr wait 41 42 43 --cap 40m",
+                          "agent-cli pr wait 42 --cap 40m --every 60 --repo <owner>/<repo>",
                           "agent-cli pr wait 42 --cap 0s --json"])
     pw.add_argument("--cap", default="40m", help="give up after this long, exit 4 (default 40m)")
-    pw.add_argument("--every", default="60", help=f"seconds between polls, at least {MIN_EVERY} (default 60)")
+    pw.add_argument("--every", default=str(MIN_EVERY),
+                    help=f"seconds between polls, at least {MIN_EVERY} (default {MIN_EVERY})")
     pw.add_argument("--appear-grace", default="5m", help="no checks after this long: exit 3 (default 5m)")
     pw.set_defaults(func=pr_wait)
     for q in (p, pw):
@@ -383,8 +416,11 @@ def register(sub):
     pl.add_argument("--dry-run", action="store_true", help="say what would be merged (the default without --yes)")
     pl.add_argument("--yes", action="store_true", help="really merge")
     pl.set_defaults(func=pr_land)
+    pw.add_argument("pr", type=int, nargs="+", metavar="<n>",
+                    help="the PR number; name several to wait on them all at once (exit 0 only when all are green)")
     for q in (p, pw, pl):
-        q.add_argument("pr", type=int, metavar="<n>", help="the PR number")
+        if q is not pw:
+            q.add_argument("pr", type=int, metavar="<n>", help="the PR number")
         q.add_argument("--repo", metavar="OWNER/NAME", help="the GitHub repo, when not the cwd's; a "
                        "`required-checks[OWNER/NAME]:` line under ## coordinator in project-rules.md (likewise "
                        "advisory-checks, preview-check, canary-check) replaces the plain line for PRs in that repo "

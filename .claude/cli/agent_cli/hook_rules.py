@@ -68,7 +68,8 @@ def builtin(cmd):
     return [
         {"id": "hand-pr-poll", "mode": "deny", "requires": "agent-cli", "on": "code",
          "needs": r"gh\s+(?:pr|api)\b", "match": pr_poll_re(cmd),
-         "message": "Use: agent-cli pr wait <n> --cap 40m  (run_in_background; exit 0 green, 1 red, 4 timeout). "
+         "message": "Use: agent-cli pr wait <n> [<n2> ...] --cap 40m  (run_in_background; several PRs wait in parallel; "
+                    "exit 0 all green, 1 red, 4 timeout). "
                     "One-shot: agent-cli pr status <n>."},
         {"id": "agent-cli-hand-verdict", "mode": "deny", "requires": "agent-cli", "needs": re.escape(SENTINEL),
          "match": cmd + r"(?:echo|printf)\b[^|;&)\n]*" + re.escape(SENTINEL),
