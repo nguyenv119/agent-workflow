@@ -181,13 +181,18 @@ def set_env(case, **values):
 # `gh api` (an api.err file makes every one fail): .../pulls/N/files applies pr.py's --jq to files.json (REST
 # objects, none = []); .../contents/<path>?ref= prints a sha when <path> is a line of contents.txt, else HTTP 404.
 # REST pull path (agent-cli pr --rest, or CLAUDE_CODE_REMOTE): .../pulls/N prints rest_pull.json (its mergeable_state
-# is null for the first `null_reads` reads, counted in rest_reads), null_reads.json; .../commits/SHA/check-runs and .../status print
-# the rows of check_runs.json / statuses.json as pr.py's --jq would shape them; .../required_status_checks prints the
-# contexts of protection.json (none = HTTP 404, protection.err = that error); .../rules/branches/B prints the
-# required_status_checks contexts of rules.json; `-X PUT .../merge` appends its argv to merge.log (merge.err fails it).
+# is null for the first null_reads.json reads, counted in rest_reads); .../commits/SHA/check-runs and .../status run
+# pr.py's real --jq filter, with the real `jq`, over {"check_runs": check_runs.json} / {"statuses": statuses.json};
+# .../required_status_checks runs it over protection.json (none = HTTP 404, protection.err = that error) and
+# .../rules/branches/B over rules.json (rules.err = that error); `-X PUT .../merge` appends its argv to merge.log
+# (merge.err fails it). Tests that need these skip, visibly, when `jq` is not on PATH (NEEDS_JQ).
+NEEDS_JQ = unittest.skipUnless(shutil.which("jq"), "jq is not on PATH: the production --jq filters cannot be run")
 FAKE_GH = r'''#!/usr/bin/env python3
-import json, os, sys, time
+import json, os, subprocess, sys, time
 d, a = os.environ["FAKE_GH"], sys.argv[1:]
+def run_jq(filt, data):  # gh api --jq: the real filter, on the real jq (strings raw, objects compact)
+    return subprocess.run(["jq", "-r", "-c", filt], input=json.dumps(data), capture_output=True, text=True,
+                          check=True).stdout.rstrip("\n")
 open(f"{d}/calls.log", "a").write(json.dumps(a) + "\n")
 read = lambda name, default: open(f"{d}/{name}").read() if os.path.exists(f"{d}/{name}") else default
 if os.path.exists(f"{d}/slow"):
@@ -225,25 +230,19 @@ elif a[:1] == ["api"]:
             pull["mergeable_state"] = None
         print(json.dumps(pull))
     elif path.split("?")[0].endswith("/check-runs"):
-        for r in json.loads(read("check_runs.json", "[]")):
-            print(json.dumps({"name": r["name"], "status": r["status"], "conclusion": r["conclusion"],
-                              "description": (r.get("output") or {}).get("title") or "", "link": r["html_url"]}))
+        print(run_jq(jq, {"check_runs": json.loads(read("check_runs.json", "[]"))}))
     elif path.split("?")[0].endswith("/status"):
-        for r in json.loads(read("statuses.json", "[]")):
-            print(json.dumps({"context": r["context"], "state": r["state"], "description": r.get("description") or "",
-                              "link": r.get("target_url") or ""}))
+        print(run_jq(jq, {"statuses": json.loads(read("statuses.json", "[]"))}))
     elif path.endswith("/protection/required_status_checks"):
         if os.path.exists(f"{d}/protection.err"):
             sys.stderr.write(open(f"{d}/protection.err").read()); sys.exit(1)
         if not os.path.exists(f"{d}/protection.json"):
             sys.stderr.write("gh: Branch not protected (HTTP 404)\n"); sys.exit(1)
-        p = json.loads(read("protection.json", "{}"))
-        for c in dict.fromkeys(p.get("contexts", []) + [x["context"] for x in p.get("checks", [])]):
-            print(c)
+        print(run_jq(jq, json.loads(read("protection.json", "{}"))))
     elif "/rules/branches/" in path:
-        for rule in json.loads(read("rules.json", "[]")):
-            for c in rule.get("parameters", {}).get("required_status_checks", []) if rule["type"] == "required_status_checks" else []:
-                print(c["context"])
+        if os.path.exists(f"{d}/rules.err"):
+            sys.stderr.write(open(f"{d}/rules.err").read()); sys.exit(1)
+        print(run_jq(jq, json.loads(read("rules.json", "[]"))))
     elif "/contents/" in path:
         if path.split("/contents/", 1)[1].split("?")[0] not in read("contents.txt", "").split():
             sys.stderr.write("gh: Not Found (HTTP 404)\n"); sys.exit(1)

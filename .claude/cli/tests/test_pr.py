@@ -238,7 +238,7 @@ class Verdict(unittest.TestCase):
         s = pr.verdict(42, view(), [check("lint", "pass")], DEFAULT)
         # THEN the keys match the contract
         self.assertEqual(set(s), {"pr", "url", "head", "merge_state", "verdict", "required", "advisory",
-                                  "missing_required", "preview_url", "canary"})
+                                  "missing_required", "required_source", "preview_url", "canary"})
         self.assertIsNone(s["canary"])
         self.assertEqual(s["required"], [{"name": "lint", "bucket": "pass", "link": "https://ci.example/lint"}])
 

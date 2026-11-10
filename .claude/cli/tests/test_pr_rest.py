@@ -1,19 +1,29 @@
 """Tests for `agent-cli pr --rest` (and CLAUDE_CODE_REMOTE): the same verdicts and lands through GitHub REST, and
 required checks taken from the PR's own repo. A fake `gh` on PATH replays REST objects (see helpers.FAKE_GH)."""
+import contextlib
+import io
 import json
 import sys
 import unittest
+from argparse import Namespace
+from unittest import mock
 
-from helpers import CLAUDE, GIT, GhCase, check, rest_pull, run, run_row, set_env, view
+from helpers import CLAUDE, GIT, NEEDS_JQ, GhCase, check, rest_pull, run, run_row, set_env, view
 
 sys.path.insert(0, str(CLAUDE / "cli"))
 from agent_cli import pr  # noqa: E402
 from agent_cli.core import Exit  # noqa: E402
 
 
+@NEEDS_JQ
 class RestCli(GhCase):
     """`pr status|wait|land --rest` (and CLAUDE_CODE_REMOTE): the same verdicts read through GitHub REST, because
     `gh pr` GraphQL returns 403 in a cloud session."""
+
+    def setUp(self):
+        super().setUp()
+        pr._protected.clear()
+        pr._noted.clear()
 
     def set_origin(self, slug):
         run(GIT + ["remote", "add", "origin", f"https://github.com/{slug}.git"], self.p)
@@ -76,7 +86,8 @@ class RestCli(GhCase):
         """
         # GIVEN one row of each kind, none required by name (so all count)
         runs = [run_row("ok"), run_row("bad", "failure"), run_row("busy", None, "in_progress"),
-                run_row("skip", "skipped"), run_row("stop", "cancelled"), run_row("meh", "neutral")]
+                run_row("skip", "skipped"), run_row("stop", "cancelled"), run_row("meh", "neutral"),
+                run_row("late", "timed_out"), run_row("gate", "action_required"), run_row("boot", "startup_failure")]
         sts = [{"context": "s-ok", "state": "success"}, {"context": "s-bad", "state": "failure"},
                {"context": "s-err", "state": "error"}, {"context": "s-wait", "state": "pending"}]
         self.set_rest(rest_pull(), runs, sts)
@@ -86,7 +97,7 @@ class RestCli(GhCase):
         # THEN the buckets
         self.assertEqual({c["name"]: c["bucket"] for c in checks},
                          {"ok": "pass", "bad": "fail", "busy": "pending", "skip": "skipping", "stop": "cancel",
-                          "meh": "skipping", "s-ok": "pass", "s-bad": "fail", "s-err": "fail", "s-wait": "pending"})
+                          "meh": "skipping", "late": "fail", "gate": "fail", "boot": "fail", "s-ok": "pass", "s-bad": "fail", "s-err": "fail", "s-wait": "pending"})
 
     def test_pull_state_is_mapped_to_the_graphql_view(self):
         """merged -> MERGED, closed -> CLOSED, open -> OPEN; a fork head is cross-repository; mergeable_state is
@@ -104,8 +115,9 @@ class RestCli(GhCase):
             self.assertEqual((v["baseRefName"], v["url"]), ("main", "https://github.com/o/r/pull/42"))
         self.assertEqual(v["mergeStateStatus"], "HAS_HOOKS")
 
-    def test_a_null_mergeable_state_is_reread_up_to_five_times_three_seconds_apart(self):
-        """GitHub computes mergeable_state lazily (null on the first read): re-read up to 5 times, 3 s apart.
+    def test_a_null_mergeable_state_that_settles_is_reread_with_a_three_second_nap_each_time(self):
+        """GitHub computes mergeable_state lazily (null on the first read): two null reads then clean gives CLEAN
+        after two 3 s naps.
 
         Without the retry a fresh green PR reads UNKNOWN, and `land` refuses it as not READY.
         """
@@ -117,13 +129,54 @@ class RestCli(GhCase):
         v, _ = pr.fetch_rest(42, "o/r", sleep=naps.append)
         # THEN CLEAN after two 3 s naps
         self.assertEqual((v["mergeStateStatus"], naps), ("CLEAN", [3, 3]))
-        # AND GIVEN it never settles
-        (self.gh / "rest_reads").write_text("0")
+
+    def test_a_null_mergeable_state_that_never_settles_gives_up_after_five_reads_as_unknown(self):
+        """A mergeable_state that stays null is read 5 times (4 naps of 3 s) and reported UNKNOWN, not waited on forever."""
+        set_env(self, **self.env)
+        # GIVEN it never settles
         self.set_rest(rest_pull(), null_reads=99)
-        naps.clear()
-        # THEN 5 reads, 4 naps, UNKNOWN
+        naps = []
+        # WHEN fetched
         v, _ = pr.fetch_rest(42, "o/r", sleep=naps.append)
+        # THEN UNKNOWN after 5 reads
         self.assertEqual((v["mergeStateStatus"], naps), ("UNKNOWN", [3, 3, 3, 3]))
+        self.assertEqual((self.gh / "rest_reads").read_text(), "5")
+
+    def test_a_pull_missing_a_field_is_a_gh_error_not_a_traceback(self):
+        """A REST pull without `base` raises GhError, so status exits 3 with a message instead of a KeyError trace."""
+        # GIVEN a pull object missing its base
+        pull = rest_pull()
+        del pull["base"]
+        self.set_rest(pull)
+        # WHEN status runs --rest
+        r = self.cli("status", "42", "--rest", "--repo", "o/r")
+        # THEN exit 3 naming the problem
+        self.assertEqual(r.returncode, Exit.BLOCKED)
+        self.assertIn("unexpected response shape", r.stderr)
+        self.assertNotIn("Traceback", r.stderr)
+
+    def test_land_resolves_the_target_once(self):
+        """`pr_land` reuses the repo and mode `status_or_die` resolved: target() runs once, not again before the PUT."""
+        set_env(self, **self.env)
+        # GIVEN a READY PR and land's arguments
+        self.set_rest(rest_pull(head="d" * 40), [run_row("lint")])
+        a = Namespace(pr=42, repo="o/r", rest=True, method="squash", yes=True, dry_run=False, verified_head=None)
+        # WHEN landed
+        with mock.patch.object(pr, "target", wraps=pr.target) as t, contextlib.redirect_stdout(io.StringIO()):
+            code = pr.pr_land(a)
+        # THEN merged, with one target() call
+        self.assertEqual((code, t.call_count), (Exit.OK, 1))
+        self.assertEqual(len(self.merges()), 1)
+
+    def test_exit_2_examples_carry_repo(self):
+        """The REST-needs-a-repo refusal shows an invocation with --repo, for status, wait and land alike."""
+        # GIVEN a checkout with no origin
+        for verb in (("status", "42"), ("wait", "42"), ("land", "42", "--yes")):
+            # WHEN run --rest without --repo
+            r = self.cli(*verb, "--rest")
+            # THEN refused, the example names --repo <owner>/<repo>
+            self.assertEqual(r.returncode, Exit.REFUSED, r.stderr)
+            self.assertIn("--repo <owner>/<repo>", r.stderr)
 
     def test_gh_api_failure_is_a_gh_error(self):
         """A failing gh api (a 403 on the pull) raises GhError, so status exits 3 with gh's message."""
@@ -192,6 +245,7 @@ class RestCli(GhCase):
         self.assertEqual(json.loads(r.stdout)["verdict"], "READY")
 
 
+@NEEDS_JQ
 class TargetChecksCli(GhCase):
     """Required checks come from the PR's own repo: a PR in another repo is never judged by the cwd repo's list."""
 
@@ -200,6 +254,8 @@ class TargetChecksCli(GhCase):
 
     def setUp(self):
         super().setUp()
+        pr._protected.clear()
+        pr._noted.clear()
         self.rules(self.PRODUCT)
         run(GIT + ["remote", "add", "origin", "https://github.com/acme/product.git"], self.p)
 
@@ -299,3 +355,88 @@ class TargetChecksCli(GhCase):
         # THEN READY, nothing missing
         self.assertEqual((s["verdict"], s["missing_required"]), ("READY", []))
         self.assertFalse([c for c in self.calls() if "protection" in " ".join(c)])
+
+    def test_required_source_names_where_the_required_set_came_from(self):
+        """`required_source` is keyed, plain, protection, rules or all-reported, so a reader sees what bar was used."""
+        # GIVEN each source in turn, judged for PR 7 of the target repo or of the cwd repo
+        self.set_rest(rest_pull(), self.DESK)
+        src = lambda *a: json.loads(self.cli("status", "7", "--json", *a).stdout)["required_source"]  # noqa: E731
+        # THEN all-reported without protection, protection, rules, keyed, plain
+        self.assertEqual(src("--repo", "acme/desk", "--rest"), "all-reported")
+        self.set_rest(rest_pull(), self.DESK, protection={"contexts": ["check"]})
+        self.assertEqual(src("--repo", "acme/desk", "--rest"), "protection")
+        (self.gh / "protection.json").unlink()
+        self.set_rest(rest_pull(), self.DESK, rules=[{"type": "required_status_checks",
+                                                     "parameters": {"required_status_checks": [{"context": "check"}]}}])
+        self.assertEqual(src("--repo", "acme/desk", "--rest"), "rules")
+        self.rules(self.PRODUCT + "required-checks[acme/desk]: check\n")
+        self.assertEqual(src("--repo", "acme/desk", "--rest"), "keyed")
+        self.set_rest(rest_pull(), [run_row("test"), run_row("quality"), run_row("Vercel")])
+        self.assertEqual(src("--repo", "acme/product", "--rest"), "plain")
+
+    def test_a_refused_protection_and_a_readable_ruleset_are_unioned_with_the_ruleset_winning_alone(self):
+        """Classic protection answering 403 does not hide a ruleset that can be read: its checks are required."""
+        # GIVEN protection 403 and a ruleset requiring `check`, GitGuardian running
+        self.set_rest(rest_pull(), [run_row("check"), run_row("GitGuardian Security Checks", None, "queued")],
+                      rules=[{"type": "required_status_checks",
+                              "parameters": {"required_status_checks": [{"context": "check"}]}}])
+        (self.gh / "protection.err").write_text("gh: Resource not accessible (HTTP 403)")
+        # WHEN status runs
+        r, s = self.status("--rest")
+        # THEN READY on the ruleset's `check`, no fallback note
+        self.assertEqual((s["verdict"], s["required_source"], r.stderr), ("READY", "rules", ""))
+
+    def test_protection_and_rules_are_unioned_when_both_name_checks(self):
+        """Both sources naming checks give their union, source protection."""
+        # GIVEN protection requiring `check` and a ruleset requiring `e2e`
+        self.set_rest(rest_pull(), [run_row("check")], protection={"contexts": ["check"]},
+                      rules=[{"type": "required_status_checks",
+                              "parameters": {"required_status_checks": [{"context": "e2e"}]}}])
+        # WHEN status runs
+        _, s = self.status("--rest")
+        # THEN both required, e2e missing
+        self.assertEqual((s["missing_required"], s["required_source"]), (["e2e"], "protection"))
+
+    def test_both_sources_unreadable_prints_one_stderr_note_and_falls_back(self):
+        """With both reads refused, every reported check must pass, one stderr line says so, stdout stays one JSON line."""
+        # GIVEN both reads answering 403
+        self.set_rest(rest_pull(), self.DESK)
+        (self.gh / "protection.err").write_text("gh: HTTP 403")
+        (self.gh / "rules.err").write_text("gh: HTTP 403")
+        # WHEN status runs
+        r, s = self.status("--rest")
+        # THEN all-reported, one note
+        self.assertEqual(s["required_source"], "all-reported")
+        self.assertEqual(len(r.stderr.splitlines()), 1, r.stderr)
+        self.assertIn("cannot read acme/desk's branch protection or rulesets", r.stderr)
+
+    def test_protection_is_read_once_across_polls(self):
+        """`pr wait` judges every poll: the target's protection is asked of GitHub once, not once per poll."""
+        set_env(self, **self.env)
+        # GIVEN protection requiring `check`
+        self.set_rest(rest_pull(), self.DESK, protection={"contexts": ["check"]})
+        cfg = pr.config(repo="acme/desk", here="acme/product")
+        # WHEN judged three times, as three polls
+        sources = [pr.judge(7, "acme/desk", cfg, rest=True)[1]["required_source"] for _ in range(3)]
+        # THEN one protection read and one rules read in all
+        self.assertEqual(sources, ["protection"] * 3)
+        kinds = [c for c in self.calls() if any("protection" in x or "rules/branches" in x for x in c)]
+        self.assertEqual(len(kinds), 2, kinds)
+
+    def test_a_refusal_is_cached_but_a_server_error_is_asked_again(self):
+        """A 403 is final and kept (no re-asking every 30 s); a 500 or timeout is transient and re-read next poll."""
+        set_env(self, **self.env)
+        reads = lambda: len([c for c in self.calls() if any("protection" in x for x in c)])  # noqa: E731
+        # GIVEN a 403 on both sources
+        (self.gh / "protection.err").write_text("gh: HTTP 403")
+        (self.gh / "rules.err").write_text("gh: HTTP 403")
+        # WHEN asked twice THEN once
+        with contextlib.redirect_stderr(io.StringIO()):
+            self.assertEqual((pr.protected_checks("acme/desk", "main"), pr.protected_checks("acme/desk", "main")),
+                             ((None, None), (None, None)))
+            self.assertEqual(reads(), 1)
+        # AND GIVEN a server error on another branch, asked twice THEN twice
+        (self.gh / "protection.err").write_text("gh: HTTP 502 bad gateway")
+        with contextlib.redirect_stderr(io.StringIO()):
+            pr.protected_checks("acme/desk", "dev"), pr.protected_checks("acme/desk", "dev")
+        self.assertEqual(reads(), 3)
