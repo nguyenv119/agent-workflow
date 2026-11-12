@@ -388,6 +388,35 @@ class SafetyRules(HookCase):
         self.assert_only_bad_rule_skipped({"id": "num-req", "match": "frob", "requires": 3, "mode": "deny",
                                            "message": "m"}, "num-req")
 
+    UNLESS = {"id": "lock-cap", "match": "{CMD}frob\\b", "mode": "deny", "message": "m", "unless_env": "DEVBOX=1"}
+
+    def fired_with(self, env, rule=None, name="ue"):
+        """Ids of the project rules that fire on `frob x` under the given env (None removes a variable)."""
+        p = make_project(self.tmp / name, {"pretooluse-rules.json": json.dumps([rule or self.UNLESS])})
+        r = agent_cli(p, "hook", "test", "--cmd", "frob x", "--json", env=env)
+        return [x["id"] for x in json.loads(r.stdout)["rules"]]
+
+    def test_unless_env_matching_the_environment_turns_the_rule_off(self):
+        # GIVEN a rule with unless_env DEVBOX=1 / WHEN DEVBOX=1 is set / THEN it does not fire
+        self.assertEqual(self.fired_with({"DEVBOX": "1"}), [])
+
+    def test_unless_env_with_a_different_value_or_unset_leaves_the_rule_on(self):
+        # GIVEN the same rule / WHEN DEVBOX is 0, empty, or unset / THEN it fires
+        for i, env in enumerate(({"DEVBOX": "0"}, {"DEVBOX": ""}, {"DEVBOX": None})):
+            with self.subTest(env=env):
+                self.assertEqual(self.fired_with(env, name=f"ue{i}"), ["lock-cap"])
+
+    def test_unless_env_with_an_empty_value_matches_an_empty_variable(self):
+        # GIVEN NAME= (empty value) / WHEN NAME is set to "" / THEN the rule is off; unset leaves it on
+        rule = dict(self.UNLESS, unless_env="DEVBOX=")
+        self.assertEqual(self.fired_with({"DEVBOX": ""}, rule, "e1"), [])
+        self.assertEqual(self.fired_with({"DEVBOX": None}, rule, "e2"), ["lock-cap"])
+
+    def test_malformed_unless_env_skips_only_that_rule(self):
+        for bad in ("DEVBOX", "1DEV=1", "=1", 3, ["DEVBOX=1"]):
+            with self.subTest(unless_env=bad):
+                self.assert_only_bad_rule_skipped(dict(self.UNLESS, id="bad-ue", unless_env=bad), "bad-ue")
+
     def test_non_string_needs_skips_only_that_rule(self):
         # GIVEN a rule whose needs is an object
         self.assert_only_bad_rule_skipped({"id": "obj-needs", "match": "frob", "needs": {}, "mode": "deny",
@@ -576,6 +605,21 @@ class RulesListing(HookCase):
         self.assertTrue(rows[VERDICT]["active"])
         self.assertEqual(rows["proj-x"]["source"], "project")
         self.assertFalse(rows["proj-x"]["active"])
+
+
+    def test_rules_listing_names_unless_env_as_why_a_rule_is_off(self):
+        # GIVEN a project rule with unless_env DEVBOX=1
+        rule = [{"id": "lock-cap", "match": "x", "mode": "warn", "message": "m", "unless_env": "DEVBOX=1"}]
+        p = make_project(self.tmp / "lsue", {"pretooluse-rules.json": json.dumps(rule)})
+        # WHEN listed with and without DEVBOX=1
+        off = agent_cli(p, "hook", "rules", env={"DEVBOX": "1"})
+        on = agent_cli(p, "hook", "rules", env={"DEVBOX": None})
+        offj = agent_cli(p, "hook", "rules", "--json", env={"DEVBOX": "1"})
+        # THEN the state says why, and --json carries active false
+        self.assertIn("lock-cap  warn  project  inactive (DEVBOX=1)", off.stdout)
+        self.assertIn("lock-cap  warn  project  active", on.stdout)
+        row = next(d for d in map(json.loads, offj.stdout.splitlines()) if d["id"] == "lock-cap")
+        self.assertFalse(row["active"])
 
 
 class AllowCorpus(unittest.TestCase):

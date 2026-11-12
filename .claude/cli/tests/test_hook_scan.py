@@ -218,6 +218,19 @@ class Files(ScanCase):
         # THEN the project rule hits on line 2
         self.assertEqual([(h["rule"], h["line"]) for h in hits], [("proj-deploy", 2)])
 
+    def test_unless_env_is_ignored_like_requires(self):
+        """A file that hand-rolls the chore is reported on a machine whose environment switches the rule off."""
+        # GIVEN a project rule with unless_env DEVBOX=1, and a file it matches
+        rule = [{"id": "proj-deploy", "match": r"{CMD}\./deploy\.sh\b", "mode": "warn", "message": "use the CLI",
+                 "unless_env": "DEVBOX=1"}]
+        make_project(self.p, seams={"pretooluse-rules.json": json.dumps(rule)})
+        self.write("ship.sh", "set -e\n./deploy.sh prod\n")
+        # WHEN scanned with DEVBOX=1
+        r = agent_cli(self.p, "hook", "scan", str(self.tree), "--json", env={"DEVBOX": "1"})
+        hits = [json.loads(ln) for ln in r.stdout.splitlines()][:-1]
+        # THEN the hit is still there
+        self.assertEqual([h["rule"] for h in hits], ["proj-deploy"])
+
     def test_no_paths_scans_the_gardener_scan_dirs_line(self):
         """With no paths, scan reads `scan-dirs:` under `## gardener` in project-rules.md, relative to the root.
 
