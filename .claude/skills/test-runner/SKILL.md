@@ -20,7 +20,7 @@ You will receive:
 
 1. `cd <WORKTREE>` — all commands run in that directory. Do not create or switch branches. **First, record the commit you are testing:** `git rev-parse HEAD` — it goes in the `Commit:` line of every reply, so the caller can tell a stale verdict (branch tip moved since) from a current one.
 2. Run each command sequentially. **Stop at the first failure.**
-3. **Test commands must produce counts.** Report the test-file and test counts exactly as your test runner prints them (e.g. `Ran 143 tests` for unittest, `143 passed` for pytest, `Test Files 12 passed (12) · Tests 143 passed (143)` for vitest). If a test command instead prints a cache-replay marker (e.g. `FULL TURBO` / `cache hit` / `>>> cached`), a build cache replayed an old result and nothing executed — rerun that one command with the cache bypassed and report the real counts. **Never report PASS for a test command without counts.**
+3. **Test commands must produce counts.** Report the test-file and test counts exactly as your test runner prints them (e.g. `Ran 143 tests` for unittest, `143 passed` for pytest, `Test Files 12 passed (12) · Tests 143 passed (143)` for vitest). A build-cache replay (e.g. `FULL TURBO` / `cache hit` / `>>> cached`) reprints the stored counts: report those and count it a pass, unless the project rules say this task's cache inputs miss files the tests read, or the counts look stale (e.g. a test you just changed is not in them); in that case rerun that one command with the cache bypassed and report the real counts. **Never report PASS for a test command without counts.**
 
 Run every command exactly as written. If a command-rewriting hook or output filter mangles a gate's output, follow `.claude/project-rules.md` for how to run it raw.
 
