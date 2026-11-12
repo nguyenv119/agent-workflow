@@ -18,6 +18,7 @@ import sys
 from . import core, harness_edit, hook_rules
 
 MAX_CMD = 20 * 1024
+UNLESS_ENV = re.compile(r"[A-Za-z_]\w*=.*")  # a project rule's unless_env: NAME=value
 BYPASS = re.compile(r"#\s*agent-cli:\s*allow\s+([\w.-]+)")
 SENTINEL_STR = re.compile(re.escape(hook_rules.SENTINEL) + r"(?:\\n)?")
 WORD_START = " \t\n;&|()<>"
@@ -156,6 +157,8 @@ def _project_rule(r, cmd, body, taken):
     for k in ("unless", "needs", "requires"):
         if k in r and not isinstance(r[k], str):
             raise ValueError(f"{k} must be a string")
+    if "unless_env" in r and not (isinstance(r["unless_env"], str) and UNLESS_ENV.fullmatch(r["unless_env"])):
+        raise ValueError("unless_env must be NAME=value")
     rule = dict(r, source="project")
     for k in ("match", "unless", "needs"):
         if k in rule:
@@ -164,10 +167,17 @@ def _project_rule(r, cmd, body, taken):
     return rule
 
 
+def env_off(rule):
+    """True when the rule's `unless_env` (NAME=value) matches this process's environment."""
+    name, sep, value = rule.get("unless_env", "").partition("=")
+    return bool(sep) and os.environ.get(name) == value
+
+
 def active(rule):
-    """A rule with `requires` fires only when that command is on PATH or in the dirs `self env` adds."""
+    """A rule with `requires` fires only when that command is on PATH or in the dirs `self env` adds;
+    one with `unless_env` NAME=value never fires while the environment has NAME=value."""
     req = rule.get("requires")
-    return not req or core.on_path(req)
+    return not env_off(rule) and (not req or core.on_path(req))
 
 
 def evaluate(command, rules, honor_bypass=True):
@@ -462,11 +472,12 @@ def list_rules(json_mode):
     # hook scan, record and repeats call with no cwd and must not spawn git; it is listed by hand here
     for r in load_rules() + [harness_edit.rule()]:
         row = {"id": r["id"], "mode": r["mode"], "source": r["source"], "active": active(r),
-               "requires": r.get("requires")}
+               "requires": r.get("requires"), "unless_env": r.get("unless_env")}
         if json_mode:
             print(json.dumps(row))
         else:
-            state = "active" if row["active"] else f"inactive (needs {row['requires']})"
+            state = ("active" if row["active"] else f"inactive ({r['unless_env']})" if env_off(r)
+                     else f"inactive (needs {row['requires']})")
             print(f"{row['id']}  {row['mode']}  {row['source']}  {state}")
 
 

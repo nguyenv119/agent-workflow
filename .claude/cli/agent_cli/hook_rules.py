@@ -1,9 +1,10 @@
 """Built-in PreToolUse rules and the regex pieces every rule anchors on.
 
-A rule: {id, match, unless?, needs?, requires?, on?: "code"|"raw", mode: "deny"|"warn", message}.
+A rule: {id, match, unless?, needs?, requires?, unless_env?, on?: "code"|"raw", mode: "deny"|"warn", message}.
 `match`/`unless` are searched (no re.M) in the command's code view (quotes, heredoc bodies and comments
 stripped) unless on == "raw"; `needs` is a cheap regex on the raw command checked first; a rule with
-`requires` fires only when that command resolves. Project rules (seam pretooluse-rules.json) may write
+`requires` fires only when that command resolves; one with `unless_env` "NAME=value" (project rules only)
+never fires while the environment has NAME=value. Project rules (seam pretooluse-rules.json) may write
 {CMD} and {BODY} for the two pieces below.
 Built-in rules use builtin()'s `cmd` argument (this call's CMD, seam prefixes included), never the
 module-level CMD/BODY constants, which lack the prefixes.
