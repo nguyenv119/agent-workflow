@@ -368,7 +368,7 @@ COMMANDS:
 
 **Do NOT push if the sub-agent reports FAIL.** Fix locally first (spawn an implementer if the fix is non-trivial; save this attempt per §4c3 first, pass its folder as `PREVIOUS TRY:` and note a new start sha), then re-delegate.
 
-**A gate verdict is only as good as the commit it ran against.** Capture `git -C <worktree> rev-parse HEAD` when you spawn the test-runner and require it in the reply (`Commit:` line); if the branch tip has moved since, the verdict is stale — rerun. A `PASS` with no test-file/test counts is **unverified**, not passed: the test-runner must report counts for every test command, and a cache-replay marker (e.g. `FULL TURBO` / `cache hit`) in place of counts is a replay, not a run — rerun with the cache bypassed.
+**A gate verdict is only as good as the commit it ran against.** Capture `git -C <worktree> rev-parse HEAD` when you spawn the test-runner and require it in the reply (`Commit:` line); if the branch tip has moved since, the verdict is stale — rerun. A `PASS` with no test-file/test counts is **unverified**, not passed: the test-runner must report counts for every test command, and a build-cache replay (e.g. `FULL TURBO` / `cache hit`) counts as a pass when it shows the stored counts; the test-runner's rule 3 says when to bypass the cache instead.
 
 #### c2. Run the Real Acceptance — against reality, NOT mocks
 
@@ -615,7 +615,7 @@ information. Phase 3 is a short wrap-up only.
 - Approving a bead on "tests passed" instead of on the real-acceptance **evidence** (the actual output) in the `BEAD COMPLETE` block
 - Merging PRs (that's the human's job)
 - Watching CI for the *merge* decision (that's the human's job) — but in Autonomous Loop Mode, watching CI **before starting the next bead** is the loop's job: opening bead N+1's PR while bead N is red is the anti-pattern (CI-green gate)
-- Trusting a gate verdict without the commit it ran against, or a `PASS` with no test counts, or a build-cache replay (e.g. `FULL TURBO` / `cache hit`) as a run (§4c)
+- Trusting a gate verdict without the commit it ran against, or a `PASS` with no test counts, or a build-cache replay with no counts, or one the test-runner's rule 3 says to bypass, as a pass (§4c)
 - Cleaning up worktrees before merge (that's the human's job — `/merged` handles it)
 - Sharing a worktree across multiple beads — each bead gets its own named worktree
 - Running dependency installs concurrently across multiple worktrees
