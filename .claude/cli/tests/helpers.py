@@ -17,7 +17,9 @@ CORPUS = Path(__file__).resolve().parent / "hook_allow_corpus.txt"
 GIT = ["git", "-c", "user.name=test", "-c", "user.email=test@example.com",
        "-c", "commit.gpgsign=false", "-c", "init.defaultBranch=main"]
 # Env vars that change agent-cli behaviour; tests start from none of them.
-CLEAN = ("CLAUDE_PROJECT_DIR", "AGENT_CLI_HOOKS", "AGENT_CLI_PATH_OFF", "CLAUDE_CODE_REMOTE")
+CLEAN = ("CLAUDE_PROJECT_DIR", "AGENT_CLI_HOOKS", "AGENT_CLI_PATH_OFF", "CLAUDE_CODE_REMOTE",
+         "AGENT_CLI_GATES_BURST", "AGENT_CLI_BURST_MAX_LOAD", "AGENT_CLI_BURST_MIN_FREE_GB",
+         "AGENT_CLI_BURST_SPACING_S", "AGENT_CLI_LOADAVG", "AGENT_CLI_MEM_AVAILABLE_GB", "AGENT_CLI_MEMINFO")
 
 
 class TmpCase(unittest.TestCase):

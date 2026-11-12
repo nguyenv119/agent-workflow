@@ -10,7 +10,12 @@ import time
 import unittest
 from pathlib import Path
 
-from helpers import CLEAN, agent_cli, make_project
+from unittest import mock
+
+from helpers import CLAUDE, CLEAN, agent_cli, make_project
+
+sys.path.insert(0, str(CLAUDE / "cli"))
+from agent_cli import lock  # noqa: E402
 
 
 class Lock(unittest.TestCase):
@@ -314,8 +319,8 @@ class Lock(unittest.TestCase):
         # THEN it is not counted as a type checker
         self.assertEqual(r.returncode, 0, r.stderr)
 
-    # Burst slots: tests never read the real box; the load and memory readings are planted through env,
-    # the way TSC is. LOW is a quiet machine, so only the reading a test changes can refuse.
+    # Burst slots (gates.b1..gates.bB): tests never read the real box; the load and memory readings are planted
+    # through env, the way TSC is. LOW is a quiet machine, so only the reading a test changes can refuse.
     LOW = {"AGENT_CLI_GATES_BURST": "1", "AGENT_CLI_LOADAVG": "0", "AGENT_CLI_MEM_AVAILABLE_GB": "64"}
 
     def age(self, name, seconds):
@@ -323,17 +328,19 @@ class Lock(unittest.TestCase):
         f = self.state / "locks" / name / "owner.json"
         f.write_text(json.dumps(dict(self.owner(name), started=time.time() - seconds)))
 
-    def fill_base(self, n=3, age=120):
-        """n live pids in gates.1..n (--slots n), each started `age` s ago; their pids."""
-        pids = [self.live() for _ in range(n)]
+    def fill_base(self, n=3, age=120, dead=()):
+        """n pids in gates.1..n (--slots n), each started `age` s ago; their pids. Slots in `dead` (1-based)
+        are held by a pid that has exited, the rest by live ones."""
+        pids = [self.dead() if i in dead else self.live() for i in range(1, n + 1)]
         for i, p in enumerate(pids, 1):
             r = self.lock("acquire", "gates", "--slots", str(n), "--pid", str(p))
             self.assertEqual(r.returncode, 0, r.stderr)
             self.age(f"gates.{i}", age)
         return pids
 
-    def burst(self, pid, env=None, *more):
-        return self.lock("acquire", "gates", "--slots", "3", "--pid", str(pid), *more, env={**self.LOW, **(env or {})})
+    def burst(self, pid, env=None, *, args=(), slots="3"):
+        return self.lock("acquire", "gates", "--slots", slots, "--pid", str(pid), *args,
+                         env={**self.LOW, **(env or {})})
 
     def test_burst_off_by_default_keeps_the_fixed_semaphore(self):
         """Without AGENT_CLI_GATES_BURST a full gates lock refuses the fourth holder, load or no load."""
@@ -342,11 +349,24 @@ class Lock(unittest.TestCase):
         # WHEN a fourth pid acquires
         r = self.lock("acquire", "gates", "--slots", "3", "--pid", str(self.live()),
                       env={"AGENT_CLI_LOADAVG": "0", "AGENT_CLI_MEM_AVAILABLE_GB": "64"})
-        # THEN exit 3 as before, no burst clause, no gates.4
+        # THEN exit 3 as before, no burst clause, no burst slot
         self.assertEqual(r.returncode, 3, r.stderr)
         self.assertIn("all 3 slots of gates held by", r.stderr)
         self.assertNotIn("burst", r.stderr)
-        self.assertFalse((self.state / "locks/gates.4").exists())
+        self.assertFalse((self.state / "locks/gates.b1").exists())
+
+    def test_default_env_json_and_refusal_message_are_exact(self):
+        """With no burst env a base acquire prints exactly this --json dict and a full lock this one message."""
+        # GIVEN one live pid acquiring a 1-slot gates lock, then another live pid blocked
+        holder, other = self.live(), self.live()
+        a = self.lock("acquire", "gates", "--pid", str(holder), "--json")
+        r = self.lock("acquire", "gates", "--pid", str(other))
+        # THEN the dict has exactly these keys and the refusal has no burst clause
+        self.assertEqual(json.loads(a.stdout), {"status": "acquired", "name": "gates", "pid": holder,
+                                                "reaped": [], "burst": False})
+        self.assertEqual(r.returncode, 3)
+        self.assertRegex(r.stderr, rf"^error: gates held by pid {holder} on \S+ since \d\d:\d\d:\d\d \(cap 120m\)\n")
+        self.assertNotIn("burst", r.stderr)
 
     def test_burst_prefers_a_free_base_slot(self):
         """With burst on and a base slot free, the base slot is taken, not a burst one."""
@@ -356,20 +376,20 @@ class Lock(unittest.TestCase):
         r = self.burst(self.live())
         # THEN it gets gates.3, plain output
         self.assertRegex(r.stdout, r"^acquired: gates\.3 \(pid \d+\)\n$")
-        self.assertFalse((self.state / "locks/gates.4").exists())
+        self.assertFalse((self.state / "locks/gates.b1").exists())
 
     def test_burst_slot_taken_when_base_full_and_machine_quiet(self):
-        """Base full, low load, enough memory, newest slot 2 min old: gates.4 is taken and marked burst."""
+        """Base full, low load, enough memory, newest slot 2 min old: gates.b1 is taken and marked burst."""
         # GIVEN three base slots held for two minutes
         self.fill_base()
         # WHEN a fourth pid acquires in text and a fifth in --json
         me = self.live()
         r = self.burst(me)
-        self.age("gates.4", 120)
-        j = self.burst(self.live(), None, "--json")
-        # THEN the fourth got gates.4 (burst); the fifth finds the one burst slot taken
-        self.assertEqual((r.returncode, r.stdout), (0, f"acquired: gates.4 (pid {me}) (burst)\n"), r.stderr)
-        self.assertEqual(self.owner("gates.4")["pid"], me)
+        self.age("gates.b1", 120)
+        j = self.burst(self.live(), args=("--json",))
+        # THEN the fourth got gates.b1 (burst); the fifth finds the one burst slot taken
+        self.assertEqual((r.returncode, r.stdout), (0, f"acquired: gates.b1 (pid {me}) (burst)\n"), r.stderr)
+        self.assertEqual(self.owner("gates.b1")["pid"], me)
         self.assertEqual(j.returncode, 3, j.stdout)
         self.assertIn("burst refused: all 1 burst slots held", j.stderr)
 
@@ -379,12 +399,21 @@ class Lock(unittest.TestCase):
         self.fill_base()
         # WHEN a burst slot is taken, and after release a base slot
         me = self.live()
-        b = json.loads(self.burst(me, None, "--json").stdout)
+        b = self.burst(me, args=("--json",))
+        self.assertEqual(b.returncode, 0, b.stderr)
         self.lock("release", "gates", "--pid", str(self.owner("gates.1")["pid"]))
-        base = json.loads(self.burst(self.live(), None, "--json").stdout)
+        base = self.burst(self.live(), args=("--json",))
+        self.assertEqual(base.returncode, 0, base.stderr)
         # THEN the flag matches
-        self.assertEqual((b["name"], b["burst"]), ("gates.4", True))
-        self.assertEqual((base["name"], base["burst"]), ("gates.1", False))
+        self.assertEqual((json.loads(b.stdout)["name"], json.loads(b.stdout)["burst"]), ("gates.b1", True))
+        self.assertEqual((json.loads(base.stdout)["name"], json.loads(base.stdout)["burst"]), ("gates.1", False))
+
+    def test_plain_mutex_named_like_a_slot_is_never_burst(self):
+        """burst comes from what acquire decided: a plain `v1.2` lock prints burst: false."""
+        # GIVEN a plain mutex acquire with a dotted name
+        r = self.lock("acquire", "v1.2", "--pid", str(self.live()), "--json")
+        # THEN burst is false
+        self.assertEqual(json.loads(r.stdout)["burst"], False, r.stderr)
 
     def test_burst_refused_by_high_load(self):
         """Load over the threshold refuses the burst and the exit-3 message says so in one clause."""
@@ -395,10 +424,10 @@ class Lock(unittest.TestCase):
         # THEN exit 3 with the load clause, nothing written
         self.assertEqual(r.returncode, 3, r.stdout)
         self.assertRegex(r.stderr, r"all 3 slots of gates held by .*; burst refused: load [\d.]+ of cores >= 0\.75")
-        self.assertFalse((self.state / "locks/gates.4").exists())
+        self.assertFalse((self.state / "locks/gates.b1").exists())
 
     def test_burst_max_load_env_overrides_the_threshold(self):
-        """AGENT_CLI_BURST_MAX_LOAD=0 means no load is low enough; 5 lets a heavy-looking reading through."""
+        """AGENT_CLI_BURST_MAX_LOAD=0 means no load is low enough; 1000 lets a heavy-looking reading through."""
         # GIVEN base full, load 0
         self.fill_base()
         # WHEN threshold 0 then threshold 1000 (load 1)
@@ -421,6 +450,38 @@ class Lock(unittest.TestCase):
         self.assertIn("burst refused: 4.0 GB memory available < 10 GB", no.stderr)
         self.assertEqual(yes.returncode, 0, yes.stderr)
 
+    def test_unreadable_meminfo_skips_the_memory_check(self):
+        """No /proc/meminfo (macOS): the memory check is skipped and the burst is admitted."""
+        # GIVEN base full, the meminfo path pointing at a file that does not exist
+        self.fill_base()
+        # WHEN a fourth acquires with no planted memory reading
+        r = self.burst(self.live(), {"AGENT_CLI_MEM_AVAILABLE_GB": None, "AGENT_CLI_MEMINFO": str(self.tmp / "none")})
+        # THEN it gets the burst slot
+        self.assertEqual((r.returncode, r.stdout.endswith("(burst)\n")), (0, True), r.stderr)
+
+    def test_meminfo_file_is_read_for_memory_available(self):
+        """MemAvailable from the meminfo file (kB) is what the memory check compares."""
+        # GIVEN base full and a meminfo file reporting 2 GB available
+        self.fill_base()
+        info = self.tmp / "meminfo"
+        info.write_text("MemTotal:       65000000 kB\nMemAvailable:    2097152 kB\n")
+        # WHEN a fourth acquires
+        r = self.burst(self.live(), {"AGENT_CLI_MEM_AVAILABLE_GB": None, "AGENT_CLI_MEMINFO": str(info)})
+        # THEN refused at 2.0 GB
+        self.assertEqual(r.returncode, 3, r.stdout)
+        self.assertIn("burst refused: 2.0 GB memory available < 10 GB", r.stderr)
+
+    def test_unreadable_load_refuses_the_burst(self):
+        """A failing os.getloadavg is not a quiet machine: the refusal says "load unreadable"."""
+        # GIVEN os.getloadavg raising and no planted reading
+        with mock.patch.dict(os.environ, {}, clear=False), \
+                mock.patch.object(lock.os, "getloadavg", side_effect=OSError):
+            os.environ.pop("AGENT_CLI_LOADAVG", None)
+            # WHEN the burst check runs
+            why = lock.burst_refusal([], 0, 3, 1)
+        # THEN it refuses naming the unreadable load
+        self.assertEqual(why, "load unreadable >= 0.75")
+
     def test_burst_refused_when_newest_slot_is_too_new(self):
         """A slot started 5 s ago (load average has not caught up) refuses; AGENT_CLI_BURST_SPACING_S=1 lets it in."""
         # GIVEN base full, slot 3 started 5 s ago
@@ -436,98 +497,165 @@ class Lock(unittest.TestCase):
 
     def test_burst_spacing_counts_the_newest_burst_slot_too(self):
         """With two burst slots, a burst slot taken 5 s ago blocks the next one though all base slots are old."""
-        # GIVEN base full (old), gates.4 taken just now, B=2
+        # GIVEN base full (old), gates.b1 taken just now, B=2
         self.fill_base()
         env = {"AGENT_CLI_GATES_BURST": "2"}
         first = self.burst(self.live(), env)
-        # WHEN another pid asks for gates.5 straight away, then after gates.4 is 2 min old
-        soon = self.burst(self.live(), env)
-        self.age("gates.4", 120)
-        later = self.burst(self.live(), env)
-        # THEN the first is refused for spacing, the later one gets gates.5
         self.assertEqual(first.returncode, 0, first.stderr)
+        # WHEN another pid asks for gates.b2 straight away, then after gates.b1 is 2 min old
+        soon = self.burst(self.live(), env)
+        self.age("gates.b1", 120)
+        later = self.burst(self.live(), env)
+        # THEN the first is refused for spacing, the later one gets gates.b2
         self.assertEqual(soon.returncode, 3, soon.stdout)
         self.assertIn("burst refused: newest slot started", soon.stderr)
-        self.assertRegex(later.stdout, r"^acquired: gates\.5 \(pid \d+\) \(burst\)\n$")
+        self.assertRegex(later.stdout, r"^acquired: gates\.b2 \(pid \d+\) \(burst\)\n$")
 
     def test_burst_refused_when_type_checkers_fill_n_plus_b(self):
         """Running tsc count must stay under N+B: 3 tsc leave room for a burst slot (N=3, B=1), 4 do not."""
         # GIVEN base full and three tsc running
         self.fill_base()
-        tsc = self.fake_tsc(3)
+        self.fake_tsc(3)
         # WHEN a fourth tries, then a fourth tsc appears
         ok = self.burst(self.live())
-        self.lock("release", "gates", "--pid", str(self.owner("gates.4")["pid"]))
+        self.assertEqual(ok.returncode, 0, ok.stderr)
+        self.lock("release", "gates", "--pid", str(self.owner("gates.b1")["pid"]))
         self.fake_tsc(1)
         no = self.burst(self.live())
         # THEN 3 tsc allow it, 4 refuse with the type-checker clause
-        self.assertEqual(ok.returncode, 0, ok.stderr)
         self.assertEqual(no.returncode, 3, no.stdout)
         self.assertIn("burst refused: 4 type checkers running >= 4", no.stderr)
+
+    def test_dead_base_holder_is_reaped_before_any_burst(self):
+        """Burst on, two live base holders and one dead: the dead base slot is reaped, no burst slot."""
+        # GIVEN gates.3 held by a pid that has exited
+        pids = self.fill_base(dead=(3,))
+        # WHEN a live pid acquires with burst on
+        me = self.live()
+        r = self.burst(me)
+        # THEN it reaps and takes the base slot, not a burst one
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertRegex(r.stdout, rf"^reaped: pid {pids[2]} on .*\nacquired: gates\.3 \(pid {me}\)\n$")
+        self.assertFalse((self.state / "locks/gates.b1").exists())
+
+    def test_dead_base_holder_with_three_tsc_still_blocks_and_does_not_burst(self):
+        """One dead base holder plus 3 tsc running (N=3): held, and the free-looking slot is no way to a burst."""
+        # GIVEN gates.3 dead and three tsc running
+        self.fill_base(dead=(3,))
+        self.fake_tsc(3)
+        # WHEN a live pid acquires with burst on
+        r = self.burst(self.live())
+        # THEN exit 3 and no burst slot
+        self.assertEqual(r.returncode, 3, r.stdout)
+        self.assertFalse((self.state / "locks/gates.b1").exists())
 
     def test_no_burst_flag_ignores_the_env(self):
         """--no-burst keeps a full-suite run at N slots even with the env on and the machine quiet."""
         # GIVEN base full and a quiet machine, burst env on
         self.fill_base()
         # WHEN a fourth acquires with --no-burst
-        r = self.burst(self.live(), None, "--no-burst")
+        r = self.burst(self.live(), args=("--no-burst",))
         # THEN exit 3 without a burst clause
         self.assertEqual(r.returncode, 3, r.stdout)
         self.assertNotIn("burst", r.stderr)
 
+    def test_same_pid_is_already_held_whatever_burst_flags_say(self):
+        """A pid that took gates.b1 gets already-held for it from a --no-burst call, and from a call with a
+        base slot free: it never holds two slots."""
+        # GIVEN a pid holding the burst slot
+        self.fill_base()
+        me = self.live()
+        self.assertEqual(self.burst(me).returncode, 0)
+        # WHEN it acquires again with --no-burst, then after a base slot frees up, then without any burst env
+        no = self.burst(me, args=("--no-burst", "--json"))
+        self.lock("release", "gates", "--pid", str(self.owner("gates.1")["pid"]))
+        free = self.burst(me, args=("--no-burst",))
+        plain = self.lock("acquire", "gates", "--slots", "3", "--pid", str(me))
+        # THEN each says already held: gates.b1 and gates.1 stays free
+        self.assertEqual(json.loads(no.stdout), {"status": "already-held", "name": "gates.b1", "pid": me, "burst": True})
+        self.assertEqual(free.stdout, f"already held: gates.b1 (pid {me})\n")
+        self.assertEqual(plain.stdout, f"already held: gates.b1 (pid {me})\n")
+        self.assertFalse((self.state / "locks/gates.1").exists())
+
+    def test_burst_slot_of_a_smaller_n_does_not_collide_with_a_larger_n_base_slot(self):
+        """A --slots 2 caller's burst slot is gates.b1, so a --slots 3 caller still finds gates.3 free."""
+        # GIVEN two base slots held and a --slots 2 caller that took the burst slot
+        self.fill_base(2)
+        me = self.live()
+        r = self.burst(me, slots="2")
+        self.assertEqual((r.returncode, r.stdout), (0, f"acquired: gates.b1 (pid {me}) (burst)\n"), r.stderr)
+        # WHEN a --slots 3 caller acquires
+        other = self.live()
+        o = self.burst(other, slots="3")
+        # THEN it takes the free base slot gates.3, not a slot belonging to the burst holder
+        self.assertEqual(o.stdout, f"acquired: gates.3 (pid {other})\n", o.stderr)
+        self.assertEqual(self.owner("gates.b1")["pid"], me)
+
+    def test_bad_burst_env_is_refused(self):
+        """A non-whole, nan, inf or negative env value is exit 2 naming the variable, even uncontended."""
+        for var, val in [("AGENT_CLI_GATES_BURST", "lots"), ("AGENT_CLI_GATES_BURST", "1.5"),
+                         ("AGENT_CLI_BURST_MAX_LOAD", "nan"), ("AGENT_CLI_BURST_MIN_FREE_GB", "inf"),
+                         ("AGENT_CLI_BURST_SPACING_S", "-1")]:
+            # GIVEN a free gates lock (no contention) and a bad value
+            # WHEN acquire runs with burst on
+            r = self.lock("acquire", "gates", "--pid", str(self.live()), env={**self.LOW, var: val})
+            # THEN refused (2) naming the variable, nothing written
+            with self.subTest(var=var, val=val):
+                self.assertEqual(r.returncode, 2, r.stderr)
+                self.assertIn(var, r.stderr)
+                self.assertFalse((self.state / "locks").exists() and any((self.state / "locks").glob("gates*")))
+        r = self.lock("acquire", "gates", "--pid", str(self.live()), env={"AGENT_CLI_GATES_BURST": "-1"})
+        self.assertIn("give a whole number, 0 or more", r.stderr)
+
     def test_burst_env_applies_only_to_the_gates_lock(self):
-        """Another lock name never bursts: the env is read for names in TSC_GATED only."""
-        # GIVEN a held 1-slot lock "other" and burst env on
+        """Another lock name never bursts, and its bad burst env is not even read."""
+        # GIVEN a held 1-slot lock "other" and burst env on (one bad value)
         self.lock("acquire", "other", "--pid", str(self.live()))
         # WHEN another pid asks for it
-        r = self.lock("acquire", "other", "--pid", str(self.live()), env=self.LOW)
+        r = self.lock("acquire", "other", "--pid", str(self.live()), env={**self.LOW, "AGENT_CLI_BURST_MAX_LOAD": "x"})
         # THEN blocked
         self.assertEqual(r.returncode, 3, r.stdout)
 
-    def test_bad_burst_env_is_refused(self):
-        """A non-numeric AGENT_CLI_GATES_BURST is exit 2 naming the variable, not silently off."""
-        r = self.lock("acquire", "gates", "--pid", str(self.live()), env={"AGENT_CLI_GATES_BURST": "lots"})
-        self.assertEqual(r.returncode, 2, r.stderr)
-        self.assertIn("AGENT_CLI_GATES_BURST", r.stderr)
-        self.assertFalse((self.state / "locks").exists() and any((self.state / "locks").glob("gates*")))
-
     def test_burst_slot_shows_in_status_and_releases_by_owner(self):
-        """status lists gates.4 with its owner; release gates --pid <burst pid> removes only that slot."""
+        """status (text and json) marks gates.b1 as burst; release gates --pid <burst pid> removes only it."""
         # GIVEN a burst slot held
         self.fill_base()
         me = self.live()
-        self.burst(me)
+        self.assertEqual(self.burst(me).returncode, 0)
         # WHEN status and then release by the burst owner run
         s = self.lock("status", "--json")
+        t = self.lock("status")
         rel = self.lock("release", "gates", "--pid", str(me))
-        # THEN the slot is listed, released (the message names the lock as given), base slots stay
+        # THEN the slot is listed as burst, released (the message names the lock as given), base slots stay
         rows = {json.loads(line)["name"]: json.loads(line) for line in s.stdout.splitlines()}
-        self.assertEqual(rows["gates.4"]["pid"], me)
+        self.assertEqual((rows["gates.b1"]["pid"], rows["gates.b1"]["burst"], rows["gates.1"]["burst"]),
+                         (me, True, False))
+        self.assertRegex(t.stdout, r"gates\.b1 .*alive  burst\n")
         self.assertEqual(rel.returncode, 0, rel.stderr)
         self.assertTrue(rel.stdout.startswith("released: gates "), rel.stdout)
-        self.assertFalse((self.state / "locks/gates.4").exists())
+        self.assertFalse((self.state / "locks/gates.b1").exists())
         self.assertTrue((self.state / "locks/gates.1").exists())
 
     def test_dead_burst_slot_is_reaped_and_retaken(self):
         """A burst slot whose holder died is reaped by the next burst acquire, printing the old owner."""
-        # GIVEN base full and gates.4 held by a pid that has exited, started 2 min ago
+        # GIVEN base full and gates.b1 held by a pid that has exited, started 2 min ago
         self.fill_base()
         gone = self.dead()
-        self.burst(gone)
-        self.age("gates.4", 120)
+        self.assertEqual(self.burst(gone).returncode, 0)
+        self.age("gates.b1", 120)
         # WHEN a live pid bursts
         me = self.live()
         r = self.burst(me)
-        # THEN it reaps gates.4 and holds it
+        # THEN it reaps gates.b1 and holds it
         self.assertEqual(r.returncode, 0, r.stderr)
-        self.assertRegex(r.stdout, rf"^reaped: pid {gone} on .*\nacquired: gates\.4 \(pid {me}\) \(burst\)\n$")
-        self.assertEqual(self.owner("gates.4")["pid"], me)
+        self.assertRegex(r.stdout, rf"^reaped: pid {gone} on .*\nacquired: gates\.b1 \(pid {me}\) \(burst\)\n$")
+        self.assertEqual(self.owner("gates.b1")["pid"], me)
 
     def test_dead_burst_holder_does_not_count_for_spacing(self):
         """A dead burst holder started 1 s ago is stale, so it must not make the newest-slot check refuse."""
-        # GIVEN base full (old), gates.4 held by a dead pid just now
+        # GIVEN base full (old), gates.b1 held by a dead pid just now
         self.fill_base()
-        self.burst(self.dead())
+        self.assertEqual(self.burst(self.dead()).returncode, 0)
         # WHEN a live pid bursts
         r = self.burst(self.live())
         # THEN it is admitted
