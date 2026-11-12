@@ -35,7 +35,14 @@ ONE_SCRIPT = ("bash -c 'agent-cli lock acquire gates --pid $$ --wait 30m || exit
               "agent-cli lock release gates --pid $$'")
 EXAMPLES = [ONE_SCRIPT, "agent-cli lock status --json", "agent-cli lock release gates --pid 4121"]
 NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
-BURST = re.compile(r".+\.b\d+")  # a burst slot dir: gates.b1
+BURST = re.compile(r"(.+)\.b\d+")
+MAX_BURST = 16  # AGENT_CLI_GATES_BURST upper bound
+
+
+def is_burst(dirname):
+    """A burst slot dir: <gated lock>.b<n>, e.g. gates.b1 (TSC_GATED is read at call time)."""
+    m = BURST.fullmatch(dirname)
+    return bool(m) and m.group(1) in TSC_GATED
 
 
 def register(sub):
@@ -163,19 +170,20 @@ def held_names(name):
             if p.is_dir() and (p.name == name or re.fullmatch(re.escape(name) + r"\.(\d+|b\d+)", p.name))]
 
 
-def envnum(var, default, cast=float):
+def envnum(var, default, cast=float, hi=None):
     """A finite number >= 0 from env var `var` (default when unset); a bad value exits 2 naming the variable."""
     raw = os.environ.get(var)
     if raw in (None, ""):
         return default
     try:
         v = cast(raw)
-        if v < 0 or not math.isfinite(v):
+        if v < 0 or not math.isfinite(v) or (hi is not None and v > hi):
             raise ValueError
         return v
-    except ValueError:
+    except (ValueError, OverflowError):
         what = "a whole number" if cast is int else "a number"
-        core.die(Exit.REFUSED, f"{var}={raw!r}: give {what}, 0 or more", f"unset {var}")
+        core.die(Exit.REFUSED, f"{var}={raw!r}: give {what} {'from 0 to %s' % hi if hi is not None else ', 0 or more'}"
+                 .replace(" ,", ","), f"unset {var}")
 
 
 def burst_conf():
@@ -237,14 +245,14 @@ def try_take(name, pid, cap, dry_run=False, slots=1, burst=0):
         for n in held_names(name):
             o = read(n)
             if o and o["pid"] == pid and o["host"] == here:
-                return "already-held", n, [], "", bool(BURST.fullmatch(n))
+                return "already-held", n, [], "", is_burst(n)
         held = [(n, read(n)) for n in slot_names(name, slots)]
         extra = [(n, read(n)) for n in (f"{name}.b{i}" for i in range(1, burst + 1))]
         busy = tsc_pids() if name in TSC_GATED else []
         live = [o for _, o in held + extra if o and not stale(o)]
         crowd = live + [{"pid": p, "tsc": True} for p in busy] if len(busy) >= slots else live
         free = [(n, o) for n, o in held if not o or stale(o)]
-        why, is_burst = "", False
+        why, bursting = "", False
         if free and len(busy) < slots:
             pick = free[0]
         elif free or not burst:
@@ -255,13 +263,13 @@ def try_take(name, pid, cap, dry_run=False, slots=1, burst=0):
                    else burst_refusal(live, len(busy), slots, burst)) or ""
             if why:
                 return "held", None, crowd, why, False
-            pick, is_burst = free_extra[0], True
+            pick, bursting = free_extra[0], True
         n, o = pick
         if not dry_run:
             if o:
                 shutil.rmtree(root() / n)
             take(n, pid, cap)
-        return "acquired", n, [o] if o else [], "", is_burst
+        return "acquired", n, [o] if o else [], "", bursting
 
 
 def take_waiting(name, pid, cap, wait_s, example, dry_run=False, slots=1, burst=0):
@@ -303,7 +311,7 @@ def acquire(a):
     if a.slots < 1:
         core.die(Exit.REFUSED, f"--slots {a.slots}: give 1 or more", ONE_SCRIPT)
     cap, wait_s = core.duration(a.cap, ONE_SCRIPT), core.duration(a.wait, ONE_SCRIPT)
-    burst = 0 if a.no_burst or a.name not in TSC_GATED else envnum("AGENT_CLI_GATES_BURST", 0, int)
+    burst = 0 if a.no_burst or a.name not in TSC_GATED else envnum("AGENT_CLI_GATES_BURST", 0, int, MAX_BURST)
     if burst:
         burst_conf()  # a bad threshold fails now, not only when a burst is first tried
     slots = f" --slots {a.slots}" if a.slots > 1 else ""
@@ -352,14 +360,18 @@ def release(a):
 def status(a):
     if a.name:
         check_name(a.name, EXAMPLES[1])
-    names = [a.name] if a.name else sorted(p.name for p in root().glob("*") if p.is_dir()) if root().is_dir() else []
+    if a.name:
+        names = held_names(a.name)
+    else:
+        names = sorted(p.name for p in root().glob("*") if p.is_dir()) if root().is_dir() else []
     rows = []
     for n in names:
         o = read(n)
         if o:
             rows.append({"name": n, "status": "held", "pid": o["pid"], "host": o["host"],
-                         "age_s": int(time.time() - o["started"]), "cap_s": o["cap"], "alive": alive(o), "stale": stale(o), "burst": bool(BURST.fullmatch(n)),
-                         "cmdline": o["cmdline"]})
+                         "age_s": int(time.time() - o["started"]), "cap_s": o["cap"],
+                         "alive": alive(o), "stale": stale(o),
+                         "burst": is_burst(n), "cmdline": o["cmdline"]})
     for r in rows:
         core.out(a, r, f"{r['name']}  pid {r['pid']} on {r['host']}  age {r['age_s']}s  cap {r['cap_s']}s  "
                   f"{'alive' if r['alive'] else 'dead'}{'  stale' if r['stale'] else ''}"

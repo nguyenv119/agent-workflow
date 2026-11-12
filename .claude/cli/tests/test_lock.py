@@ -605,7 +605,43 @@ class Lock(unittest.TestCase):
                 self.assertIn(var, r.stderr)
                 self.assertFalse((self.state / "locks").exists() and any((self.state / "locks").glob("gates*")))
         r = self.lock("acquire", "gates", "--pid", str(self.live()), env={"AGENT_CLI_GATES_BURST": "-1"})
-        self.assertIn("give a whole number, 0 or more", r.stderr)
+        self.assertIn("give a whole number from 0 to 16", r.stderr)
+
+    def test_burst_count_above_16_is_refused(self):
+        """AGENT_CLI_GATES_BURST over 16 would make every poll build millions of paths: exit 2, no hang."""
+        for val in ("17", "50000000"):
+            # GIVEN a free gates lock and a huge B
+            # WHEN acquire runs
+            r = self.lock("acquire", "gates", "--pid", str(self.live()), env={"AGENT_CLI_GATES_BURST": val})
+            # THEN refused naming the variable and the range
+            with self.subTest(val=val):
+                self.assertEqual(r.returncode, 2, r.stderr)
+                self.assertIn("AGENT_CLI_GATES_BURST", r.stderr)
+                self.assertIn("give a whole number from 0 to 16", r.stderr)
+        ok = self.lock("acquire", "gates", "--pid", str(self.live()), env={"AGENT_CLI_GATES_BURST": "16"})
+        self.assertEqual(ok.returncode, 0, ok.stderr)
+
+    def test_status_of_a_name_lists_every_slot_dir(self):
+        """`status gates` shows gates.1, gates.2 and gates.b1, not "not held: gates" while slots are held."""
+        # GIVEN two base slots and a burst slot held
+        self.fill_base(2, age=120)
+        self.assertEqual(self.burst(self.live(), slots="2").returncode, 0)
+        # WHEN status is asked for the name, as text and json
+        t = self.lock("status", "gates")
+        j = self.lock("status", "gates", "--json")
+        # THEN every slot is listed, the burst one marked
+        self.assertEqual([line.split()[0] for line in t.stdout.splitlines()], ["gates.1", "gates.2", "gates.b1"])
+        self.assertEqual([(r["name"], r["burst"]) for r in map(json.loads, j.stdout.splitlines())],
+                         [("gates.1", False), ("gates.2", False), ("gates.b1", True)])
+
+    def test_only_gates_slots_named_bN_are_burst(self):
+        """A plain lock that happens to be called foo.b2 is not a burst slot in status."""
+        # GIVEN a plain lock named foo.b2
+        self.lock("acquire", "foo.b2", "--pid", str(self.live()))
+        # WHEN status runs
+        row = json.loads(self.lock("status", "--json").stdout)
+        # THEN burst is false
+        self.assertEqual((row["name"], row["burst"]), ("foo.b2", False))
 
     def test_burst_env_applies_only_to_the_gates_lock(self):
         """Another lock name never bursts, and its bad burst env is not even read."""
