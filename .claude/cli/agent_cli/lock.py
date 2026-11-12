@@ -1,13 +1,20 @@
 """`agent-cli lock`: a named mutex in a state dir that reaps a lock whose holder died or ran past its cap.
 With --slots N it is a semaphore: N lock dirs <name>.1 .. <name>.N, and acquire takes the first free one.
 The gates lock also counts running type checkers (typescript/bin/tsc processes): a holder that died leaves
-its tsc children running, so acquire reports "held" while they number >= --slots.
+its tsc children running, so a base slot is "held" while they number >= --slots (a burst slot, below, allows
+up to --slots + B). Every caller of one lock must pass the same --slots.
+Burst slots (gates only): AGENT_CLI_GATES_BURST=B (default 0, off) adds gates.b1..gates.bB, taken only
+while every base slot is held and the machine is quiet: 1-minute load / cores < AGENT_CLI_BURST_MAX_LOAD (0.75),
+MemAvailable >= AGENT_CLI_BURST_MIN_FREE_GB (10), the newest held slot started >= AGENT_CLI_BURST_SPACING_S (60)
+ago (load average lags about a minute) and running tsc < N+B. acquire --no-burst ignores the env var.
+AGENT_CLI_LOADAVG, AGENT_CLI_MEM_AVAILABLE_GB and AGENT_CLI_MEMINFO (path) plant the readings (tests).
 
 Every read-modify-write of a lock dir runs under an flock on locks/.guard, so two reapers never both win.
 """
 import contextlib
 import fcntl
 import json
+import math
 import os
 import re
 import shutil
@@ -28,22 +35,38 @@ ONE_SCRIPT = ("bash -c 'agent-cli lock acquire gates --pid $$ --wait 30m || exit
               "agent-cli lock release gates --pid $$'")
 EXAMPLES = [ONE_SCRIPT, "agent-cli lock status --json", "agent-cli lock release gates --pid 4121"]
 NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
+BURST = re.compile(r"(.+)\.b\d+")
+MAX_BURST = 16  # AGENT_CLI_GATES_BURST upper bound
+
+
+def is_burst(dirname):
+    """A burst slot dir: <gated lock>.b<n>, e.g. gates.b1 (TSC_GATED is read at call time)."""
+    m = BURST.fullmatch(dirname)
+    return bool(m) and m.group(1) in TSC_GATED
 
 
 def register(sub):
     p, ls = core.group(sub, "lock", "named mutex for parallel lanes; reaps a lock whose holder died", EXAMPLES)
     p.description = PRINCIPLE
     p = core.subcommand(ls, "acquire", "take a lock; exit 3 naming the holder if a live process holds it",
-                        [ONE_SCRIPT, "agent-cli lock acquire gates --pid $$ --cap 120m --wait 10m"])
+                        [ONE_SCRIPT, "agent-cli lock acquire gates --pid $$ --cap 120m --wait 10m",
+                         "AGENT_CLI_GATES_BURST=2 agent-cli lock acquire gates --slots 3 --pid $$ --wait 10m",
+                         "agent-cli lock acquire gates --slots 3 --no-burst --pid $$ --wait 30m"])
     p.description = PRINCIPLE
     p.add_argument("name")
     p.add_argument("--cap", default="120m", help="others may reap the lock after this long (default 120m)")
     p.add_argument("--wait", default="0", help="keep trying this long before exit 3 (default 0)")
     p.add_argument("--slots", type=int, default=1,
-                   help="up to this many holders at once, as <name>.1..<name>.N (default 1: a plain mutex)")
+                   help="up to this many holders at once, as <name>.1..<name>.N (default 1: a plain mutex); "
+                        "every caller of one lock must pass the same N")
+    p.add_argument("--no-burst", action="store_true",
+                   help="ignore AGENT_CLI_GATES_BURST: stay at --slots (full-suite runs)")
     p.add_argument("--pid", type=int, required=True, help="owner pid: the script that does the work ($$)")
     p.add_argument("--dry-run", action="store_true", help="say what would happen, write nothing")
     p.add_argument("--json", action="store_true", help="one JSON object")
+    p.epilog = ("env (gates only): AGENT_CLI_GATES_BURST=B extra slots gates.b1..gates.bB while all N are held and "
+                "the box is quiet (default 0 = off); AGENT_CLI_BURST_MAX_LOAD=0.75 (1-min load / cores), "
+                "AGENT_CLI_BURST_MIN_FREE_GB=10, AGENT_CLI_BURST_SPACING_S=60 (newest slot age).")
     p.set_defaults(func=acquire)
     p = core.subcommand(ls, "release", "drop a lock you own (--force: any owner); not held = already done",
                         ["agent-cli lock release gates --pid $$",
@@ -140,49 +163,130 @@ def slot_names(name, slots):
 
 
 def held_names(name):
-    """name and its slot dirs name.<n> that exist, for release."""
+    """name and its slot dirs name.<n> and burst slot dirs name.b<n> that exist, for release."""
     if not root().is_dir():
         return []
     return [p.name for p in sorted(root().glob(f"{name}*"))
-            if p.is_dir() and (p.name == name or re.fullmatch(re.escape(name) + r"\.\d+", p.name))]
+            if p.is_dir() and (p.name == name or re.fullmatch(re.escape(name) + r"\.(\d+|b\d+)", p.name))]
 
 
-def try_take(name, pid, cap, dry_run=False, slots=1):
-    """One acquire attempt under the guard; never exits. Returns (status, slot name, owners):
-    ("acquired", slot, [reaped owner]) / ("acquired", slot, []), ("already-held", slot, []) or
-    ("held", None, every live holder), also when tsc processes (gates only) already number >= slots."""
+def envnum(var, default, cast=float, hi=None):
+    """A finite number >= 0 from env var `var` (default when unset); a bad value exits 2 naming the variable."""
+    raw = os.environ.get(var)
+    if raw in (None, ""):
+        return default
+    try:
+        v = cast(raw)
+        if v < 0 or not math.isfinite(v) or (hi is not None and v > hi):
+            raise ValueError
+        return v
+    except (ValueError, OverflowError):
+        what = "a whole number" if cast is int else "a number"
+        core.die(Exit.REFUSED, f"{var}={raw!r}: give {what} {'from 0 to %s' % hi if hi is not None else ', 0 or more'}"
+                 .replace(" ,", ","), f"unset {var}")
+
+
+def burst_conf():
+    """(max load per core, min free GB, spacing s) from env, each validated; the planted test readings too."""
+    envnum("AGENT_CLI_LOADAVG", 0.0)
+    envnum("AGENT_CLI_MEM_AVAILABLE_GB", 0.0)
+    return (envnum("AGENT_CLI_BURST_MAX_LOAD", 0.75), envnum("AGENT_CLI_BURST_MIN_FREE_GB", 10.0),
+            envnum("AGENT_CLI_BURST_SPACING_S", 60.0))
+
+
+def mem_available_gb():
+    """MemAvailable in GB (AGENT_CLI_MEM_AVAILABLE_GB plants it), or None when /proc/meminfo is unreadable."""
+    if os.environ.get("AGENT_CLI_MEM_AVAILABLE_GB"):
+        return envnum("AGENT_CLI_MEM_AVAILABLE_GB", 0.0)
+    try:
+        for line in Path(os.environ.get("AGENT_CLI_MEMINFO") or "/proc/meminfo").read_text().splitlines():
+            if line.startswith("MemAvailable:"):
+                return int(line.split()[1]) / 1024 / 1024
+    except (OSError, ValueError, IndexError):
+        pass
+    return None
+
+
+def load_per_core():
+    """1-minute load average / cores (AGENT_CLI_LOADAVG plants the load), or None when unreadable."""
+    try:
+        load = envnum("AGENT_CLI_LOADAVG", os.getloadavg()[0])
+    except OSError:
+        return None
+    return load / (os.cpu_count() or 1)
+
+
+def burst_refusal(live, n_busy, slots, burst):
+    """Why a burst slot may not be taken now (one clause), or None when the machine is quiet. `live` are the
+    owners of every held, non-stale slot; n_busy the running tsc count."""
+    max_load, min_gb, spacing = burst_conf()
+    load, gb = load_per_core(), mem_available_gb()
+    if load is None or load >= max_load:
+        return f"load {'unreadable' if load is None else f'{load:.2f} of cores'} >= {max_load:g}"
+    if gb is not None and gb < min_gb:
+        return f"{gb:.1f} GB memory available < {min_gb:g} GB"
+    newest = max((o["started"] for o in live), default=None)
+    if newest is not None and time.time() - newest < spacing:
+        return f"newest slot started {int(time.time() - newest)}s ago < {spacing:g}s"
+    if n_busy >= slots + burst:
+        return f"{n_busy} type checkers running >= {slots + burst}"
+    return None
+
+
+def try_take(name, pid, cap, dry_run=False, slots=1, burst=0):
+    """One acquire attempt under the guard; never exits. Returns (status, slot name, owners, why, is_burst):
+    ("acquired", slot, [reaped owner], "", burst?) / ("acquired", slot, [], "", burst?), ("already-held", slot,
+    [], "", burst?) or ("held", None, every live holder, why a burst slot was refused or "", False), also when
+    tsc processes (gates only) already number >= slots. A pid that holds any slot of `name`, base or burst,
+    is already-held whatever slots/burst say. burst > 0 (gates only) adds slots name.b1..name.b<burst>, see
+    the module docstring."""
     with guard():
         here = socket.gethostname()
-        held = [(n, read(n)) for n in slot_names(name, slots)]
-        for n, o in held:
+        for n in held_names(name):
+            o = read(n)
             if o and o["pid"] == pid and o["host"] == here:
-                return "already-held", n, []
+                return "already-held", n, [], "", is_burst(n)
+        held = [(n, read(n)) for n in slot_names(name, slots)]
+        extra = [(n, read(n)) for n in (f"{name}.b{i}" for i in range(1, burst + 1))]
         busy = tsc_pids() if name in TSC_GATED else []
-        if len(busy) >= slots:  # a dead holder's tsc children outlive it: they still fill the machine
-            return "held", None, [o for _, o in held if o and not stale(o)] + [{"pid": p, "tsc": True} for p in busy]
-        for n, o in held:
-            if not o or stale(o):
-                if not dry_run:
-                    if o:
-                        shutil.rmtree(root() / n)
-                    take(n, pid, cap)
-                return "acquired", n, [o] if o else []
-        return "held", None, [o for _, o in held]
+        live = [o for _, o in held + extra if o and not stale(o)]
+        crowd = live + [{"pid": p, "tsc": True} for p in busy] if len(busy) >= slots else live
+        free = [(n, o) for n, o in held if not o or stale(o)]
+        why, bursting = "", False
+        if free and len(busy) < slots:
+            pick = free[0]
+        elif free or not burst:
+            return "held", None, crowd, why, False
+        else:
+            free_extra = [(n, o) for n, o in extra if not o or stale(o)]
+            why = ("all %d burst slots held" % burst if not free_extra
+                   else burst_refusal(live, len(busy), slots, burst)) or ""
+            if why:
+                return "held", None, crowd, why, False
+            pick, bursting = free_extra[0], True
+        n, o = pick
+        if not dry_run:
+            if o:
+                shutil.rmtree(root() / n)
+            take(n, pid, cap)
+        return "acquired", n, [o] if o else [], "", bursting
 
 
-def take_waiting(name, pid, cap, wait_s, example, dry_run=False, slots=1):
-    """try_take every second for up to wait_s; exit 3 naming the holders (and example) if every slot stays held."""
-    holders = []
+def take_waiting(name, pid, cap, wait_s, example, dry_run=False, slots=1, burst=0):
+    """try_take every second for up to wait_s; exit 3 naming the holders (and example) if every slot stays held.
+    Returns (status, slot, owners, is_burst)."""
+    holders, why = [], [""]
 
     def check(_left):
-        status, slot, owners = try_take(name, pid, cap, dry_run, slots)
+        status, slot, owners, why[0], is_burst = try_take(name, pid, cap, dry_run, slots, burst)
         holders[:] = owners
-        return None if status == "held" else (status, slot, owners)
+        return None if status == "held" else (status, slot, owners, is_burst)
 
     got = wait.poll(check, 1, wait_s)
     if got is None:
         what = name if slots <= 1 else f"all {slots} slots of {name}"
-        core.die(Exit.BLOCKED, f"{what} held by {'; '.join(describe(o) for o in holders)}", example)
+        refused = f"; burst refused: {why[0]}" if why[0] else ""
+        core.die(Exit.BLOCKED, f"{what} held by {'; '.join(describe(o) for o in holders)}{refused}", example)
     return got
 
 
@@ -207,18 +311,22 @@ def acquire(a):
     if a.slots < 1:
         core.die(Exit.REFUSED, f"--slots {a.slots}: give 1 or more", ONE_SCRIPT)
     cap, wait_s = core.duration(a.cap, ONE_SCRIPT), core.duration(a.wait, ONE_SCRIPT)
+    burst = 0 if a.no_burst or a.name not in TSC_GATED else envnum("AGENT_CLI_GATES_BURST", 0, int, MAX_BURST)
+    if burst:
+        burst_conf()  # a bad threshold fails now, not only when a burst is first tried
     slots = f" --slots {a.slots}" if a.slots > 1 else ""
-    status, slot, reaped = take_waiting(a.name, a.pid, cap, wait_s,
+    status, slot, reaped, is_burst = take_waiting(a.name, a.pid, cap, wait_s,
                                         f"agent-cli lock acquire {a.name}{slots} --pid $$ --wait 10m",
-                                        a.dry_run, a.slots)
+                                        a.dry_run, a.slots, burst)
     if status == "already-held":
-        return core.out(a, {"status": status, "name": slot, "pid": a.pid}, f"already held: {slot} (pid {a.pid})")
+        return core.out(a, {"status": status, "name": slot, "pid": a.pid, "burst": is_burst},
+                        f"already held: {slot} (pid {a.pid})")
     reaped = reaped and describe(reaped[0])
     if reaped and not a.json:
         print(f"reaped: {reaped}")
     verb = "would-acquire" if a.dry_run else "acquired"
-    return core.out(a, {"status": verb, "name": slot, "pid": a.pid, "reaped": reaped},
-                    f"{verb}: {slot} (pid {a.pid})")
+    return core.out(a, {"status": verb, "name": slot, "pid": a.pid, "reaped": reaped, "burst": is_burst},
+                    f"{verb}: {slot} (pid {a.pid}){' (burst)' if is_burst else ''}")
 
 
 def take(name, pid, cap):
@@ -252,16 +360,22 @@ def release(a):
 def status(a):
     if a.name:
         check_name(a.name, EXAMPLES[1])
-    names = [a.name] if a.name else sorted(p.name for p in root().glob("*") if p.is_dir()) if root().is_dir() else []
+    if a.name:
+        names = held_names(a.name)
+    else:
+        names = sorted(p.name for p in root().glob("*") if p.is_dir()) if root().is_dir() else []
     rows = []
     for n in names:
         o = read(n)
         if o:
             rows.append({"name": n, "status": "held", "pid": o["pid"], "host": o["host"],
-                         "age_s": int(time.time() - o["started"]), "cap_s": o["cap"], "alive": alive(o), "stale": stale(o), "cmdline": o["cmdline"]})
+                         "age_s": int(time.time() - o["started"]), "cap_s": o["cap"],
+                         "alive": alive(o), "stale": stale(o),
+                         "burst": is_burst(n), "cmdline": o["cmdline"]})
     for r in rows:
         core.out(a, r, f"{r['name']}  pid {r['pid']} on {r['host']}  age {r['age_s']}s  cap {r['cap_s']}s  "
-                  f"{'alive' if r['alive'] else 'dead'}{'  stale' if r['stale'] else ''}")
+                  f"{'alive' if r['alive'] else 'dead'}{'  stale' if r['stale'] else ''}"
+                  f"{'  burst' if r['burst'] else ''}")
     if a.name and not rows:
         core.out(a, {"name": a.name, "status": "not-held"}, f"not held: {a.name}")
     elif not rows and not a.json:
