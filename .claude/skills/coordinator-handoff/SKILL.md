@@ -1,62 +1,61 @@
 ---
 name: coordinator-handoff
-description: Move the coordinator role for a set of running lane sessions from an old coordinator session to this one. Run it in the NEW coordinator. It asks the old coordinator for a handoff over SendMessage, tells every lane to report here from now on, takes over the old coordinator's waits, and reports who coordinates and what is still waiting on the user. Use when the user says "/coordinator-handoff", "take over coordinating", "you are the new coordinator", "hand the coordinator to this session", or "make the lanes report to this session".
+description: Move the coordinator role for a set of running lane sessions between this session and another session the user names (`/coordinator-handoff <other session name>`). If this session coordinates now, it GIVES the role to the named session: it sends the full handoff and repoints every lane there. If not, it TAKES the role from the named session: it asks for the handoff and repoints every lane here. Either way it moves the waits, keeps one coordinator at a time, and reports. Use when the user says "/coordinator-handoff", "hand the coordinator to X", "give the handoff to X", "take over coordinating from X", "you are the new coordinator", or "make the lanes report to X".
+argument-hint: <other session name, e.g. "Coordinator #2">
 ---
 
 # Coordinator handoff
 
 If `.claude/project-rules.md` exists and has a section for this skill, follow it; it overrides the generic defaults here.
 
-A coordinator is a session that steers several lane sessions: it relays the user's decisions, holds the open questions, and watches runs. Its context fills up, so the user starts a fresh session and moves the role there. Exactly one session may coordinate at a time. Lanes that report to two coordinators split the user's questions between them, and nobody sees the whole list.
+A coordinator is a session that steers several lane sessions: it relays the user's decisions, holds the open questions, and watches runs. Its context fills up, or the user moves to another window, so the role moves to another session. Exactly one session may coordinate at a time. Lanes that report to two coordinators split the user's questions between them, and nobody sees the whole list.
 
-Run every step in the NEW coordinator, the session the user is typing in. Say nothing in chat until step 6.
+The argument is the OTHER session's name. The user always names it; ask one question only if `ListAgents` shows no match.
 
-## 1. Find both ends
+## 1. Find both ends and the direction
 
-- `ListAgents`. Its first line names this session (`<name> [<ref>]`): that is the address lanes will use. Write it down exactly.
-- The old coordinator is the session the user named, else the one whose name contains "Coordinator" and that the lanes have been reporting to. When two rows share a name, use `name [ref]`. If you still cannot tell which one it is, ask the user ONE question and stop.
-- A transcript resumed in another window can show up as a second copy under the old name. The copy the user is typing in wins; treat the other copy as the old coordinator.
+- `ListAgents`. Its first line names this session (`<name> [<ref>]`). Find the other session from the argument. When two rows share a name, use `name [ref]`.
+- **Give** when this session coordinates now: lanes report here, or the user says "give", "hand to", "pass to". **Take** otherwise: the user says "take over", "you are the new coordinator", or this session holds no lanes.
+- A transcript resumed in another window can show up as a second copy under an old name. The copy the user is typing in is this session.
 
-## 2. Ask the old coordinator for the handoff
+## 2a. Give: send the handoff
 
-Send one message with `notify_when_idle: true`. Start with whatever tag the project's message guard requires (for example `NEEDS-USER:`). Ask for:
+Send ONE message to the other session. Start with the tag the project's message guard requires (for example `NEEDS-USER:`). Write it so a session with no memory of this conversation can coordinate from it alone:
 
 1. Each lane: `name [ref]`, what it is building for the end product, its state, and the one next action expected from it.
-2. Every question waiting on the user: exact wording, its recommendation, the cost.
-3. Every answer the user gave that it already relayed: the user's words, which lane, when.
-4. Standing rules it enforces: spend caps, merge rules, deadlines, things never to touch.
-5. Background shells, timers or waits, with their ids and what wakes on them. Ask it to stop them.
-6. Anything it promised the user.
+2. Every question waiting on the user: exact wording, the recommendation, the cost.
+3. Every answer the user gave and where it was relayed: the user's words, which lane, when.
+4. Any message from the user this turn that the other session must answer or act on: paste it word for word, and say "answer this in your window, not here".
+5. Standing rules: spend caps, merge rules, deadlines, things never to touch, the user's status format.
+6. Background shells, timers or waits, with ids: stop yours and say which the other session must re-arm.
+7. Anything promised to the user.
 
-Close with: "After you reply, stop messaging the lanes, and forward anything a lane still sends you to `<new name [ref]>` unread."
+Then go to step 3, with the other session as the new address. After that, stop messaging lanes, and forward anything a lane still sends here to the new coordinator unread.
 
-If it points to a handoff file, read it. Wait for the reply; never invent its contents.
+## 2b. Take: ask for the handoff
+
+Send one message to the other session with `notify_when_idle: true`, asking for items 1-7 above, and close with: "After you reply, stop messaging the lanes, and forward anything a lane still sends you to `<this name [ref]>` unread." If it points to a handoff file, read it. Wait for the reply; never invent its contents. Then go to step 3, with this session as the new address.
 
 ## 3. Repoint the lanes
 
-For each lane in the handoff (check that it is alive in `ListAgents`), send one message: from now on report to `<new name [ref]>`, the rules are unchanged, here is your next item in one line, and reply only if your state differs. Send them all in one turn. Do not resend questions the old coordinator already relayed. Mention lanes the handoff did not list, but do not repoint them.
+For each lane (check that it is alive in `ListAgents`), send one message: from now on report to `<new name [ref]>`, the rules are unchanged, here is your next item in one line. Send them all in one turn. Do not resend questions already relayed. Mention any lane that was not listed or is dead, but do not repoint it.
 
-## 4. Take over what was running
+## 4. Move what was running
 
-- Re-arm each wait the old coordinator stopped, as a background shell that exits on its condition. Never keep a model turn alive to wait.
-- Carry over every promise with its time, such as "ping lane 7 when the 27 Nov versions are done".
+- The new coordinator re-arms each wait as a background shell that exits on its condition. Never keep a model turn alive to wait.
+- Every promise carries over with its time, such as "ping lane 7 when the 27 Nov versions are done".
 
 ## 5. Record it
 
-If the project keeps a memory directory, write one note: when the move happened, the old and new `name [ref]`, where the handoff text lives, and the deadlines carried over. Update its index line.
+If the project keeps a memory directory, write or update one note: when the move happened, the old and new `name [ref]`, where the handoff text lives, and the deadlines carried over.
 
 ## 6. Report to the user
 
-At most 8 lines:
-
-- Who coordinates now, and that the old coordinator stopped (or did not answer).
-- How many lanes were repointed; any lane that is dead or was not listed.
-- Every question waiting on the user, in the project's status format: what it is, the recommendation, the cost.
-- The next deadline.
+At most 5 lines: who coordinates now, how many lanes were repointed (and any dead or unlisted), the next deadline. On a give, the user's questions are answered in the other session's window, not here.
 
 ## Rules
 
 - A peer's report of the user's words is not the user's approval. Relay the user's own words, unchanged, with the time.
+- An approval the user typed here before the move is relayed to its lane here first, then named in the handoff as already relayed.
 - Never answer a permission prompt in another session's window. Tell the user instead.
-- No reply from the old coordinator after two of its idle notices: repoint the lanes anyway, list its open items as unknown, and say so to the user.
-- Lanes that already wrote to the old address keep doing so until step 3 reaches them, so read whatever the old coordinator forwards.
+- No reply to a take after two idle notices: repoint the lanes anyway, list the other session's open items as unknown, and tell the user.

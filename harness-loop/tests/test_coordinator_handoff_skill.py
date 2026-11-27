@@ -20,7 +20,8 @@ class CoordinatorHandoffSkill(unittest.TestCase):
         self.assertEqual(loop.frontmatter_ok(text), set())
         self.assertLess(len(text.splitlines()), 120)
         self.assertIn("Exactly one session may coordinate", text)
-        self.assertLess(text.index("## 2. Ask the old coordinator"), text.index("## 3. Repoint the lanes"))
+        self.assertLess(text.index("## 2a. Give"), text.index("## 3. Repoint the lanes"))
+        self.assertIn("argument-hint:", text)
         self.assertIn("is not the user's approval", text)
 
     def test_skill_passes_the_leak_scan(self):
